@@ -1,53 +1,118 @@
-# throway
+<div align="center">
 
-A disposable file store. Upload a thing, get back a short-lived URL. No auth, nothing permanent.
+# 🗑️ throway
 
-## What it is
-- Share a file (image, text, binary) by giving someone a URL
-- Text scratchpad: create a note, append to it, rewrite it
-- Pass data between agents / machines without setting up accounts
+**A disposable file store. Upload a thing, get a short-lived URL. No auth. Nothing permanent.**
 
-## Quick start
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Zero deps](https://img.shields.io/badge/dependencies-zero-4caf50)](store.py)
+[![Status](https://img.shields.io/badge/status-live-00c853)](#-live-instance)
+
+Share a file, pass data between agents, or keep a text scratchpad — without
+accounts, without setup, without leftovers. Everything you upload gets a URL
+that **expires in 4 hours** and disappears.
+
+</div>
+
+---
+
+## ✨ Why throway?
+
+- **Disposable by design** — nothing lives longer than 4 hours. No cleanup, no clutter.
+- **Dead simple** — one `curl` to upload, one URL to share.
+- **Zero dependencies** — a single Python stdlib file. Runs anywhere.
+- **Agent-friendly** — self-describing API with a machine-readable contract.
+- **No auth, no accounts** — upload, share, forget.
+
+## 🚀 Quick start
+
 ```bash
-# upload
-curl -X POST --data-binary @photo.png "https://lubu.skale.dev:8001/throway/?name=photo.png"
+# upload a file → get a URL back
+curl -X POST --data-binary @photo.png \
+  "https://lubu.skale.dev:8001/throway/?name=photo.png"
 
+# → {"id":"4f2a…","url":"https://lubu.skale.dev:8001/throway/4f2a…","size":148,…}
+```
+
+```bash
 # download / view
 curl "https://lubu.skale.dev:8001/throway/<id>"
 
 # edit text (replace / append)
-curl -X PUT   --data-binary "new text" "https://lubu.skale.dev:8001/throway/<id>"
-curl -X PATCH --data-binary "append this" "https://lubu.skale.dev:8001/throway/<id>"
+curl -X PUT   --data-binary "new text"     "https://lubu.skale.dev:8001/throway/<id>"
+curl -X PATCH --data-binary "append this"  "https://lubu.skale.dev:8001/throway/<id>"
 
 # delete
 curl -X DELETE "https://lubu.skale.dev:8001/throway/<id>"
 ```
 
-## Limits
-| Limit | Value |
-|---|---|
-| URL lifetime | 4 hours |
-| Max file size | 5 MB |
-| Pool size | 100 MB (oldest evicted first) |
-| Rate limit | 100 req/min per IP |
+> **Live instance:** `https://lubu.skale.dev:8001/throway/`
 
-## Endpoints
+## 🧭 Endpoints
+
 | Method | Path | Action |
-|---|---|---|
-| POST | `/throway/?name=<file>` | upload (raw body or multipart) |
-| GET | `/throway/<id>` | download / view |
-| GET | `/throway/<id>?download=1` | force download |
-| PUT | `/throway/<id>` | replace text (text only) |
-| PATCH | `/throway/<id>` | append text (text only) |
-| DELETE | `/throway/<id>` | delete |
-| GET | `/throway/api` | JSON contract |
-| GET | `/throway/write_for_agents` | agent description (plain text) |
-| GET | `/throway/copy_for_agents` | copyable description (HTML) |
+|--------|------|--------|
+| `POST` | `/throway/?name=<file>` | upload (raw body or multipart) |
+| `GET` | `/throway/<id>` | download / view |
+| `GET` | `/throway/<id>?download=1` | force download |
+| `PUT` | `/throway/<id>` | replace text (text only) |
+| `PATCH` | `/throway/<id>` | append text (text only) |
+| `DELETE` | `/throway/<id>` | delete |
+| `GET` | `/throway/api` | machine-readable contract (JSON) |
+| `GET` | `/throway/write_for_agents` | agent description (plain text) |
+| `GET` | `/throway/copy_for_agents` | copy-pasteable agent description (HTML) |
 
-## Deploy
-- Single-file Python stdlib server: `store.py` (no dependencies)
-- systemd: `throway-store.service` (port 8111)
-- nginx: `/throway/` proxy
-- Storage: `/srv/storage2/throway/` (USB HDD)
+## 📊 Limits
 
-See `PRD.md` and `API.md` for details.
+| Limit | Value |
+|-------|-------|
+| URL lifetime | **4 hours** |
+| Max file size | **5 MB** |
+| Pool size | **100 MB** (oldest evicted first) |
+| Rate limit | **100 req/min** per IP |
+
+## 🖼️ Behavior
+
+- **Images** render inline in the browser (a viewer). Everything else downloads.
+  Append `?download=1` to force a download of any file.
+- **Text files** are editable — `PUT` rewrites the whole content, `PATCH` appends.
+  Images are immutable.
+- **File URLs are never listed** on the main page — you only get them from the
+  upload response. The page shows live stats instead.
+
+## 🤖 For agents
+
+Throway is built to be consumed by other programs. When an agent hits the root
+URL it's served the full "for agents" instructions directly. There's also a
+machine-readable contract:
+
+```bash
+curl "https://lubu.skale.dev:8001/throway/api"
+```
+
+See **[`AGENTS.md`](AGENTS.md)** for the complete agent guide.
+
+## 🛠️ Deploy
+
+| Piece | How |
+|-------|-----|
+| Server | single-file Python stdlib: [`store.py`](store.py) — no dependencies |
+| Service | systemd `throway-store.service` (port `8111`, auto-start/restart) |
+| Proxy | nginx `/throway/` location |
+| Storage | `/srv/storage2/throway/` (USB HDD) |
+
+```bash
+# run it anywhere
+python3 store.py
+```
+
+## 📚 Docs
+
+- **[`AGENTS.md`](AGENTS.md)** — guide for agents & programs
+- **[`API.md`](API.md)** — full API reference
+- **[`PRD.md`](PRD.md)** — product requirements
+
+## 📄 License
+
+[MIT](LICENSE) © 2026 devskale
