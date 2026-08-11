@@ -26,7 +26,7 @@ THROW_POOL_SIZE = 100 * 1024 * 1024   # 100MB rolling pool
 MAX_FILE = 5 * 1024 * 1024            # 5MB
 RATE_LIMIT = 100                      # req/min per IP
 TTL_HOURS = 4                         # default URL lifetime
-PUBLIC_BASE = "https://lubu.skale.dev:8001/throway"
+PUBLIC_BASE = "https://lubu.skale.dev/throway"
 PREFIX = "/throway"
 PORT = int(os.environ.get("STORE_PORT", "8111"))
 

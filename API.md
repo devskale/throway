@@ -3,7 +3,7 @@
 A disposable file store. Upload a file, get back a URL valid for **4 hours**.
 Files auto-expire and are deleted. No auth required.
 
-**Base URL:** `https://lubu.skale.dev:8001/throway`
+**Base URL:** `https://lubu.skale.dev/throway`
 
 > The machine-readable contract is always available at `GET {base}/api`.
 > An agent should read that endpoint first to discover current limits.
@@ -21,19 +21,19 @@ Files auto-expire and are deleted. No auth required.
 ### Option A — raw body (simplest)
 ```bash
 curl -X POST --data-binary @photo.png \
-  "https://lubu.skale.dev:8001/throway/?name=photo.png"
+  "https://lubu.skale.dev/throway/?name=photo.png"
 ```
 
 ### Option B — multipart form
 ```bash
-curl -F "file=@photo.png" "https://lubu.skale.dev:8001/throway/"
+curl -F "file=@photo.png" "https://lubu.skale.dev/throway/"
 ```
 
 ### Success response (JSON)
 ```json
 {
   "id": "96c31bf491abdf91",
-  "url": "https://lubu.skale.dev:8001/throway/96c31bf491abdf91",
+  "url": "https://lubu.skale.dev/throway/96c31bf491abdf91",
   "size": 148,
   "name": "photo.png",
   "content_type": "image/png",
@@ -58,7 +58,7 @@ The `url` field is what you share. It is valid until `expires_at`.
 - Append `?download=1` to force a download of any file.
 
 ```bash
-curl -O "https://lubu.skale.dev:8001/throway/<id>"
+curl -O "https://lubu.skale.dev/throway/<id>"
 ```
 
 ## Edit / append text
@@ -67,23 +67,23 @@ For **text** files only (images are immutable). Both return the updated JSON met
 
 ### Replace (edit) — `PUT /<id>`
 ```bash
-curl -X PUT --data-binary "new full text" "https://lubu.skale.dev:8001/throway/<id>"
+curl -X PUT --data-binary "new full text" "https://lubu.skale.dev/throway/<id>"
 ```
 
 ### Append — `PATCH /<id>`
 ```bash
-curl -X PATCH --data-binary "text to add" "https://lubu.skale.dev:8001/throway/<id>"
+curl -X PATCH --data-binary "text to add" "https://lubu.skale.dev/throway/<id>"
 ```
 
 > `PUT`/`PATCH` on a non-text file (e.g. an image) returns `400`.
 
 ## Delete a file
 ```bash
-curl -X DELETE "https://lubu.skale.dev:8001/throway/<id>"
+curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 ```
 
 ## Contract endpoint
 ```bash
-curl "https://lubu.skale.dev:8001/throway/api"
+curl "https://lubu.skale.dev/throway/api"
 ```
 Returns current limits + endpoint descriptions as JSON.

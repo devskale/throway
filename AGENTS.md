@@ -9,7 +9,7 @@ your agent discover the API by itself.
 ## TL;DR
 
 ```
-Base URL:  https://lubu.skale.dev:8001/throway
+Base URL:  https://lubu.skale.dev/throway
 Lifetime:  4 hours (files auto-delete)
 Auth:      none
 ```
@@ -25,7 +25,7 @@ Auth:      none
 Don't hardcode the contract. Read it at runtime:
 
 ```
-GET https://lubu.skale.dev:8001/throway/api
+GET https://lubu.skale.dev/throway/api
 ```
 
 Returns current limits and endpoints as JSON. If you `GET` the root URL
@@ -39,19 +39,19 @@ agent description with the same instructions.
 ### Raw body (simplest)
 ```bash
 curl -X POST --data-binary @photo.png \
-  "https://lubu.skale.dev:8001/throway/?name=photo.png"
+  "https://lubu.skale.dev/throway/?name=photo.png"
 ```
 
 ### Multipart form
 ```bash
-curl -F "file=@photo.png" "https://lubu.skale.dev:8001/throway/"
+curl -F "file=@photo.png" "https://lubu.skale.dev/throway/"
 ```
 
 ### Response (JSON)
 ```json
 {
   "id": "4f2a1c9d0e3b8a77",
-  "url": "https://lubu.skale.dev:8001/throway/4f2a1c9d0e3b8a77",
+  "url": "https://lubu.skale.dev/throway/4f2a1c9d0e3b8a77",
   "size": 148,
   "name": "photo.png",
   "content_type": "image/png",
@@ -68,7 +68,7 @@ curl -F "file=@photo.png" "https://lubu.skale.dev:8001/throway/"
 ## Download / view
 
 ```bash
-curl "https://lubu.skale.dev:8001/throway/<id>"
+curl "https://lubu.skale.dev/throway/<id>"
 ```
 
 - **Images** render inline in a browser (viewer).
@@ -84,11 +84,11 @@ Images and other binaries are **immutable** — these return `400`.
 ```bash
 # replace the whole content
 curl -X PUT --data-binary "new full text" \
-  "https://lubu.skale.dev:8001/throway/<id>"
+  "https://lubu.skale.dev/throway/<id>"
 
 # append to the content
 curl -X PATCH --data-binary "text to add" \
-  "https://lubu.skale.dev:8001/throway/<id>"
+  "https://lubu.skale.dev/throway/<id>"
 ```
 
 Both return updated JSON metadata (`size`, `url`, `expires_at`, …).
@@ -98,7 +98,7 @@ Both return updated JSON metadata (`size`, `url`, `expires_at`, …).
 ## Delete
 
 ```bash
-curl -X DELETE "https://lubu.skale.dev:8001/throway/<id>"
+curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 ```
 
 ---
