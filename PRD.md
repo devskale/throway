@@ -21,6 +21,9 @@ alike.
   throwaway website); agents get a zip
 - **Mutable dirs**: create a dir (`?dir=1`), keep adding files, deleted **4h
   after the latest upload** (capped at 24h total)
+- **Named dirs**: create-or-get a dir by a memorable name (`?dir=1&name=<name>`),
+  fixed lifetime (default 7 days, `ttl=` override clamped to [4h, 7d]), optional
+  `listed=1` + tags, full CRUD under `n/<name>`
 - URL valid **4 hours** by default, then auto-expired & deleted
 - Images and text-like types render inline (viewer); other files download; `?download=1` forces download
 - Text files editable: `PUT` = replace, `PATCH` = append
@@ -50,6 +53,12 @@ alike.
 | POST | `/throway/?name=<file>` | upload a file (raw body or multipart) |
 | POST | `/throway/` | upload a bundle (multipart, 2+ files) |
 | POST | `/throway/?dir=1` | create a mutable dir |
+| POST | `/throway/?dir=1&name=<name>` | create-or-get a **named dir** (`&listed=1`, `&tag=`, `&ttl=`) |
+| GET | `/throway/n` | list named dirs (only `listed=1`; filter/sort) |
+| POST | `/throway/n/<name>` | add files to a named dir |
+| GET | `/throway/n/<name>` | view a named dir (listing / zip / files) |
+| PUT/PATCH | `/throway/n/<name>/<file>` | edit/append text in a named dir |
+| DELETE | `/throway/n/<name>` | delete a named dir |
 | POST | `/throway/<dirid>` | add files to a dir (resets TTL) |
 | GET | `/throway/<id>` | download / view a file, bundle root, or dir listing |
 | GET | `/throway/<id>/<file>` | fetch one file from a bundle/dir |
@@ -65,6 +74,7 @@ alike.
 
 ## Limits
 - TTL: 4h (14400s); dirs: 4h after latest upload, max 24h total
+- Named dirs: fixed lifetime, default 7d, `ttl=` override clamped to [4h, 7d]
 - Max file: 5 MB
 - Pool: 100 MB
 - Rate: 100 req/min/IP
@@ -74,8 +84,11 @@ alike.
 - Single files stored by random hex id; original name kept in `.meta`
 - Bundles stored as a directory per id: `ROOT/<bundleid>/` with the files plus
   a `<bundleid>.meta` manifest (shared expiry, ctype map)
-- Sweep deletes expired files and whole bundles; eviction treats a bundle as
-  one unit (oldest first)
+- Named dirs stored at `ROOT/n/<name>/` (separate namespace, no collision with
+  hex ids) with a `<name>.meta` manifest (`named`, `listed`, `tags`, `max_age`,
+  `created`, `updated`, `expires`)
+- Sweep deletes expired files and whole bundles; eviction treats a bundle or
+  named dir as one unit (oldest first)
 
 ## Errors
 | Code | Meaning |

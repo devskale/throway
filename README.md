@@ -65,6 +65,12 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 | `POST` | `/throway/` | upload a bundle (multipart, 2+ files) |
 | `POST` | `/throway/?dir=1` | create a mutable dir |
 | `POST` | `/throway/<dirid>` | add files to a dir (resets TTL) |
+| `POST` | `/throway/?dir=1&name=<name>` | create-or-get a **named dir** (`&listed=1`, `&tag=`, `&ttl=`) |
+| `GET` | `/throway/n` | list named dirs (only `listed=1`; filter/sort via query) |
+| `GET` | `/throway/n/<name>` | view a named dir (listing / zip / files) |
+| `POST` | `/throway/n/<name>` | add files to a named dir |
+| `PUT`/`PATCH` | `/throway/n/<name>/<file>` | edit/append text in a named dir |
+| `DELETE` | `/throway/n/<name>` | delete a named dir |
 | `GET` | `/throway/<id>` | download / view a file, bundle root, or dir listing |
 | `GET` | `/throway/<id>/<file>` | fetch one file from a bundle/dir |
 | `GET` | `/throway/<dirid>?zip=1` | download a whole dir as zip |
@@ -82,6 +88,7 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 | Limit | Value |
 |-------|-------|
 | URL lifetime | **4 hours** (dirs: 4h after latest upload, max 24h total) |
+| Named dir lifetime | **fixed** (default 7 days, `ttl=` override clamped to [4h, 7d]) |
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |
 | Rate limit | **100 req/min** per IP |

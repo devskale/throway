@@ -142,6 +142,60 @@ curl -F "f=@note.txt" "https://lubu.skale.dev/throway/<dirid>"
 **TTL:** deleted 4h after the latest upload; never more than 24h total from
 creation. `GET /<dirid>` shows the current `expires_at`.
 
+## Named dirs (rememberable, team-reusable)
+
+A **named dir** is a mutable dir addressed by a **name** instead of a hex id,
+so a team of agents can remember and reuse one shared dir. Lives under `n/<name>`.
+
+### Create-or-get
+`POST {base}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]`
+```bash
+curl -X POST "https://lubu.skale.dev/throway/?dir=1&name=team7"
+# -> {"id":"team7","name":"team7","url":"…/n/team7","dir":true,"named":true,"listed":false,"tags":[],"files":[],"expires_at":"…","max_age":604800}
+```
+**Create-or-get** (idempotent): any agent calling the same create converges
+on the shared dir. Create flags are honored **only on first creation**;
+re-calling create on an existing name silently returns it.
+
+### Naming rules
+Rejected if: length <5 or >32; not `[a-z0-9-]`; all digits (no letter); or a
+reserved word (`api`, `index`, `n`, `releases`, `llms`, `store`, …).
+
+### Create flags (immutable at create)
+- `&listed=1` — appears in the public `GET /n` listing.
+- `&tag=<t>` — up to 5 discoverability tags (lowercase `[a-z0-9-]`, 1-24 chars).
+- `&ttl=<h|d>` — **fixed lifetime**, clamped to `[4h, 7d]`, default **7 days**.
+
+### Fixed lifetime
+`expires_at` is set at creation and **never moves**. Adding, editing, or
+deleting files does **not** extend it. A named dir dies at its `expires_at`.
+
+### Using a named dir
+```bash
+BASE=https://lubu.skale.dev/throway
+curl -F "f=@note.txt" "$BASE/n/team7"          # add files (bumps updated_at)
+curl -A "curl" "$BASE/n/team7"                 # list (JSON for agents, HTML for browsers)
+curl "$BASE/n/team7/note.txt"                  # fetch one file
+curl "$BASE/n/team7?zip=1"                     # whole dir as zip
+curl -X PUT --data-binary "new" "$BASE/n/team7/note.txt"   # edit text
+curl -X PATCH --data-binary " more" "$BASE/n/team7/note.txt" # append text
+curl -X DELETE "$BASE/n/team7/note.txt"        # delete one file
+curl -X DELETE "$BASE/n/team7"                 # delete whole dir
+```
+- **`updated_at`** = last add/edit/delete. Tracks activity; does **not** affect lifetime.
+- **Privacy:** unlisted by default; only `listed=1` dirs appear in `GET /n`.
+
+### Listing `GET /n` (only listed dirs)
+JSON for agents, HTML for browsers. Entries: `{name, url, tags, files, size,
+created_at, updated_at, expires_at, max_age}` + `total`.
+```bash
+curl -A "curl" "$BASE/n"                                    # all listed
+curl -A "curl" "$BASE/n?q=team"                            # name/tag substring
+curl -A "curl" "$BASE/n?created_after=1750000000"          # by creation time
+curl -A "curl" "$BASE/n?updated_before=1750000000"         # by update time
+curl -A "curl" "$BASE/n?sort=updated&order=asc"            # sort created|updated|name, asc|desc
+```
+
 ## Edit / append text
 
 For **text** files only (images are immutable). Both return the updated JSON metadata.

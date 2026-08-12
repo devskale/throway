@@ -33,11 +33,25 @@ MAX_FILE = 5 * 1024 * 1024            # 5MB
 RATE_LIMIT = 100                      # req/min per IP
 TTL_HOURS = 4                         # default URL lifetime
 DIR_MAX_AGE = 24 * 3600               # hard ceiling for a dir's total lifetime
+
+# Named dirs — addressable by a memorable name under /n/<name>.
+NAMED_DIR = "n"                        # namespace prefix for named dirs
+NAMED_MIN_AGE = 4 * 3600               # min fixed lifetime (4h)
+NAMED_MAX_AGE = 7 * 24 * 3600          # max fixed lifetime (7 days)
+NAMED_DEFAULT_AGE = NAMED_MAX_AGE      # default when &ttl= not given
+MAX_TAGS = 5
+MAX_TAG_LEN = 24
+RESERVED_NAMES = {
+    "api", "index", "n", "releases", "llms", "llms-full", "llms_full",
+    "write_for_agents", "copy_for_agents", "store", "static", "favicon",
+    "robots", "sitemap", "assets", "health", "browse", "list",
+}
+
 PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway")
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.4.2"
+VERSION = "1.5.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -114,19 +128,46 @@ def total_size():
             if not f.endswith(".meta"):
                 total += os.path.getsize(p)
         elif os.path.isdir(p):
+            if f == NAMED_DIR:
+                total += _named_total()
+            else:
+                total += _dir_size(p)
+    return total
+
+
+def _named_total():
+    """Total bytes across all named dirs."""
+    total = 0
+    nd = os.path.join(ROOT, NAMED_DIR)
+    if not os.path.isdir(nd):
+        return 0
+    for name in os.listdir(nd):
+        p = os.path.join(nd, name)
+        if os.path.isdir(p):
             total += _dir_size(p)
     return total
+
 
 def _units():
     """Yield (path, is_dir, mtime) for each top-level storage unit.
     Units are single files OR whole bundle directories — eviction/expiry
-    treats each as one atomic thing."""
+    treats each as one atomic thing. Named dirs are yielded individually
+    (one unit per named dir), so eviction can target them independently."""
     for f in os.listdir(ROOT):
         if f.endswith(".meta"):
             continue
         p = os.path.join(ROOT, f)
-        if os.path.isfile(p) or os.path.isdir(p):
-            yield p, os.path.isdir(p), os.path.getmtime(p)
+        if os.path.isfile(p):
+            yield p, False, os.path.getmtime(p)
+        elif os.path.isdir(p):
+            if f == NAMED_DIR:
+                nd = p
+                for name in os.listdir(nd):
+                    np_ = os.path.join(nd, name)
+                    if os.path.isdir(np_):
+                        yield np_, True, os.path.getmtime(np_)
+            else:
+                yield p, True, os.path.getmtime(p)
 
 def evict(target):
     """Delete oldest units (by mtime) until total data size <= target."""
@@ -185,12 +226,32 @@ def sweep():
             if expires < now:
                 _remove(p)
         elif os.path.isdir(p):
+            if f == NAMED_DIR:
+                _sweep_named(now)
+                continue
             m = _bundle_meta(p, f)
             expires = (m or {}).get("expires")
             if expires is None:
                 expires = os.path.getmtime(p) + TTL_HOURS * 3600
             if expires < now:
                 shutil.rmtree(p, ignore_errors=True)
+
+
+def _sweep_named(now):
+    """Delete expired named dirs (fixed lifetime from manifest)."""
+    nd = os.path.join(ROOT, NAMED_DIR)
+    if not os.path.isdir(nd):
+        return
+    for name in os.listdir(nd):
+        p = os.path.join(nd, name)
+        if not os.path.isdir(p):
+            continue
+        m = _named_meta(name)
+        expires = (m or {}).get("expires")
+        if expires is None:
+            expires = os.path.getmtime(p) + NAMED_DEFAULT_AGE
+        if expires < now:
+            shutil.rmtree(p, ignore_errors=True)
 
 def _safe_name(name):
     """Reduce a user filename to a safe basename for Content-Disposition."""
@@ -249,6 +310,79 @@ def _dedupe_names(names):
         seen[base] = True
         out.append(base)
     return out
+
+
+def _valid_name(name):
+    """Validate a named-dir name per the ruling. Returns (ok, reason).
+    Rules: len >4 and <=32; charset [a-z0-9-]; >=1 letter; not reserved."""
+    if not name:
+        return False, "name required"
+    if not (5 <= len(name) <= 32):
+        return False, "name must be 5-32 chars"
+    if not re.fullmatch(r"[a-z0-9-]+", name):
+        return False, "name must be lowercase letters, digits, hyphens"
+    if not re.search(r"[a-z]", name):
+        return False, "name must contain a letter"
+    if name in RESERVED_NAMES:
+        return False, "reserved name"
+    return True, None
+
+
+def _valid_tag(t):
+    return bool(t) and len(t) <= MAX_TAG_LEN and re.fullmatch(r"[a-z0-9-]+", t)
+
+
+def _named_dirpath(name):
+    """On-disk path for a named dir: ROOT/n/<name>/. The n/ namespace keeps
+    names from ever colliding with hex-id dirs/files at ROOT/<hexid>."""
+    return os.path.join(ROOT, NAMED_DIR, os.path.basename(name))
+
+
+def _named_meta_path(name):
+    return os.path.join(_named_dirpath(name), name + ".meta")
+
+
+def _named_meta(name):
+    mp = _named_meta_path(name)
+    if os.path.isfile(mp):
+        try:
+            return json.load(open(mp))
+        except Exception:
+            pass
+    return None
+
+
+def _parse_ttl(s):
+    """Parse a &ttl= value into seconds, clamped to [NAMED_MIN_AGE, NAMED_MAX_AGE].
+    Accepts plain hours (number), 'h' suffix, or 'd' suffix. Returns None if unparseable."""
+    if not s:
+        return None
+    s = s.strip().lower()
+    m = re.fullmatch(r"(\d+)\s*(h|d)?", s)
+    if not m:
+        return None
+    n = int(m.group(1))
+    unit = m.group(2)
+    if unit == "d":
+        secs = n * 24 * 3600
+    else:
+        secs = n * 3600  # bare number or 'h' = hours
+    if secs <= 0:
+        return None
+    return max(NAMED_MIN_AGE, min(secs, NAMED_MAX_AGE))
+
+
+def _parse_tags(query_tags):
+    """Normalize + dedupe a list of raw tag values; cap at MAX_TAGS."""
+    out = []
+    for t in query_tags:
+        t = (t or "").strip().lower()
+        if _valid_tag(t) and t not in out:
+            out.append(t)
+        if len(out) >= MAX_TAGS:
+            break
+    return out
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -430,6 +564,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._copy_for_agents()
         if path == "/releases":
             return self._releases()
+        # --- named dirs: /n (listing) and /n/<name>[/<file>] ---
+        if path == "/" + NAMED_DIR:
+            return self._named_listing()
+        parts = path.lstrip("/").split("/")
+        if parts and parts[0] == NAMED_DIR and len(parts) >= 2 and parts[1]:
+            return self._named_get(parts[1:], query=self.path.split("?", 1)[1] if "?" in self.path else "")
         parts = path.lstrip("/").split("/")
         fid = parts[0]
         if not fid or fid.endswith(".meta"):
@@ -507,17 +647,29 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._rate(): return
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
-        name_hint = None
-        want_dir = False
+        qp = {}
         for kv in query.split("&"):
-            if kv.startswith("name="):
-                name_hint = _safe_name(kv[5:])[:128]
-            elif kv == "dir=1":
-                want_dir = True
+            if not kv:
+                continue
+            k, _, v = kv.partition("=")
+            qp.setdefault(k, []).append(v)
+        name_hint = None
+        want_dir = ("dir=1" in query)
+        if "name" in qp:
+            name_hint = _safe_name(qp["name"][0])[:128]
 
-        # POST /<dirid> -> add files to an existing dir (multipart)
         path = self.path.split("?", 1)[0].rstrip("/")
         parts = path.lstrip("/").split("/")
+
+        # POST /n/<name> -> add files to an existing named dir (multipart)
+        if parts and parts[0] == NAMED_DIR and len(parts) == 2 and parts[1]:
+            return self._add_to_named(parts[1])
+
+        # POST /?dir=1&name=<name>[&listed=1][&tag=..][&ttl=..] -> create-or-get
+        if want_dir and name_hint:
+            return self._create_or_get_named(name_hint, qp)
+
+        # POST /<dirid> -> add files to an existing dir (multipart)
         if len(parts) >= 1 and parts[0] and len(parts) == 1 and self.path.split("?", 1)[0] != "/":
             existing = self._add_to_dir(parts[0])
             if existing is not None:
@@ -752,6 +904,362 @@ class Handler(BaseHTTPRequestHandler):
         _save_stats(s)
         return self._dir_response(fid, dirpath, m)
 
+    # ------------------------------------------------------------------
+    # Named dirs
+    # ------------------------------------------------------------------
+
+    def _create_or_get_named(self, name, qp):
+        """POST /?dir=1&name=<name>[&listed=1][&tag=..][&ttl=..].
+        Create-or-get: returns the existing dir if the name is taken; create
+        flags (listed/tag/ttl) are honored only on first creation (Q15)."""
+        ok, reason = _valid_name(name)
+        if not ok:
+            return self._send(400, json.dumps({"error": "invalid name: " + reason}), "application/json")
+        dirpath = _named_dirpath(name)
+        existing = _named_meta(name)
+        now = time.time()
+        if existing is not None:
+            # expired -> treat as gone, recreate
+            if existing.get("expires", 0) < now:
+                shutil.rmtree(dirpath, ignore_errors=True)
+                existing = None
+            else:
+                return self._named_response(name, dirpath, existing)
+        # create fresh
+        ttl = _parse_ttl((qp.get("ttl") or [""])[0]) or NAMED_DEFAULT_AGE
+        listed = "listed=1" in self.path.split("?", 1)[1] if "?" in self.path else False
+        tags = _parse_tags(qp.get("tag", []))
+        os.makedirs(dirpath, exist_ok=True)
+        meta = {
+            "type": "dir",
+            "named": True,
+            "created": now,
+            "updated": now,
+            "expires": now + ttl,
+            "max_age": ttl,
+            "listed": listed,
+            "tags": tags,
+            "files": {},
+        }
+        json.dump(meta, open(_named_meta_path(name), "w"))
+        evict(THROW_POOL_SIZE)
+        return self._named_response(name, dirpath, meta)
+
+    def _add_to_named(self, name):
+        """POST /n/<name>: add multipart files to a named dir, bump updated.
+        Fixed lifetime: expires_at does NOT move (Q32)."""
+        dirpath = _named_dirpath(name)
+        m = _named_meta(name)
+        now = time.time()
+        if not m or m.get("type") != "dir" or not m.get("named"):
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        if m.get("expires", 0) < now:
+            shutil.rmtree(dirpath, ignore_errors=True)
+            return self._send(404, json.dumps({"error": "expired"}), "application/json")
+        ctype = self.headers.get("Content-Type", "application/octet-stream")
+        if not ctype.startswith("multipart/form-data"):
+            return self._send(400, json.dumps({"error": "dir add requires multipart"}), "application/json")
+        payload = self._read_body()
+        if payload is None:
+            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+        files = _parse_multipart(payload, ctype)
+        named = [(n, d, c) for (n, d, c) in files if n]
+        if not named:
+            return self._send(400, json.dumps({"error": "no file parts"}), "application/json")
+        cur = _dir_size(dirpath)
+        for n, d, c in named:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            if len(d) > MAX_FILE:
+                return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+            cur += len(d)
+            if cur > THROW_POOL_SIZE:
+                return self._send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
+        files_map = m.get("files", {})
+        existing = set(os.listdir(dirpath))
+        existing.discard(name + ".meta")
+        for n, d, c in named:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            nm = _dedupe_names([safe] + [x for x in existing if x != safe])[0]
+            with open(os.path.join(dirpath, nm), "wb") as f:
+                f.write(d)
+            files_map[nm] = mimetypes.guess_type(nm)[0] or c or "application/octet-stream"
+            existing.add(nm)
+        m["files"] = files_map
+        m["updated"] = now
+        # fixed lifetime: expires stays as-is
+        json.dump(m, open(_named_meta_path(name), "w"))
+        evict(THROW_POOL_SIZE)
+        s = _load_stats()
+        s["files"] += len(named)
+        s["bytes"] += sum(len(d) for _, d, _ in named)
+        _save_stats(s)
+        return self._named_response(name, dirpath, m)
+
+    def _named_get(self, parts, query):
+        """GET /n/<name>[/<file>] — serve a named dir's listing, a file, or zip."""
+        name = parts[0]
+        dirpath = _named_dirpath(name)
+        m = _named_meta(name)
+        now = time.time()
+        if not m or m.get("type") != "dir" or not m.get("named"):
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        if m.get("expires", 0) < now:
+            shutil.rmtree(dirpath, ignore_errors=True)
+            return self._send(404, json.dumps({"error": "expired"}), "application/json")
+        force_dl = "download=1" in query
+        # /n/<name>/<file>
+        if len(parts) >= 2 and parts[1]:
+            fname = os.path.basename(parts[1])
+            if not fname or fname.endswith(".meta"):
+                return self._send(404, "not found\n")
+            fpath = os.path.join(dirpath, fname)
+            if not os.path.isfile(fpath):
+                return self._send(404, "not found\n")
+            ctype = m.get("files", {}).get(fname) or mimetypes.guess_type(fname)[0] or "application/octet-stream"
+            return self._serve_file(fpath, ctype, fname, force_dl, f"{NAMED_DIR}/{name}/{fname}")
+        # root: zip on ?zip=1 / ?download=1
+        if "zip=1" in query or force_dl:
+            return self._serve_bundle_zip(dirpath, name)
+        # JSON for agents, HTML for browsers
+        if self._is_agent():
+            return self._named_response(name, dirpath, m)
+        return self._named_listing_html(name, dirpath, m)
+
+    def _named_response(self, name, dirpath, meta):
+        """JSON response for a named dir (agents)."""
+        files = []
+        total = 0
+        for f in sorted(os.listdir(dirpath)):
+            if f.endswith(".meta"):
+                continue
+            fp = os.path.join(dirpath, f)
+            if not os.path.isfile(fp):
+                continue
+            sz = os.path.getsize(fp)
+            total += sz
+            files.append({"name": f, "url": f"{PUBLIC_BASE}/{NAMED_DIR}/{name}/{f}", "size": sz,
+                          "content_type": meta.get("files", {}).get(f, "application/octet-stream")})
+        return self._send(200, json.dumps({
+            "id": name,
+            "name": name,
+            "url": f"{PUBLIC_BASE}/{NAMED_DIR}/{name}",
+            "dir": True,
+            "named": True,
+            "listed": bool(meta.get("listed")),
+            "tags": meta.get("tags", []),
+            "files": files,
+            "size": total,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("created", 0))),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("updated", meta.get("created", 0)))),
+            "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("expires", 0))),
+            "max_age": meta.get("max_age", NAMED_DEFAULT_AGE),
+        }), "application/json", {"X-Expires": str(meta.get("expires", 0))})
+
+    def _named_listing_html(self, name, dirpath, meta):
+        """HTML page for a named dir viewed in a browser."""
+        rows = []
+        for f in sorted(os.listdir(dirpath)):
+            if f.endswith(".meta"):
+                continue
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                rows.append((f, os.path.getsize(fp)))
+        lis = "\n".join(
+            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> ({s} B)</li>'
+            for f, s in rows)
+        tags = "".join(f'<span class=tag>{_html_escape(t)}</span>' for t in meta.get("tags", []))
+        browse = (f'<a class=back href="{PREFIX}/{NAMED_DIR}">browse named dirs</a>'
+                  if meta.get("listed") else "")
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<base href='{PREFIX}/{NAMED_DIR}/{name}/'>"
+             f"<title>throway dir {name}</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem}"
+             ".tag{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted);margin-right:.3rem}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center}"
+             "li a{color:var(--ink);text-decoration:none}"
+             "li a:hover{color:var(--accent)}"
+             "li span{color:var(--muted);font-size:.85rem}"
+             "a.btn{display:inline-block;margin-top:1rem;background:var(--accent);color:#fff;text-decoration:none;font-size:.9rem;padding:.5rem 1rem;border-radius:8px}"
+             "a.btn:hover{background:#1d4ed8}"
+             "a.back{display:inline-block;margin-top:1rem;margin-left:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<h1>Dir {name}</h1><div>{tags}</div><ul>{lis}</ul>"
+             f"<a class=btn href='?zip=1'>download as zip</a>{browse}"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
+        self._send(200, h, "text/html")
+
+    def _named_listing(self):
+        """GET /n — list only dirs created with &listed=1. Filters: q, created_after/before,
+        updated_after/before. Sort: created|updated|name, order asc|desc, default created desc."""
+        q = self.path.split("?", 1)[1] if "?" in self.path else ""
+        qp = {}
+        for kv in q.split("&"):
+            if not kv:
+                continue
+            k, _, v = kv.partition("=")
+            qp.setdefault(k, []).append(v)
+        def _ts(k):
+            try:
+                return float((qp.get(k) or [""])[0])
+            except Exception:
+                return None
+        created_after = _ts("created_after"); created_before = _ts("created_before")
+        updated_after = _ts("updated_after"); updated_before = _ts("updated_before")
+        qtext = (qp.get("q") or [""])[0].strip().lower()
+        sort = (qp.get("sort") or ["created"])[0]
+        order = (qp.get("order") or ["desc"])[0]
+        nd = os.path.join(ROOT, NAMED_DIR)
+        now = time.time()
+        entries = []
+        if os.path.isdir(nd):
+            for name in os.listdir(nd):
+                p = os.path.join(nd, name)
+                if not os.path.isdir(p):
+                    continue
+                m = _named_meta(name)
+                if not m or not m.get("listed"):
+                    continue
+                if m.get("expires", 0) < now:
+                    continue
+                created = m.get("created", 0); updated = m.get("updated", created)
+                tags = m.get("tags", [])
+                if created_after is not None and created <= created_after:
+                    continue
+                if created_before is not None and created >= created_before:
+                    continue
+                if updated_after is not None and updated <= updated_after:
+                    continue
+                if updated_before is not None and updated >= updated_before:
+                    continue
+                if qtext and qtext not in name and not any(qtext in t for t in tags):
+                    continue
+                files = [f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f)) and not f.endswith(".meta")]
+                size = _dir_size(p)
+                entries.append({
+                    "name": name,
+                    "url": f"{PUBLIC_BASE}/{NAMED_DIR}/{name}",
+                    "tags": tags,
+                    "files": len(files),
+                    "size": size,
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created)),
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(updated)),
+                    "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(m.get("expires", 0))),
+                    "max_age": m.get("max_age", NAMED_DEFAULT_AGE),
+                    "_c": created, "_u": updated,
+                })
+        def _key(e):
+            if sort == "name":
+                return e["name"]
+            if sort == "updated":
+                return e["_u"]
+            return e["_c"]
+        entries.sort(key=_key, reverse=(order != "asc"))
+        for e in entries:
+            e.pop("_c", None); e.pop("_u", None)
+        if self._is_agent():
+            return self._send(200, json.dumps({"dirs": entries, "total": len(entries)}), "application/json")
+        # browser: HTML card list
+        cards = "".join(
+            f'<li><a href="{_html_escape(e["url"])}">{_html_escape(e["name"])}</a> '
+            f'<span class=meta>{e["files"]} files · {_fmt_size(e["size"])} · updated {e["updated_at"]}</span>'
+            + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
+            + '</li>'
+            for e in entries)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<title>throway — named dirs</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}"
+             "li a{color:var(--ink);text-decoration:none;font-weight:600}"
+             "li a:hover{color:var(--accent)}"
+             "li .meta{color:var(--muted);font-size:.8rem}"
+             "li .tags{color:var(--accent);font-size:.75rem;width:100%}"
+             "a.back{display:inline-block;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<h1>Named dirs</h1>{'<p style=color:var(--muted);font-size:.85rem>No listed dirs yet.</p>' if not entries else ''}"
+             f"<ul>{cards}</ul>"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
+        self._send(200, h, "text/html")
+
+    def _named_delete(self, parts):
+        """DELETE /n/<name> or DELETE /n/<name>/<file>."""
+        name = parts[0]
+        dirpath = _named_dirpath(name)
+        m = _named_meta(name)
+        if not m or m.get("type") != "dir" or not m.get("named"):
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        now = time.time()
+        if len(parts) >= 2 and parts[1]:
+            fname = os.path.basename(parts[1])
+            fpath = os.path.join(dirpath, fname)
+            if fname.endswith(".meta") or not os.path.isfile(fpath):
+                return self._send(404, "not found\n")
+            os.remove(fpath)
+            m["files"].pop(fname, None)
+            m["updated"] = now
+            json.dump(m, open(_named_meta_path(name), "w"))
+            return self._send(200, "deleted\n")
+        shutil.rmtree(dirpath, ignore_errors=True)
+        return self._send(200, "deleted\n")
+
+    def _named_edit(self, parts, append):
+        """PUT/PATCH /n/<name>/<file> — replace or append text in a named dir."""
+        name = parts[0]
+        if len(parts) < 2 or not parts[1]:
+            return self._send(400, json.dumps({"error": "file required"}), "application/json")
+        fname = os.path.basename(parts[1])
+        dirpath = _named_dirpath(name)
+        m = _named_meta(name)
+        now = time.time()
+        if not m or m.get("type") != "dir" or not m.get("named"):
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        if m.get("expires", 0) < now:
+            shutil.rmtree(dirpath, ignore_errors=True)
+            return self._send(404, json.dumps({"error": "expired"}), "application/json")
+        fpath = os.path.join(dirpath, fname)
+        if fname.endswith(".meta") or not os.path.isfile(fpath):
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        ctype = m.get("files", {}).get(fname) or ""
+        if not ctype.startswith("text/") and not ctype.startswith("application/json"):
+            return self._send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
+        data = self._read_body()
+        if data is None:
+            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+        if append:
+            cur = os.path.getsize(fpath)
+            if cur + len(data) > MAX_FILE:
+                return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            with open(fpath, "ab") as f:
+                f.write(data)
+        else:
+            if len(data) > MAX_FILE:
+                return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            with open(fpath, "wb") as f:
+                f.write(data)
+        m["updated"] = now
+        json.dump(m, open(_named_meta_path(name), "w"))
+        evict(THROW_POOL_SIZE)
+        return self._named_response(name, dirpath, m)
+
     def _dir_response(self, fid, dirpath, meta):
         """JSON response describing a dir."""
         files = []
@@ -816,6 +1324,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._rate(): return
         path = self.path.lstrip("/").rstrip("/")
         parts = path.split("/")
+        # DELETE /n/<name>[/<file>]
+        if parts and parts[0] == NAMED_DIR and len(parts) >= 2 and parts[1]:
+            return self._named_delete(parts[1:])
         fid = parts[0]
         dirpath = os.path.join(ROOT, os.path.basename(fid))
         # DELETE /<dirid>/<file> -> remove one file from a dir
@@ -869,7 +1380,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         """Replace text content (edit)."""
         if not self._rate(): return
-        fid = self.path.lstrip("/").split("/")[0]
+        p = self.path.lstrip("/")
+        parts = p.split("/")
+        # PUT /n/<name>/<file>
+        if parts and parts[0] == NAMED_DIR and len(parts) >= 3:
+            return self._named_edit(parts[1:], append=False)
+        fid = parts[0]
         if not fid or fid.endswith(".meta"):
             return self._send(404, json.dumps({"error": "not found"}), "application/json")
         fp = _id_path(fid)
@@ -890,7 +1406,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         """Append text to existing content."""
         if not self._rate(): return
-        fid = self.path.lstrip("/").split("/")[0]
+        p = self.path.lstrip("/")
+        parts = p.split("/")
+        # PATCH /n/<name>/<file>
+        if parts and parts[0] == NAMED_DIR and len(parts) >= 3:
+            return self._named_edit(parts[1:], append=True)
+        fid = parts[0]
         if not fid or fid.endswith(".meta"):
             return self._send(404, json.dumps({"error": "not found"}), "application/json")
         fp = _id_path(fid)
@@ -953,6 +1474,29 @@ Base URL: {PUBLIC_BASE}
    DELETE {PUBLIC_BASE}/<dirid>       -> delete the whole dir
    A dir is deleted {TTL_HOURS}h after the latest upload (capped at 24h
    total). LIST it with GET to see current files + expiry.
+
+   CREATE a NAMED DIR (rememberable, team-reusable, fixed lifetime):
+   POST {PUBLIC_BASE}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]
+   -> create-or-get: returns the existing dir if the name is taken.
+   Naming: 5-32 chars, [a-z0-9-], must contain a letter, not a reserved
+   word. Flags (listed/tag/ttl) apply only on first creation.
+   - &listed=1  -> appears in the public listing GET {PUBLIC_BASE}/n
+   - &tag=<t>   -> up to 5 discoverability tags (lowercase [a-z0-9-])
+   - &ttl=<h|d> -> FIXED lifetime, clamped to [4h, 7d]; default 7 days.
+     Nothing extends it: add/edit/delete do not move expires_at.
+   Reach a named dir at {PUBLIC_BASE}/n/<name>:
+   POST {PUBLIC_BASE}/n/<name>          -> add files (multipart)
+   GET  {PUBLIC_BASE}/n/<name>          -> JSON (agents) / HTML (browsers)
+   GET  {PUBLIC_BASE}/n/<name>/<file>   -> fetch one file
+   GET  {PUBLIC_BASE}/n/<name>?zip=1    -> whole dir as zip
+   PUT  {PUBLIC_BASE}/n/<name>/<file>   -> replace text (bumps updated)
+   PATCH {PUBLIC_BASE}/n/<name>/<file>  -> append text (bumps updated)
+   DELETE {PUBLIC_BASE}/n/<name>/<file> -> remove one file
+   DELETE {PUBLIC_BASE}/n/<name>        -> delete the whole dir
+   updated_at = last add/edit/delete (does NOT affect the fixed lifetime).
+   LIST named dirs: GET {PUBLIC_BASE}/n  -> only dirs created with listed=1.
+   Filters: ?q=<substring over name or tag>, ?created_after/before=<ts>,
+   ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.
 
 2) DOWNLOAD / VIEW a file:
    GET {PUBLIC_BASE}/<id>
@@ -1083,6 +1627,16 @@ function copyDesc() {{
                 "list_dir": {"method": "GET", "url": PUBLIC_BASE + "/<dirid>", "note": "JSON listing for agents, HTML page for browsers"},
                 "dir_zip": {"method": "GET", "url": PUBLIC_BASE + "/<dirid>?zip=1", "note": "download the whole dir as a zip"},
                 "delete_dir_file": {"method": "DELETE", "url": PUBLIC_BASE + "/<dirid>/<filename>", "note": "remove one file from a dir"},
+                "create_named_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<hours|d>]", "note": "create-or-get a NAMED dir (5-32 chars, [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /n; tags up to 5; ttl = fixed lifetime clamped to [4h,7d] default 7d. Flags honored only on first creation.", "response": {"id": "str", "name": "str", "url": "str", "dir": True, "named": True, "listed": "bool", "tags": ["str"], "files": [], "expires_at": "str", "max_age": "int"}},
+                "add_to_named_dir": {"method": "POST", "url": PUBLIC_BASE + "/n/<name>", "body": "multipart/form-data file parts", "note": "add files to a named dir, bumps updated_at (fixed lifetime unchanged)"},
+                "get_named_dir": {"method": "GET", "url": PUBLIC_BASE + "/n/<name>", "note": "JSON listing for agents, HTML page for browsers"},
+                "get_named_file": {"method": "GET", "url": PUBLIC_BASE + "/n/<name>/<file>", "note": "fetch one file from a named dir"},
+                "named_zip": {"method": "GET", "url": PUBLIC_BASE + "/n/<name>?zip=1", "note": "download the whole named dir as a zip"},
+                "edit_named_file": {"method": "PUT", "url": PUBLIC_BASE + "/n/<name>/<file>", "body": "new text (text files only)", "note": "replace a file in a named dir, bumps updated_at"},
+                "append_named_file": {"method": "PATCH", "url": PUBLIC_BASE + "/n/<name>/<file>", "body": "text to append (text files only)", "note": "append to a file in a named dir, bumps updated_at"},
+                "delete_named_file": {"method": "DELETE", "url": PUBLIC_BASE + "/n/<name>/<file>", "note": "remove one file from a named dir, bumps updated_at"},
+                "delete_named_dir": {"method": "DELETE", "url": PUBLIC_BASE + "/n/<name>", "note": "delete a whole named dir"},
+                "list_named_dirs": {"method": "GET", "url": PUBLIC_BASE + "/n", "note": "list dirs created with listed=1; filters ?q=<sub> (name or tag), ?created_after/before=<ts>, ?updated_after/before=<ts>; sort ?sort=created|updated|name&order=asc|desc (default created desc)"},
                 "delete": {"method": "DELETE", "url": PUBLIC_BASE + "/<id>"},
                 "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content"},
                 "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)"},

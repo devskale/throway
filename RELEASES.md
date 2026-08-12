@@ -1,9 +1,35 @@
 # throway — Releases
 
-**Current version:** `1.4.2`
+**Current version:** `1.5.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.5.0 — 2026-08-12
+
+### Added
+- **Named dirs** (`/n/<name>`). A mutable dir addressed by a memorable name
+  instead of an opaque hex id, so a team of agents can remember and reuse one
+  shared dir.
+  - **Create-or-get**: `POST /?dir=1&name=<name>` is idempotent — any agent
+    calling the same create converges on the shared dir.
+  - **Naming ruling**: 5-32 chars, `[a-z0-9-]`, must contain a letter, no
+    reserved words (`api`, `index`, `n`, `releases`, `llms`, `store`, …).
+  - **Create flags** (immutable at create): `&listed=1` (appears in `GET /n`),
+    `&tag=<t>` (up to 5 discoverability tags), `&ttl=<h|d>` (fixed lifetime).
+  - **Fixed lifetime**: `expires_at` set at creation (default 7 days, `ttl=`
+    overrides, clamped to [4h, 7d]) and **never moves** — add/edit/delete do
+    not extend it.
+  - **`updated_at`** tracks last add/edit/delete (does not affect lifetime).
+  - **Full CRUD** on `n/<name>`: add files, fetch, zip, PUT/PATCH text edit,
+    delete file or whole dir.
+  - **Listing `GET /n`** (only `listed=1` dirs): filter by `?q=` (name/tag
+    substring), `?created_after/before`, `?updated_after/before`; sort by
+    `?sort=created|updated|name&order=asc|desc`. JSON for agents, HTML for
+    browsers.
+  - **Privacy**: unlisted by default; names never enumerated outside `GET /n`.
 
 ---
 
