@@ -384,14 +384,30 @@ class Handler(BaseHTTPRequestHandler):
             if os.path.isfile(fp):
                 rows.append((f, os.path.getsize(fp)))
         lis = "\n".join(
-            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> ({s} B)</li>'
+            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> <span>{s} B</span></li>'
             for f, s in rows)
-        h = ("<!doctype html><html><head><meta charset=utf-8>"
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"<title>throway bundle {fid}</title>"
-             "<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#222}"
-             "a{color:#2563eb;text-decoration:none}</style></head><body>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem;color:var(--ink)}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center}"
+             "li a{color:var(--ink);text-decoration:none}"
+             "li a:hover{color:var(--accent)}"
+             "li span{color:var(--muted);font-size:.85rem}"
+             "a.btn{display:inline-block;margin-top:1rem;background:var(--accent);color:#fff;text-decoration:none;font-size:.9rem;padding:.5rem 1rem;border-radius:8px}"
+             "a.btn:hover{background:#1d4ed8}"
+             "a.back{display:inline-block;margin-top:1rem;margin-left:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
              f"<h1>Bundle {fid}</h1><ul>{lis}</ul>"
-             f"<p><a href='?download=1'>download as zip</a></p></body></html>")
+             f"<a class=btn href='?download=1'>download as zip</a>"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
         self._send(200, h, "text/html")
 
     def do_HEAD(self):
@@ -770,12 +786,28 @@ class Handler(BaseHTTPRequestHandler):
         lis = "\n".join(
             f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> ({s} B)</li>'
             for f, s in rows)
-        h = ("<!doctype html><html><head><meta charset=utf-8>"
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"<title>throway dir {fid}</title>"
-             "<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#222}"
-             "a{color:#2563eb;text-decoration:none}</style></head><body>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center}"
+             "li a{color:var(--ink);text-decoration:none}"
+             "li a:hover{color:var(--accent)}"
+             "li span{color:var(--muted);font-size:.85rem}"
+             "a.btn{display:inline-block;margin-top:1rem;background:var(--accent);color:#fff;text-decoration:none;font-size:.9rem;padding:.5rem 1rem;border-radius:8px}"
+             "a.btn:hover{background:#1d4ed8}"
+             "a.back{display:inline-block;margin-top:1rem;margin-left:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
              f"<h1>Dir {fid}</h1><ul>{lis}</ul>"
-             f"<p><a href='?zip=1'>download as zip</a></p></body></html>")
+             f"<a class=btn href='?zip=1'>download as zip</a>"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
         self._send(200, h, "text/html")
 
     def do_DELETE(self):
@@ -962,21 +994,29 @@ An agent should read /api to discover current limits before acting.
             return self._send(404, "release notes unavailable\n")
         if self._is_agent():
             return self._send(200, md, "text/markdown; charset=utf-8")
-        # browsers: render as a simple HTML page (escape + minimal md-ish styling)
+        # browsers: render as an HTML page (escape + minimal md-ish styling)
         esc = _html_escape(md)
-        h = f"""<!doctype html><html><head><meta charset=utf-8>
+        h = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content='width=device-width,initial-scale=1'>
 <title>throway — releases v{VERSION}</title>
 <style>
-  body {{ font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1.5rem; color: #222; line-height: 1.6; }}
-  h1 {{ font-size: 1.6rem; border-bottom: 2px solid #2563eb; padding-bottom: .3rem; }}
-  h2 {{ font-size: 1.2rem; margin-top: 1.8rem; color: #2563eb; }}
-  pre {{ background: #f4f4f5; border: 1px solid #e4e4e7; border-radius: 6px; padding: .8rem; overflow-x: auto; }}
-  code {{ background: #f4f4f5; padding: .1rem .3rem; border-radius: 4px; font-size: .9em; }}
-  a {{ color: #2563eb; }}
-</style></head><body>
+  :root{{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}}
+  *{{box-sizing:border-box}}
+  body{{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;min-height:100vh}}
+  main{{max-width:820px;margin:0 auto;padding:3rem 1.5rem 5rem}}
+  h1{{font-size:1.6rem;border-bottom:2px solid var(--accent);padding-bottom:.3rem}}
+  h2{{font-size:1.2rem;margin-top:1.8rem;color:var(--accent)}}
+  pre{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem;overflow-x:auto;font-family:ui-monospace,monospace;font-size:13px}}
+  code{{background:var(--card);padding:.1rem .3rem;border-radius:4px;font-size:.9em;color:var(--accent)}}
+  a{{color:var(--accent)}}
+  .back{{display:inline-block;margin-bottom:1rem;color:var(--muted);text-decoration:none;font-size:.85rem}}
+  .back:hover{{color:var(--accent)}}
+  .raw{{color:var(--muted);font-size:.85rem}}
+</style></head><body><main>
+<a class=back href="{PREFIX}/">← throway</a>
 <pre>{esc}</pre>
-<p style="color:#666;font-size:.85rem">raw: <a href="{PREFIX}/releases?raw=1">markdown</a></p>
-</body></html>"""
+<p class=raw>raw: <a href="{PREFIX}/releases?raw=1">markdown</a></p>
+</main></body></html>"""
         self._send(200, h, "text/html; charset=utf-8")
 
     def _copy_for_agents(self):
@@ -1079,83 +1119,134 @@ def _index(self):
     tot_files = cum["files"]
     tot_bytes = cum["bytes"]
     pct = 100.0 * actual / THROW_POOL_SIZE
-    h = ("<!doctype html><html><head><meta charset=utf-8><title>throway</title>"
+    h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+         "<meta name=viewport content='width=device-width,initial-scale=1'>"
+         "<title>throway — disposable file store</title>"
          "<style>"
-         "body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#222;line-height:1.5}"
-         "h1{font-size:1.6rem;margin-bottom:.2rem}"
-         ".stats{background:#f4f4f5;border:1px solid #e4e4e7;border-radius:8px;padding:.8rem 1rem;margin:.5rem 0 1rem}"
-         ".stats div{padding:.15rem 0}"
-         ".stats b{color:#111}"
-         ".stats .pct{color:#2563eb;font-weight:600}"
-         "form{display:flex;gap:.5rem;align-items:center;margin:1rem 0;padding:1rem;background:#fafafa;border:1px solid #e4e4e7;border-radius:8px}"
-         "input[type=file]{font-size:.9rem}"
-         "button,input[type=submit]{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:.45rem .9rem;font-size:.9rem;cursor:pointer}"
-         "button:hover,input[type=submit]:hover{background:#1d4ed8}"
-         "a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}"
-         ".hint{color:#666;font-size:.9rem;display:flex;align-items:center;gap:.4rem}"
-         ".cp{display:inline-flex;align-items:center;gap:.3rem;cursor:pointer;color:#2563eb;background:none;border:0;font-size:.9rem;padding:.2rem .4rem;border-radius:6px}"
-         ".cp:hover{background:#eff6ff}"
-         ".cp svg{width:16px;height:16px}"
-         "details.agents{margin:1rem 0;background:#fafafa;border:1px solid #e4e4e7;border-radius:8px;padding:.5rem .9rem}"
-         "details.agents summary{cursor:pointer;font-weight:600;color:#333}"
-         "details.agents pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;color:#444;margin:.5rem 0 0;padding-top:.5rem;border-top:1px solid #eee}"
-         "#result{margin:1rem 0;padding:1rem;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;display:none}"
-         "#result a{word-break:break-all}"
-         "#result .row{padding:.15rem 0}"
-         "#result .lbl{color:#555;font-size:.75rem;text-transform:uppercase;letter-spacing:.02em}"
-         "#status{color:#666;font-size:.9rem}"
-         "</style></head><body>"
-         f"<h1>throway</h1>"
-         f"<div class='stats'>"
-         f"<div><b>actual:</b> {len(rows)} files, {_fmt_size(actual)} · <span class='pct'>{pct:.0f}%</span> of max</div>"
-         f"<div><b>total:</b> {tot_files} files, {_fmt_size(tot_bytes)} ever</div>"
-         f"</div>"
-         f"<form id='upload' method='post' action='{PREFIX}/' enctype='multipart/form-data'>"
-         "<input type='file' name='f' multiple required><input type='submit' value='Upload'></form>"
+         ":root{--bg:#ffffff;--card:#fafafa;--card2:#f4f4f5;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+         "*{box-sizing:border-box}"
+         "body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.55;min-height:100vh}"
+         "main{max-width:840px;margin:0 auto;padding:3rem 1.5rem 5rem}"
+         "header{display:flex;align-items:baseline;gap:.75rem;margin-bottom:.25rem}"
+         "h1{font-size:2rem;margin:0;letter-spacing:-.02em}"
+         "h1 .dot{color:var(--accent)}"
+         ".version{font-size:.8rem;color:var(--muted);background:var(--card2);border:1px solid var(--line);padding:.15rem .5rem;border-radius:999px}"
+         "p.lede{color:var(--muted);max-width:60ch;margin:.5rem 0 1.5rem}"
+         "ul.feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem;list-style:none;padding:0;margin:0 0 1.5rem}"
+         "ul.feats li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem;font-size:.9rem}"
+         "ul.feats li b{color:var(--accent)}"
+         "ul.feats li small{display:block;color:var(--muted);margin-top:.15rem}"
+         "#drop{border:2px dashed #d1d5db;border-radius:14px;padding:2.2rem 1.5rem;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;background:var(--card);margin-bottom:.8rem}"
+         "#drop:hover,#drop.drag{border-color:var(--accent);background:#eff6ff}"
+         "#drop .big{font-size:1.05rem;font-weight:600}"
+         "#drop .sub{color:var(--muted);font-size:.85rem;margin-top:.2rem}"
+         "#drop input{display:none}"
+         "#fileList{margin:.4rem 0 .8rem;font-size:.85rem;color:var(--muted)}"
+         "#fileList span{display:inline-block;background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:.15rem .5rem;margin:.15rem;font-size:.8rem}"
+         ".controls{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
+         "label.mode{display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted);cursor:pointer}"
+         "label.mode input{margin:0}"
+         "button,.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:.6rem 1.2rem;font-size:.95rem;font-weight:600;cursor:pointer;transition:background .15s}"
+         "button:hover,.btn:hover{background:#1d4ed8}"
+         "button:active{transform:translateY(1px)}"
+         "button:disabled{opacity:.5;cursor:not-allowed}"
+         "#status{margin:.8rem 0;font-size:.9rem}"
+         "#status.err{color:#dc2626}"
+         "#result{margin:1rem 0;padding:1rem 1.2rem;border-radius:12px;background:#eff6ff;border:1px solid #bfdbfe;display:none}"
+         "#result h3{margin:.2rem 0 .6rem;font-size:1.05rem}"
+         "#result .row{padding:.25rem 0;font-size:.9rem}"
+         "#result .lbl{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin-right:.5rem}"
+         "#result a{color:var(--accent);word-break:break-all}"
+         "#result .urlbox{display:flex;gap:.4rem;align-items:center;background:#fff;border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;margin:.3rem 0}"
+         "#result .urlbox input{flex:1;background:none;border:0;color:var(--ink);font-size:.85rem;font-family:ui-monospace,monospace;outline:none}"
+         "#result .files{font-size:.85rem;color:var(--muted)}"
+         "#result .files div{padding:.15rem 0}"
+         "#result .files a{color:var(--ink)}"
+         "#result .files a:hover{color:var(--accent)}"
+         ".stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.6rem;margin:1.4rem 0}"
+         ".stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem}"
+         ".stat b{font-size:1.15rem;display:block}"
+         ".stat span{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}"
+         ".meter{height:6px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:.4rem}"
+         ".meter i{display:block;height:100%;background:var(--accent);border-radius:999px}"
+         "nav.links{display:flex;gap:1.2rem;margin-top:2rem;font-size:.88rem;flex-wrap:wrap}"
+         "nav.links a{color:var(--muted);text-decoration:none}"
+         "nav.links a:hover{color:var(--accent)}"
+         "details.agents{margin-top:1.5rem;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem 1rem}"
+         "details.agents summary{cursor:pointer;font-weight:600;color:var(--accent)}"
+         "details.agents pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;color:var(--muted);margin:.6rem 0 0;padding-top:.6rem;border-top:1px solid var(--line)}"
+         "@media(max-width:560px){main{padding:2rem 1rem 4rem}}"
+         "</style></head><body><main>"
+         f"<header><h1>throway<span class='dot'>.</span></h1>"
+         f"<span class='version'>v{VERSION}</span></header>"
+         "<p class='lede'>A disposable file store for agents and humans. Upload a file, a"
+         " bundle, or a mutable dir — share a short-lived URL. No accounts, no setup,"
+         " nothing permanent.</p>"
+         "<ul class='feats'>"
+         "<li><b>Files</b> — one URL per upload<small>inline for images &amp; text, download otherwise</small></li>"
+         "<li><b>Bundles</b> — a whole mini-website<small>index.html renders inline; zip for agents</small></li>"
+         "<li><b>Dirs</b> — keep adding files<small>deleted 4h after last upload (max 24h)</small></li>"
+         "</ul>"
+         "<div id='drop'>"
+         "<div class='big'>Drop files here, or click to choose</div>"
+         "<div class='sub'>Select one or many files</div>"
+         "<input type='file' id='file' name='f' multiple>"
+         "</div>"
+         "<div id='fileList'></div>"
+         "<div class='controls'>"
+         "<button id='up'>Upload</button>"
+         "<label class='mode'><input type='checkbox' id='dirMode'>create a <b>dir</b> (mutable)</label>"
+         "<span style='flex:1'></span>"
+         "<span style='color:var(--muted);font-size:.8rem'>files live ~" + str(TTL_HOURS) + "h</span>"
+         "</div>"
          "<div id='status'></div>"
          "<div id='result'></div>"
-         f"<p class='hint'>Files live ~{TTL_HOURS}h. "
-         f"<a href='{PREFIX}/api'>API</a> · <a href='{PREFIX}/write_for_agents'>description</a> · "
-         f"<a href='{PREFIX}/releases'>releases v{VERSION}</a> · "
-         "<button class='cp' id='cpBtn' title='Copy agent description'>"
-         "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='14' height='14' x='8' y='8' rx='2' ry='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/></svg>"
-         "copy for agents</button></p>"
+         "<div class='stats'>"
+         f"<div class='stat'><b>{len(rows)}</b><span>files live now</span></div>"
+         f"<div class='stat'><b>{_fmt_size(actual)}</b><span>stored</span>"
+         f"<div class='meter'><i style='width:{min(100,pct):.0f}%'></i></div></div>"
+         f"<div class='stat'><b>{tot_files}</b><span>files ever</span></div>"
+         f"<div class='stat'><b>{_fmt_size(tot_bytes)}</b><span>uploaded ever</span></div>"
+         "</div>"
+         "<nav class='links'>"
+         f"<a href='{PREFIX}/api'>API</a>"
+         f"<a href='{PREFIX}/write_for_agents'>for agents</a>"
+         f"<a href='{PREFIX}/releases'>releases</a>"
+         "</nav>"
          "<details class='agents'><summary>Agent info</summary><pre>" + _html_escape(self._agent_description()) + "</pre></details>"
          "<script>"
-         "var form=document.getElementById('upload');"
-         "form.addEventListener('submit',function(e){"
-         "e.preventDefault();"
-         "var fd=new FormData(form);"
-         "var st=document.getElementById('status');var r=document.getElementById('result');"
-         "st.textContent='Uploading…';r.style.display='none';"
-         "fetch(form.action,{method:'POST',body:fd})"
-         ".then(function(res){return res.json().then(function(d){return {ok:res.ok,data:d};});})"
-         ".then(function(o){"
-         "if(!o.ok){st.textContent='Error: '+(o.data.error||'upload failed');return;}"
-         "var d=o.data;"
-         "r.style.display='block';"
-         "r.innerHTML='<div class=\"row\"><span class=\"lbl\">URL</span><br><a href=\"'+d.url+'\" target=\"_blank\">'+d.url+'</a></div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Name</span> '+d.name+'</div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Size</span> '+d.size+' B</div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Type</span> '+d.content_type+'</div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Expires</span> '+d.expires_at+'</div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Download</span> <a href=\"'+d.url+'?download=1\">force download</a></div>';"
-         "st.textContent='';"
-         "form.reset();"
-         "})"
-         ".catch(function(err){st.textContent='Error: '+err;});"
-         "});"
-         "document.getElementById('cpBtn').addEventListener('click',function(){"
-         "fetch('" + PREFIX + "/write_for_agents').then(function(res){return res.text();}).then(function(t){"
-         "navigator.clipboard.writeText(t).then(function(){"
-         "var b=document.getElementById('cpBtn');var old=b.innerHTML;"
-         "b.innerHTML='<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 6 9 17l-5-5\"/></svg> copied';"
-         "setTimeout(function(){b.innerHTML=old;},1500);"
-         "});"
-         "});"
+         "var drop=document.getElementById('drop'),file=document.getElementById('file'),list=document.getElementById('fileList');"
+         "var up=document.getElementById('up'),status=document.getElementById('status'),res=document.getElementById('result');"
+         "var dirMode=document.getElementById('dirMode');"
+         "function showFiles(){var n=file.files.length;if(!n){list.textContent='';return;}"
+         "list.innerHTML='';for(var i=0;i<n;i++){var s=document.createElement('span');s.textContent=file.files[i].name;list.appendChild(s);}}"
+         "file.addEventListener('change',showFiles);"
+         "['dragover','dragenter'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.add('drag');});});"
+         "drop.addEventListener('dragleave',function(){drop.classList.remove('drag');});"
+         "drop.addEventListener('drop',function(ev){ev.preventDefault();drop.classList.remove('drag');file.files=ev.dataTransfer.files;showFiles();});"
+         "drop.addEventListener('click',function(){file.click();});"
+         "up.addEventListener('click',function(){if(!file.files.length){status.textContent='Choose at least one file';status.className='err';return;}"
+         "var fd=new FormData();for(var i=0;i<file.files.length;i++)fd.append('f',file.files[i]);"
+         "var url='" + PREFIX + "/'+(dirMode.checked?'?dir=1':'');"
+         "status.textContent='Uploading…';status.className='';res.style.display='none';up.disabled=true;"
+         "fetch(url,{method:'POST',body:fd}).then(function(r){return r.json().then(function(d){return {ok:r.ok,data:d};});})"
+         ".then(function(o){up.disabled=false;if(!o.ok){status.textContent='Error: '+(o.data.error||'upload failed');status.className='err';return;}"
+         "var d=o.data;status.textContent='';res.style.display='block';"
+         "var html='<h3>Done ✓</h3>'"
+         "+'<div class=row><span class=lbl>URL</span><div class=urlbox><input readonly value=\"'+d.url+'\"><button class=btn onclick=\"navigator.clipboard.writeText(this.previousElementSibling.value)\">copy</button></div></div>'"
+         "+(d.dir?('<div class=row><span class=lbl>Dir</span> '+d.files.length+' files · expires '+d.expires_at+'</div>')"
+         "+'<div class=files>'+d.files.map(function(f){return '<div>• <a href=\"'+f.url+'\" target=_blank>'+f.name+'</a> ('+f.size+' B)</div>';}).join('')+'</div>')"
+         ":d.bundle?('<div class=row><span class=lbl>Bundle</span> '+d.files.length+' files · expires '+d.expires_at+'</div>'"
+         "+'<div class=files>'+d.files.map(function(f){return '<div>• <a href=\"'+f.url+'\" target=_blank>'+f.name+'</a></div>';}).join('')+'</div>')"
+         ":('<div class=row><span class=lbl>Name</span> '+d.name+'</div>'"
+         "+'<div class=row><span class=lbl>Size</span> '+d.size+' B</div>'"
+         "+'<div class=row><span class=lbl>Type</span> '+d.content_type+'</div>'"
+         "+'<div class=row><span class=lbl>Expires</span> '+d.expires_at+'</div>');"
+         "res.innerHTML=html;file.value='';showFiles();"
+         "}).catch(function(err){up.disabled=false;status.textContent='Error: '+err;status.className='err';});"
          "});"
          "</script>"
-         "</body></html>")
+         "</main></body></html>")
     self._send(200, h, "text/html")
 
 
