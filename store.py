@@ -257,7 +257,9 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        # HEAD: send headers + Content-Length but no body
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _rate(self):
         if not allowed(self.client_address[0]):
@@ -296,8 +298,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", "inline")
             self.end_headers()
         with open(fp, "rb") as f:
-            while c := f.read(65536):
-                self.wfile.write(c)
+            if self.command != "HEAD":
+                while c := f.read(65536):
+                    self.wfile.write(c)
 
     def _serve_bundle_zip(self, dirpath, fid):
         """Stream the whole bundle as a zip (for agents / ?download=1)."""
@@ -314,7 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition",
                          f'attachment; filename="{fid}.zip"')
         self.end_headers()
-        self.wfile.write(data)
+        if self.command != "HEAD":
+            self.wfile.write(data)
 
     def _bundle_listing(self, dirpath, fid):
         """Simple HTML file listing for a bundle with no index.html."""
@@ -335,6 +339,10 @@ class Handler(BaseHTTPRequestHandler):
              f"<h1>Bundle {fid}</h1><ul>{lis}</ul>"
              f"<p><a href='?download=1'>download as zip</a></p></body></html>")
         self._send(200, h, "text/html")
+
+    def do_HEAD(self):
+        """HEAD = GET headers without the body. Route through do_GET."""
+        self.do_GET()
 
     def do_GET(self):
         if not self._rate(): return
@@ -510,7 +518,9 @@ class Handler(BaseHTTPRequestHandler):
         for (_, d, c), name in zip(clean, names):
             with open(os.path.join(dirpath, name), "wb") as f:
                 f.write(d)
-            files_map[name] = c or "application/octet-stream"
+            # sniff from extension first (like the single-file path), then
+            # fall back to the multipart-provided type, then octet-stream
+            files_map[name] = mimetypes.guess_type(name)[0] or c or "application/octet-stream"
         meta = {
             "bundle": True,
             "expires": time.time() + TTL_HOURS * 3600,
