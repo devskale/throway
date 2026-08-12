@@ -262,9 +262,22 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _rate(self):
-        if not allowed(self.client_address[0]):
+        if not allowed(self._client_ip()):
             self._send(429, "rate limit exceeded\n"); return False
         return True
+
+    def _client_ip(self):
+        """Real client IP. Behind nginx the socket peer is 127.0.0.1, so use
+        the forwarded headers nginx sets (X-Real-IP / X-Forwarded-For)."""
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            ip = xff.split(",")[0].strip()
+            if ip:
+                return ip
+        xri = self.headers.get("X-Real-IP")
+        if xri:
+            return xri.strip()
+        return self.client_address[0]
 
     def _is_agent(self):
         """True if the requester looks like a non-browser client (curl/wget/python/agent)."""
@@ -303,22 +316,35 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(c)
 
     def _serve_bundle_zip(self, dirpath, fid):
-        """Stream the whole bundle as a zip (for agents / ?download=1)."""
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        """Stream the whole bundle as a zip (for agents / ?download=1).
+        Writes to a temp file so we don't hold the whole zip in RAM, then
+        streams it out in chunks."""
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(prefix="throwayzip_", suffix=".zip", delete=True)
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
             for f in sorted(os.listdir(dirpath)):
                 if f.endswith(".meta"):
                     continue
                 z.write(os.path.join(dirpath, f), arcname=f)
-        data = buf.getvalue()
+        size = tmp.tell()
         self.send_response(200)
         self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(size))
         self.send_header("Content-Disposition",
                          f'attachment; filename="{fid}.zip"')
         self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(data)
+        if self.command == "HEAD":
+            tmp.close()
+            return
+        tmp.seek(0)
+        try:
+            while True:
+                chunk = tmp.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        finally:
+            tmp.close()
 
     def _bundle_listing(self, dirpath, fid):
         """Simple HTML file listing for a bundle with no index.html."""
@@ -501,12 +527,16 @@ class Handler(BaseHTTPRequestHandler):
     def _store_bundle(self, files):
         """Store multiple files as a bundle directory; return JSON response."""
         clean = []
+        total = 0
         for n, d, c in files:
             safe = _safe_name(n)
             if not safe:
                 continue
             if len(d) > MAX_FILE:
                 return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+            total += len(d)
+            if total > THROW_POOL_SIZE:
+                return self._send(413, json.dumps({"error": "bundle too large (pool max 100MB)"}), "application/json")
             clean.append((safe, d, c))
         if not clean:
             return self._send(400, json.dumps({"error": "no valid file parts"}), "application/json")
