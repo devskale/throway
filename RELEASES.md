@@ -1,9 +1,25 @@
 # throway — Releases
 
-**Current version:** `1.5.0`
+**Current version:** `1.6.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.6.0 — 2026-08-12
+
+### Added
+- **Modular, API-gatherable help** (`/help`). Instead of one giant
+  copy-paste blob, help is split into topics served individually at
+  `/help/<topic>` (`overview`, `files`, `bundles`, `dirs`, `named_dirs`,
+  `view`, `edit`, `delete`, `limits`, `contract`).
+  - `GET /help` → JSON index of topics (for agents) or an HTML list (browsers).
+  - `GET /help/<topic>` → that topic as plain text (agents) or a rendered
+    page (browsers). Unknown topics → 404.
+  - Agents fetch only the pieces they need instead of one big blob.
+- **Single source of truth**: the `/write_for_agents` description and the
+  `/help/*` topics are assembled from the same `HELP` dict — no duplication.
 
 ---
 

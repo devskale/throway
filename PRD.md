@@ -33,6 +33,7 @@ alike.
 - **100 req/min** per IP
 - Machine-readable contract at `/api`
 - Description for agents at `/write_for_agents` + copyable at `/copy_for_agents`
+- **Modular help** at `/help` (JSON index for agents) + `/help/<topic>` (one topic each)
 
 ### Should
 - Simple raw-body `POST` + standard multipart `POST`
@@ -69,6 +70,8 @@ alike.
 | DELETE | `/throway/<id>` | delete file / bundle / dir |
 | DELETE | `/throway/<dirid>/<file>` | remove one file from a dir |
 | GET | `/throway/api` | contract (JSON) |
+| GET | `/throway/help` | modular help index (JSON for agents) |
+| GET | `/throway/help/<topic>` | one help topic (plain text for agents) |
 | GET | `/throway/write_for_agents` | description (plain text) |
 | GET | `/throway/copy_for_agents` | copyable description (HTML) |
 

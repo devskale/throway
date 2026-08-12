@@ -80,6 +80,8 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 | `DELETE` | `/throway/<id>` | delete file / bundle / dir |
 | `DELETE` | `/throway/<dirid>/<file>` | remove one file from a dir |
 | `GET` | `/throway/api` | machine-readable contract (JSON) |
+| `GET` | `/throway/help` | modular help index (JSON for agents, HTML for browsers) |
+| `GET` | `/throway/help/<topic>` | one help topic (plain text for agents) |
 | `GET` | `/throway/write_for_agents` | agent description (plain text) |
 | `GET` | `/throway/copy_for_agents` | copy-pasteable agent description (HTML) |
 
@@ -118,6 +120,13 @@ machine-readable contract:
 
 ```bash
 curl "https://lubu.skale.dev/throway/api"
+```
+
+Help is **modular** — fetch an index, then pull only the topics you need:
+
+```bash
+curl -A "curl" "https://lubu.skale.dev/throway/help"          # JSON topic index
+curl -A "curl" "https://lubu.skale.dev/throway/help/named_dirs"  # one topic
 ```
 
 See **[`AGENTS.md`](AGENTS.md)** for the complete agent guide.

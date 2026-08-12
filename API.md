@@ -222,3 +222,15 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 curl "https://lubu.skale.dev/throway/api"
 ```
 Returns current limits + endpoint descriptions as JSON.
+
+## Help (modular, API-gatherable)
+```bash
+# JSON index of help topics (agents)
+curl -A "curl" "https://lubu.skale.dev/throway/help"
+
+# one topic as plain text
+curl -A "curl" "https://lubu.skale.dev/throway/help/named_dirs"
+```
+Topics: `overview`, `files`, `bundles`, `dirs`, `named_dirs`, `view`,
+`edit`, `delete`, `limits`, `contract`. Browsers get an HTML index / page;
+unknown topics return `404`. Pull only the topics you need.

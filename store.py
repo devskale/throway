@@ -51,7 +51,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -384,6 +384,154 @@ def _parse_tags(query_tags):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Modular help — served individually at /help/<topic> so agents can gather
+# only the pieces they need, and assembled into the full plain-text agent
+# description. Single source of truth: this dict.
+# Bodies use .format() placeholders ({PUBLIC_BASE}, {TTL_HOURS}, …) resolved
+# at serve time against the live values.
+# ---------------------------------------------------------------------------
+HELP_ORDER = ["overview", "files", "bundles", "dirs", "named_dirs", "view", "edit", "delete", "limits", "contract"]
+
+HELP = {
+    "overview": {
+        "title": "Overview",
+        "summary": "What throway is and isn't",
+        "body": """WHAT IT IS FOR
+- Sharing a file (image, text, binary) by giving someone a URL.
+- Sharing a BUNDLE of files (e.g. an html/css/js website) under one URL.
+- Sharing a mutable DIR: keep adding files to one URL; the dir is deleted
+  4h after the latest upload (max 24h total).
+- Sharing a NAMED DIR: a rememberable, team-reusable dir under /n/<name>.
+- A scratchpad for text: create a note, append to it, rewrite it.
+- Passing data between agents / machines without setting up accounts.
+
+WHAT IT IS NOT
+- Not permanent storage. Files are automatically deleted after {TTL_HOURS} hours.
+- Not private. Anyone who has a URL can read, edit, or delete that file.
+- Not a database. It is a flat, throwaway store.
+
+Base URL: {PUBLIC_BASE}""",
+    },
+    "files": {
+        "title": "Upload a file",
+        "summary": "POST a file, get a URL back",
+        "body": """UPLOAD a file (raw body or multipart):
+   POST {PUBLIC_BASE}/?name=filename.ext
+   with the file bytes as the body.
+   -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.""",
+    },
+    "bundles": {
+        "title": "Upload a bundle",
+        "summary": "Multiple files under one URL (a mini website)",
+        "body": """UPLOAD a BUNDLE (multiple files, e.g. a website):
+   POST {PUBLIC_BASE}/   with multipart/form-data containing 2+ file parts.
+   -> Returns JSON: id, url, bundle:true, files:[{{name,url,size,content_type}}...].
+   The bundle URL serves index.html inline (or a zip for agents).
+   Each file is reachable at {PUBLIC_BASE}/<id>/<filename>.""",
+    },
+    "dirs": {
+        "title": "Mutable dirs",
+        "summary": "Create a dir, keep adding files (sliding 4h, max 24h)",
+        "body": """CREATE a DIR (mutable, keep adding files):
+   POST {PUBLIC_BASE}/?dir=1   -> create an empty dir: {{id, url, dir:true, files:[]}}
+   POST {PUBLIC_BASE}/<dirid>  -> add files (multipart) to that dir, resets TTL
+   GET  {PUBLIC_BASE}/<dirid>  -> JSON listing (agents) / HTML page (browsers)
+   GET  {PUBLIC_BASE}/<dirid>/<file> -> fetch one file
+   GET  {PUBLIC_BASE}/<dirid>?zip=1  -> download the whole dir as a zip
+   DELETE {PUBLIC_BASE}/<dirid>/<file> -> remove one file
+   DELETE {PUBLIC_BASE}/<dirid>       -> delete the whole dir
+   A dir is deleted {TTL_HOURS}h after the latest upload (capped at 24h
+   total). LIST it with GET to see current files + expiry.""",
+    },
+    "named_dirs": {
+        "title": "Named dirs",
+        "summary": "Rememberable, team-reusable dirs under /n/<name>",
+        "body": """CREATE a NAMED DIR (rememberable, team-reusable, fixed lifetime):
+   POST {PUBLIC_BASE}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]
+   -> create-or-get: returns the existing dir if the name is taken.
+   Naming: 5-32 chars, [a-z0-9-], must contain a letter, not a reserved
+   word. Flags (listed/tag/ttl) apply only on first creation.
+   - &listed=1  -> appears in the public listing GET {PUBLIC_BASE}/n
+   - &tag=<t>   -> up to 5 discoverability tags (lowercase [a-z0-9-])
+   - &ttl=<h|d> -> FIXED lifetime, clamped to [4h, 7d]; default 7 days.
+     Nothing extends it: add/edit/delete do not move expires_at.
+   Reach a named dir at {PUBLIC_BASE}/n/<name>:
+   POST {PUBLIC_BASE}/n/<name>          -> add files (multipart)
+   GET  {PUBLIC_BASE}/n/<name>          -> JSON (agents) / HTML (browsers)
+   GET  {PUBLIC_BASE}/n/<name>/<file>   -> fetch one file
+   GET  {PUBLIC_BASE}/n/<name>?zip=1    -> whole dir as zip
+   PUT  {PUBLIC_BASE}/n/<name>/<file>   -> replace text (bumps updated)
+   PATCH {PUBLIC_BASE}/n/<name>/<file>  -> append text (bumps updated)
+   DELETE {PUBLIC_BASE}/n/<name>/<file> -> remove one file
+   DELETE {PUBLIC_BASE}/n/<name>        -> delete the whole dir
+   updated_at = last add/edit/delete (does NOT affect the fixed lifetime).
+   LIST named dirs: GET {PUBLIC_BASE}/n  -> only dirs created with listed=1.
+   Filters: ?q=<substring over name or tag>, ?created_after/before=<ts>,
+   ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.""",
+    },
+    "view": {
+        "title": "Download / view",
+        "summary": "Inline vs download; bundle/dir behavior",
+        "body": """DOWNLOAD / VIEW a file:
+   GET {PUBLIC_BASE}/<id>
+   Images and text-like types (text, html, json, pdf, svg) render inline
+   in a browser; other files download.
+   For a bundle, GET {PUBLIC_BASE}/<id> serves index.html inline (browser)
+   or the whole bundle as a zip (agents). GET {PUBLIC_BASE}/<id>/<file>
+   serves one file.
+   Append ?download=1 to force a download of any file or the bundle zip.""",
+    },
+    "edit": {
+        "title": "Edit / append text",
+        "summary": "PUT replaces, PATCH appends (text files only)",
+        "body": """EDIT TEXT (text files only; images are immutable):
+   PUT   {PUBLIC_BASE}/<id>   with new text body  -> replace whole content
+   PATCH {PUBLIC_BASE}/<id>   with text body      -> append to content""",
+    },
+    "delete": {
+        "title": "Delete",
+        "summary": "Remove a file, bundle, dir, or named dir",
+        "body": """DELETE a file:
+   DELETE {PUBLIC_BASE}/<id>
+   DELETE {PUBLIC_BASE}/<dirid>/<file>   -> remove one file from a dir
+   DELETE {PUBLIC_BASE}/n/<name>/<file>  -> remove one file from a named dir
+   DELETE {PUBLIC_BASE}/n/<name>         -> delete a whole named dir""",
+    },
+    "limits": {
+        "title": "Limits",
+        "summary": "Lifetimes, sizes, pool, rate limit",
+        "body": """LIMITS
+- URL lifetime:  {TTL_HOURS} hours
+- Named dir lifetime: fixed, default 7 days (ttl= override, clamped [4h, 7d])
+- Max file size: {MAX_FILE_MB} MB
+- Pool size:     {POOL_MB} MB (oldest files evicted first)
+- Rate limit:    {RATE_LIMIT} requests/min per IP""",
+    },
+    "contract": {
+        "title": "Machine-readable contract",
+        "summary": "Read /api for current limits + endpoints as JSON",
+        "body": """MACHINE-READABLE CONTRACT
+GET {PUBLIC_BASE}/api  -> returns the same limits + endpoints as JSON.
+An agent should read /api to discover current limits before acting.""",
+    },
+}
+
+
+def _render_help_body(key):
+    """Return a help topic's body with live values substituted."""
+    t = HELP.get(key)
+    if not t:
+        return None
+    return t["body"].format(
+        PUBLIC_BASE=PUBLIC_BASE,
+        TTL_HOURS=TTL_HOURS,
+        MAX_FILE_MB=MAX_FILE // (1024 * 1024),
+        POOL_MB=THROW_POOL_SIZE // (1024 * 1024),
+        RATE_LIMIT=RATE_LIMIT,
+    )
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
@@ -564,6 +712,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._copy_for_agents()
         if path == "/releases":
             return self._releases()
+        if path == "/help":
+            return self._help()
+        if path.startswith("/help/"):
+            key = path[len("/help/"):]
+            if key:
+                return self._help_topic(key)
+            return self._help()
         # --- named dirs: /n (listing) and /n/<name>[/<file>] ---
         if path == "/" + NAMED_DIR:
             return self._named_listing()
@@ -1431,99 +1586,82 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, self._text_result(fid), "application/json")
 
     def _agent_description(self):
-        return f"""THROWAWAY STORE — FOR AGENTS
+        """Full plain-text description, assembled from the same topics served
+        individually at /help/<topic>. Single source of truth: the HELP dict."""
+        parts = [
+            "THROWAWAY STORE — FOR AGENTS\n",
+            "You are talking to a disposable file store. It lets you upload a\n"
+            "file and share a short-lived URL. Everything is open (no auth) and\n"
+            f"everything expires after {TTL_HOURS} hours.\n",
+        ]
+        for key in HELP_ORDER:
+            parts.append(_render_help_body(key))
+        return "\n".join(parts)
 
-You are talking to a disposable file store. It lets you upload a file and
-share a short-lived URL. Everything is open (no auth) and everything
-expires after {TTL_HOURS} hours.
+    def _help(self):
+        """GET /help — modular, API-gatherable help. Agents get a JSON index of
+        topics; browsers get an HTML list. Each topic is fetched separately at
+        /help/<topic>, so an agent pulls only the pieces it needs instead of
+        one giant copy-paste blob."""
+        if self._is_agent():
+            topics = [{"id": k, "title": HELP[k]["title"], "summary": HELP[k]["summary"]}
+                      for k in HELP_ORDER]
+            return self._send(200, json.dumps({
+                "service": "throwaway-store",
+                "version": VERSION,
+                "help": topics,
+                "fetch": PUBLIC_BASE + "/help/<topic>",
+            }, indent=2), "application/json")
+        rows = "".join(
+            f'<li><a href="{PREFIX}/help/{_html_escape(k)}">{_html_escape(HELP[k]["title"])}</a>'
+            f'<span class=m>{_html_escape(HELP[k]["summary"])}</span></li>'
+            for k in HELP_ORDER)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<title>throway — help</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}"
+             "li a{color:var(--ink);text-decoration:none;font-weight:600}"
+             "li a:hover{color:var(--accent)}"
+             "li .m{color:var(--muted);font-size:.8rem;width:100%}"
+             "a.back{display:inline-block;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<h1>throway help</h1><ul>{rows}</ul>"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
+        self._send(200, h, "text/html")
 
-WHAT IT IS FOR
-- Sharing a file (image, text, binary) by giving someone a URL.
-- Sharing a BUNDLE of files (e.g. an html/css/js website) under one URL.
-- Sharing a mutable DIR: keep adding files to one URL; the dir is deleted
-  4h after the latest upload (max 24h total).
-- A scratchpad for text: create a note, append to it, rewrite it.
-- Passing data between agents / machines without setting up accounts.
-
-WHAT IT IS NOT
-- Not permanent storage. Files are automatically deleted after {TTL_HOURS} hours.
-- Not private. Anyone who has a URL can read, edit, or delete that file.
-- Not a database. It is a flat, throwaway store.
-
-HOW TO USE IT
-Base URL: {PUBLIC_BASE}
-
-1) UPLOAD a file (raw body or multipart):
-   POST {PUBLIC_BASE}/?name=filename.ext
-   with the file bytes as the body.
-   -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.
-
-   UPLOAD a BUNDLE (multiple files, e.g. a website):
-   POST {PUBLIC_BASE}/   with multipart/form-data containing 2+ file parts.
-   -> Returns JSON: id, url, bundle:true, files:[{{name,url,size,content_type}}…].
-   The bundle URL serves index.html inline (or a zip for agents).
-   Each file is reachable at {PUBLIC_BASE}/<id>/<filename>.
-
-   CREATE a DIR (mutable, keep adding files):
-   POST {PUBLIC_BASE}/?dir=1   -> create an empty dir: {{id, url, dir:true, files:[]}}
-   POST {PUBLIC_BASE}/<dirid>  -> add files (multipart) to that dir, resets TTL
-   GET  {PUBLIC_BASE}/<dirid>  -> JSON listing (agents) / HTML page (browsers)
-   GET  {PUBLIC_BASE}/<dirid>/<file> -> fetch one file
-   GET  {PUBLIC_BASE}/<dirid>?zip=1  -> download the whole dir as a zip
-   DELETE {PUBLIC_BASE}/<dirid>/<file> -> remove one file
-   DELETE {PUBLIC_BASE}/<dirid>       -> delete the whole dir
-   A dir is deleted {TTL_HOURS}h after the latest upload (capped at 24h
-   total). LIST it with GET to see current files + expiry.
-
-   CREATE a NAMED DIR (rememberable, team-reusable, fixed lifetime):
-   POST {PUBLIC_BASE}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]
-   -> create-or-get: returns the existing dir if the name is taken.
-   Naming: 5-32 chars, [a-z0-9-], must contain a letter, not a reserved
-   word. Flags (listed/tag/ttl) apply only on first creation.
-   - &listed=1  -> appears in the public listing GET {PUBLIC_BASE}/n
-   - &tag=<t>   -> up to 5 discoverability tags (lowercase [a-z0-9-])
-   - &ttl=<h|d> -> FIXED lifetime, clamped to [4h, 7d]; default 7 days.
-     Nothing extends it: add/edit/delete do not move expires_at.
-   Reach a named dir at {PUBLIC_BASE}/n/<name>:
-   POST {PUBLIC_BASE}/n/<name>          -> add files (multipart)
-   GET  {PUBLIC_BASE}/n/<name>          -> JSON (agents) / HTML (browsers)
-   GET  {PUBLIC_BASE}/n/<name>/<file>   -> fetch one file
-   GET  {PUBLIC_BASE}/n/<name>?zip=1    -> whole dir as zip
-   PUT  {PUBLIC_BASE}/n/<name>/<file>   -> replace text (bumps updated)
-   PATCH {PUBLIC_BASE}/n/<name>/<file>  -> append text (bumps updated)
-   DELETE {PUBLIC_BASE}/n/<name>/<file> -> remove one file
-   DELETE {PUBLIC_BASE}/n/<name>        -> delete the whole dir
-   updated_at = last add/edit/delete (does NOT affect the fixed lifetime).
-   LIST named dirs: GET {PUBLIC_BASE}/n  -> only dirs created with listed=1.
-   Filters: ?q=<substring over name or tag>, ?created_after/before=<ts>,
-   ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.
-
-2) DOWNLOAD / VIEW a file:
-   GET {PUBLIC_BASE}/<id>
-   Images and text-like types (text, html, json, pdf, svg) render inline
-   in a browser; other files download.
-   For a bundle, GET {PUBLIC_BASE}/<id> serves index.html inline (browser)
-   or the whole bundle as a zip (agents). GET {PUBLIC_BASE}/<id>/<file>
-   serves one file.
-   Append ?download=1 to force a download of any file or the bundle zip.
-
-3) EDIT TEXT (text files only; images are immutable):
-   PUT   {PUBLIC_BASE}/<id>   with new text body  -> replace whole content
-   PATCH {PUBLIC_BASE}/<id>   with text body      -> append to content
-
-4) DELETE a file:
-   DELETE {PUBLIC_BASE}/<id>
-
-LIMITS
-- URL lifetime:  {TTL_HOURS} hours
-- Max file size: {MAX_FILE // (1024*1024)} MB
-- Pool size:     {THROW_POOL_SIZE // (1024*1024)} MB (oldest files evicted first)
-- Rate limit:    {RATE_LIMIT} requests/min per IP
-
-MACHINE-READABLE CONTRACT
-GET {PUBLIC_BASE}/api  -> returns the same limits + endpoints as JSON.
-An agent should read /api to discover current limits before acting.
-"""
+    def _help_topic(self, key):
+        """GET /help/<topic> — one help topic. Agents get plain text; browsers
+        get a simple HTML page. 404 for unknown topics."""
+        t = HELP.get(key)
+        if not t:
+            return self._send(404, json.dumps({"error": "unknown help topic"}), "application/json")
+        body = _render_help_body(key)
+        if self._is_agent():
+            return self._send(200, body, "text/plain; charset=utf-8")
+        esc = _html_escape(body)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<title>throway help — {_html_escape(t['title'])}</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:ui-monospace,monospace;background:var(--bg);color:var(--ink);line-height:1.6;min-height:100vh}"
+             "main{max-width:820px;margin:0 auto;padding:3rem 1.5rem}"
+             "pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem}"
+             "a.back{display:inline-block;margin-bottom:1rem;color:var(--muted);text-decoration:none;font-size:.85rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<a class=back href='{PREFIX}/help'>← all help</a>"
+             f"<pre>{esc}</pre>"
+             "</main></body></html>")
+        self._send(200, h, "text/html; charset=utf-8")
 
     def _write_for_agents(self):
         """A description of this service written for agents."""
@@ -1643,6 +1781,7 @@ function copyDesc() {{
                 "contract": {"method": "GET", "url": PUBLIC_BASE + "/api"},
                 "write_for_agents": {"method": "GET", "url": PUBLIC_BASE + "/write_for_agents", "note": "human-readable description of this service for agents"},
                 "copy_for_agents": {"method": "GET", "url": PUBLIC_BASE + "/copy_for_agents", "note": "HTML page with a copy-pasteable agent description"},
+                "help": {"method": "GET", "url": PUBLIC_BASE + "/help", "note": "modular help index (JSON for agents, HTML for browsers); each topic fetched separately at /help/<topic> so agents gather only what they need"},
                 "releases": {"method": "GET", "url": PUBLIC_BASE + "/releases", "note": "release notes; raw markdown for agents, rendered HTML for browsers"},
             },
         }

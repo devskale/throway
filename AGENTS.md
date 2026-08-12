@@ -34,6 +34,20 @@ Returns current limits and endpoints as JSON. If you `GET` the root URL
 (`/throway/`) as a non-browser client, you'll also receive the plain-text
 agent description with the same instructions.
 
+### Modular help — gather only what you need
+
+Instead of one giant copy-paste blob, help is split into **topics** you can
+fetch individually:
+
+```
+GET https://lubu.skale.dev/throway/help          # JSON index of topics (agents)
+GET https://lubu.skale.dev/throway/help/<topic>  # one topic as plain text
+```
+
+Topics: `overview`, `files`, `bundles`, `dirs`, `named_dirs`, `view`,
+`edit`, `delete`, `limits`, `contract`. Fetch the index, pick the topics you
+need, and pull only those — no need to load the whole description.
+
 ---
 
 ## Upload a file
