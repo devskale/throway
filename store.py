@@ -652,7 +652,7 @@ Base URL: {PUBLIC_BASE}
 
    UPLOAD a BUNDLE (multiple files, e.g. a website):
    POST {PUBLIC_BASE}/   with multipart/form-data containing 2+ file parts.
-   -> Returns JSON: id, url, bundle:true, files:[{name,url,size,content_type}…].
+   -> Returns JSON: id, url, bundle:true, files:[{{name,url,size,content_type}}…].
    The bundle URL serves index.html inline (or a zip for agents).
    Each file is reachable at {PUBLIC_BASE}/<id>/<filename>.
 
