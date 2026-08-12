@@ -6,8 +6,8 @@ A disposable file store. Upload a thing, get back a short-lived URL. No auth, no
 Share files (images, text, binaries) via a URL without accounts or setup. Doubles as a text scratchpad. Built for agents and humans alike.
 
 ## URL
-- Site: `https://lubu.skale.dev:8001/throway/`
-- Base API: `https://lubu.skale.dev:8001/throway`
+- Site: `https://lubu.skale.dev/throway/`
+- Base API: `https://lubu.skale.dev/throway`
 
 ## Requirements
 
@@ -70,4 +70,4 @@ Share files (images, text, binaries) via a URL without accounts or setup. Double
 ## Deployment
 - Single-file Python stdlib server: `/var/www/store/store.py`
 - systemd: `throway-store.service` (port 8111, auto-start/restart)
-- nginx: `/throway/` + `/store/` proxy on `lubu.skale.dev:8001`
+- nginx: `/throway/` + `/store/` proxy on `lubu.skale.dev` (443)

@@ -30,24 +30,24 @@ that **expires in 4 hours** and disappears.
 ```bash
 # upload a file → get a URL back
 curl -X POST --data-binary @photo.png \
-  "https://lubu.skale.dev:8001/throway/?name=photo.png"
+  "https://lubu.skale.dev/throway/?name=photo.png"
 
-# → {"id":"4f2a…","url":"https://lubu.skale.dev:8001/throway/4f2a…","size":148,…}
+# → {"id":"4f2a…","url":"https://lubu.skale.dev/throway/4f2a…","size":148,…}
 ```
 
 ```bash
 # download / view
-curl "https://lubu.skale.dev:8001/throway/<id>"
+curl "https://lubu.skale.dev/throway/<id>"
 
 # edit text (replace / append)
-curl -X PUT   --data-binary "new text"     "https://lubu.skale.dev:8001/throway/<id>"
-curl -X PATCH --data-binary "append this"  "https://lubu.skale.dev:8001/throway/<id>"
+curl -X PUT   --data-binary "new text"     "https://lubu.skale.dev/throway/<id>"
+curl -X PATCH --data-binary "append this"  "https://lubu.skale.dev/throway/<id>"
 
 # delete
-curl -X DELETE "https://lubu.skale.dev:8001/throway/<id>"
+curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 ```
 
-> **Live instance:** `https://lubu.skale.dev:8001/throway/`
+> **Live instance:** `https://lubu.skale.dev/throway/`
 
 ## 🧭 Endpoints
 
@@ -88,7 +88,7 @@ URL it's served the full "for agents" instructions directly. There's also a
 machine-readable contract:
 
 ```bash
-curl "https://lubu.skale.dev:8001/throway/api"
+curl "https://lubu.skale.dev/throway/api"
 ```
 
 See **[`AGENTS.md`](AGENTS.md)** for the complete agent guide.

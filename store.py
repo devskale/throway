@@ -26,8 +26,19 @@ THROW_POOL_SIZE = 100 * 1024 * 1024   # 100MB rolling pool
 MAX_FILE = 5 * 1024 * 1024            # 5MB
 RATE_LIMIT = 100                      # req/min per IP
 TTL_HOURS = 4                         # default URL lifetime
-PUBLIC_BASE = "https://lubu.skale.dev:8001/throway"
+PUBLIC_BASE = "https://lubu.skale.dev/throway"
 PREFIX = "/throway"
+
+# content types browsers render inline (not download)
+INLINE_TYPES = (
+    "image/",
+    "text/",
+    "application/pdf",
+    "application/json",
+    "application/javascript",
+    "application/xml",
+    "application/svg+xml",
+)
 PORT = int(os.environ.get("STORE_PORT", "8111"))
 
 os.makedirs(ROOT, exist_ok=True)
@@ -235,9 +246,9 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         force_dl = "download=1" in query
-        is_image = ctype.startswith("image/")
+        is_inline = any(ctype.startswith(p) for p in INLINE_TYPES)
         size = os.path.getsize(fp)
-        if force_dl or not is_image:
+        if force_dl or not is_inline:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(size))
@@ -246,9 +257,12 @@ class Handler(BaseHTTPRequestHandler):
                              f'attachment; filename="{fname}"')
             self.end_headers()
         else:
-            # viewer: inline image
+            # viewer: render inline (images + text-like types)
+            ct = ctype
+            if ctype.startswith("text/") and "charset" not in ctype:
+                ct = ctype + "; charset=utf-8"
             self.send_response(200)
-            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Type", ct)
             self.send_header("Content-Length", str(size))
             self.send_header("Content-Disposition", "inline")
             self.end_headers()
@@ -434,7 +448,8 @@ Base URL: {PUBLIC_BASE}
 
 2) DOWNLOAD / VIEW a file:
    GET {PUBLIC_BASE}/<id>
-   Images render inline in a browser; other files download.
+   Images and text-like types (text, html, json, pdf, svg) render inline
+   in a browser; other files download.
    Append ?download=1 to force a download of any file.
 
 3) EDIT TEXT (text files only; images are immutable):
@@ -507,7 +522,7 @@ function copyDesc() {{
                     "body": "raw file bytes (or multipart/form-data with a file part)",
                     "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "expires_in": "int", "expires_at": "str"},
                 },
-                "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images render inline; append ?download=1 to force download"},
+                "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types (text, html, json, pdf, svg) render inline; append ?download=1 to force download"},
                 "delete": {"method": "DELETE", "url": PUBLIC_BASE + "/<id>"},
                 "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content"},
                 "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)"},
