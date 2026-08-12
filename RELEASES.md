@@ -1,9 +1,20 @@
 # throway — Releases
 
-**Current version:** `1.6.0`
+**Current version:** `1.6.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.6.1 — 2026-08-12
+
+### Changed
+- **Homepage now returns a structured `--help` summary to agents.** Curling
+  the root (`GET /throway/` as a non-browser client) returns a compact usage
+  overview plus pointers to where to get more — the full guide
+  (`/write_for_agents`), the API index (`/api`), and per-topic help
+  (`/help`, `/help/<topic>`). ~1 KB instead of the full ~5 KB blob.
 
 ---
 

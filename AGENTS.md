@@ -30,14 +30,24 @@ Don't hardcode the contract. Read it at runtime:
 GET https://lubu.skale.dev/throway/api
 ```
 
-Returns current limits and endpoints as JSON. If you `GET` the root URL
-(`/throway/`) as a non-browser client, you'll also receive the plain-text
-agent description with the same instructions.
+Returns current limits and endpoints as JSON.
+
+**Curling the homepage** (`GET /throway/` as a non-browser client) returns a
+compact, structured `--help` style summary: the essential usage commands plus
+pointers to where to get the full guide and the API index. Start there, then
+fetch the pieces you need:
+
+```
+GET /throway/                  # structured --help summary + pointers
+GET /throway/api               # machine-readable contract (JSON)
+GET /throway/write_for_agents  # full plain-text usage guide
+GET /throway/help              # JSON index of help topics
+GET /throway/help/<topic>      # one topic as plain text
+```
 
 ### Modular help — gather only what you need
 
-Instead of one giant copy-paste blob, help is split into **topics** you can
-fetch individually:
+Help is split into **topics** you can fetch individually:
 
 ```
 GET https://lubu.skale.dev/throway/help          # JSON index of topics (agents)

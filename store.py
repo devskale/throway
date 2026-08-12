@@ -51,7 +51,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -702,7 +702,7 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path in ("/", ""):
             if self._is_agent():
-                return self._write_for_agents()
+                return self._home_help()
             return self._index()
         if path == "/api":
             return self._api()
@@ -1584,6 +1584,34 @@ class Handler(BaseHTTPRequestHandler):
             f.write(data)
         evict(THROW_POOL_SIZE)
         self._send(200, self._text_result(fid), "application/json")
+
+    def _home_help(self):
+        """GET / (agent curl). A structured --help style summary: a compact
+        usage overview plus pointers telling the agent where to get the full
+        help and the machine-readable API index. Plain text, no markdown."""
+        topics = ", ".join(HELP_ORDER)
+        body = f"""throway — disposable file store
+
+A no-auth, ephemeral file store for agents and programs. Upload a file, a
+bundle of files (a mini website), or a mutable/named dir; get a short-lived
+URL. Everything auto-expires after {TTL_HOURS} hours.
+
+USAGE
+  POST {PUBLIC_BASE}/?name=file.txt   upload a file (body = file bytes)
+  POST {PUBLIC_BASE}/                 upload a bundle (multipart, 2+ files)
+  POST {PUBLIC_BASE}/?dir=1           create a mutable dir
+  GET  {PUBLIC_BASE}/<id>             download / view
+  PUT/PATCH {PUBLIC_BASE}/<id>        edit / append text
+  DELETE {PUBLIC_BASE}/<id>           delete
+
+WHERE TO GET MORE
+  Full usage guide : GET {PUBLIC_BASE}/write_for_agents
+  API index (JSON) : GET {PUBLIC_BASE}/api
+  Help by topic    : GET {PUBLIC_BASE}/help  (then /help/<topic>)
+  Topics available : {topics}
+  Release notes    : GET {PUBLIC_BASE}/releases
+"""
+        self._send(200, body, "text/plain; charset=utf-8")
 
     def _agent_description(self):
         """Full plain-text description, assembled from the same topics served

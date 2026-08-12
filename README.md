@@ -114,12 +114,14 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 
 ## 🤖 For agents
 
-Throway is built to be consumed by other programs. When an agent hits the root
-URL it's served the full "for agents" instructions directly. There's also a
-machine-readable contract:
+Throway is built to be consumed by other programs. When an agent curls the
+root URL it gets a compact, structured `--help` summary with pointers to the
+full guide and the machine-readable contract:
 
 ```bash
-curl "https://lubu.skale.dev/throway/api"
+curl -A "curl" "https://lubu.skale.dev/throway/"   # --help summary + pointers
+curl "https://lubu.skale.dev/throway/api"          # machine-readable contract
+curl "https://lubu.skale.dev/throway/write_for_agents"  # full usage guide
 ```
 
 Help is **modular** — fetch an index, then pull only the topics you need:
