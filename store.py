@@ -35,6 +35,10 @@ TTL_HOURS = 4                         # default URL lifetime
 PUBLIC_BASE = "https://lubu.skale.dev/throway"
 PREFIX = "/throway"
 
+# semantic version + single source of truth for release notes
+VERSION = "1.3.0"
+RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
+
 # content types browsers render inline (not download)
 INLINE_TYPES = (
     "image/",
@@ -383,6 +387,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._write_for_agents()
         if path == "/copy_for_agents":
             return self._copy_for_agents()
+        if path == "/releases":
+            return self._releases()
         parts = path.lstrip("/").split("/")
         fid = parts[0]
         if not fid or fid.endswith(".meta"):
@@ -727,6 +733,34 @@ An agent should read /api to discover current limits before acting.
         """A description of this service written for agents."""
         self._send(200, self._agent_description(), "text/plain")
 
+    def _releases(self):
+        """Serve the release notes. Single source: RELEASES.md.
+        Agents get the raw markdown; browsers get a rendered HTML page.
+        Both come from the same file — nothing duplicated."""
+        try:
+            with open(RELEASES_FILE) as f:
+                md = f.read()
+        except OSError:
+            return self._send(404, "release notes unavailable\n")
+        if self._is_agent():
+            return self._send(200, md, "text/markdown; charset=utf-8")
+        # browsers: render as a simple HTML page (escape + minimal md-ish styling)
+        esc = _html_escape(md)
+        h = f"""<!doctype html><html><head><meta charset=utf-8>
+<title>throway — releases v{VERSION}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1.5rem; color: #222; line-height: 1.6; }}
+  h1 {{ font-size: 1.6rem; border-bottom: 2px solid #2563eb; padding-bottom: .3rem; }}
+  h2 {{ font-size: 1.2rem; margin-top: 1.8rem; color: #2563eb; }}
+  pre {{ background: #f4f4f5; border: 1px solid #e4e4e7; border-radius: 6px; padding: .8rem; overflow-x: auto; }}
+  code {{ background: #f4f4f5; padding: .1rem .3rem; border-radius: 4px; font-size: .9em; }}
+  a {{ color: #2563eb; }}
+</style></head><body>
+<pre>{esc}</pre>
+<p style="color:#666;font-size:.85rem">raw: <a href="{PREFIX}/releases?raw=1">markdown</a></p>
+</body></html>"""
+        self._send(200, h, "text/html; charset=utf-8")
+
     def _copy_for_agents(self):
         """HTML page with a copy-pasteable agent description."""
         desc = self._agent_description()
@@ -762,7 +796,7 @@ function copyDesc() {{
         """Machine-readable contract for agents."""
         spec = {
             "service": "throwaway-store",
-            "version": 1,
+            "version": VERSION,
             "base_url": PUBLIC_BASE,
             "ttl_seconds": TTL_HOURS * 3600,
             "max_file_bytes": MAX_FILE,
@@ -790,6 +824,7 @@ function copyDesc() {{
                 "contract": {"method": "GET", "url": PUBLIC_BASE + "/api"},
                 "write_for_agents": {"method": "GET", "url": PUBLIC_BASE + "/write_for_agents", "note": "human-readable description of this service for agents"},
                 "copy_for_agents": {"method": "GET", "url": PUBLIC_BASE + "/copy_for_agents", "note": "HTML page with a copy-pasteable agent description"},
+                "releases": {"method": "GET", "url": PUBLIC_BASE + "/releases", "note": "release notes; raw markdown for agents, rendered HTML for browsers"},
             },
         }
         self._send(200, json.dumps(spec, indent=2), "application/json")
@@ -858,6 +893,7 @@ def _index(self):
          "<div id='result'></div>"
          f"<p class='hint'>Files live ~{TTL_HOURS}h. "
          f"<a href='{PREFIX}/api'>API</a> · <a href='{PREFIX}/write_for_agents'>description</a> · "
+         f"<a href='{PREFIX}/releases'>releases v{VERSION}</a> · "
          "<button class='cp' id='cpBtn' title='Copy agent description'>"
          "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='14' height='14' x='8' y='8' rx='2' ry='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/></svg>"
          "copy for agents</button></p>"
