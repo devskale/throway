@@ -107,6 +107,41 @@ The whole bundle shares one 4-hour expiry and is evicted as one unit.
 curl -O "https://lubu.skale.dev/throway/<id>/style.css"
 ```
 
+## Create / use a dir (mutable)
+
+A **dir** is a mutable bundle: create it once, keep adding files. It's
+deleted **4h after the latest upload** (capped at 24h total).
+
+### Create
+`POST {base}/?dir=1` — create an empty dir.
+```bash
+curl -X POST "https://lubu.skale.dev/throway/?dir=1"
+# -> {"id":"…","url":"…/<dirid>","dir":true,"files":[],"expires_at":"…"}
+```
+
+### Add files
+`POST {base}/<dirid>` — multipart file parts; **resets the 4h TTL**.
+```bash
+curl -F "f=@note.txt" "https://lubu.skale.dev/throway/<dirid>"
+# -> {"id":"…","dir":true,"files":[{name,url,size,content_type},…],"expires_at":"…"}
+```
+
+### List
+`GET {base}/<dirid>` — **JSON** listing for agents (`dir:true`, `files`, `expires_at`), HTML page for browsers.
+
+### Fetch one file
+`GET {base}/<dirid>/<filename>`
+
+### Download whole dir
+`GET {base}/<dirid>?zip=1` (or `?download=1`) — zip of all files.
+
+### Delete
+- `DELETE {base}/<dirid>/<filename>` — remove one file.
+- `DELETE {base}/<dirid>` — remove the whole dir.
+
+**TTL:** deleted 4h after the latest upload; never more than 24h total from
+creation. `GET /<dirid>` shows the current `expires_at`.
+
 ## Edit / append text
 
 For **text** files only (images are immutable). Both return the updated JSON metadata.

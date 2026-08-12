@@ -104,6 +104,40 @@ curl -F "f=@index.html;type=text/html" \
 
 ---
 
+## Upload a dir (mutable, keep adding files)
+
+A **dir** is a mutable bundle: you create it once, then keep adding files to
+it. It's deleted **4h after the latest upload** (capped at 24h total).
+
+```bash
+# create an empty dir
+curl -X POST "https://lubu.skale.dev/throway/?dir=1"
+# -> {"id":"…","url":"…/<dirid>","dir":true,"files":[],…}
+
+# add files to it (multipart) — resets the 4h TTL
+curl -F "f=@note.txt" "https://lubu.skale.dev/throway/<dirid>"
+
+# list (JSON for agents, HTML page for browsers)
+curl -A "curl" "https://lubu.skale.dev/throway/<dirid>"
+
+# fetch one file
+curl "https://lubu.skale.dev/throway/<dirid>/note.txt"
+
+# download the whole dir as a zip
+curl "https://lubu.skale.dev/throway/<dirid>?zip=1"
+
+# remove one file, or the whole dir
+curl -X DELETE "https://lubu.skale.dev/throway/<dirid>/note.txt"
+curl -X DELETE "https://lubu.skale.dev/throway/<dirid>"
+```
+
+- **TTL:** deleted 4h after the **latest** upload; never lives more than 24h
+  total from creation.
+- **Listing:** `GET /<dirid>` returns JSON (`dir:true`, `files:[{name,url,size,content_type}]`, `expires_at`) to agents, an HTML page to browsers.
+- **Zip:** `?zip=1` (or `?download=1`) downloads the whole dir.
+
+---
+
 ## Download / view
 
 ```bash
@@ -140,7 +174,8 @@ Both return updated JSON metadata (`size`, `url`, `expires_at`, …).
 ## Delete
 
 ```bash
-curl -X DELETE "https://lubu.skale.dev/throway/<id>"
+curl -X DELETE "https://lubu.skale.dev/throway/<id>"   # file or whole bundle/dir
+curl -X DELETE "https://lubu.skale.dev/throway/<dirid>/<file>"  # one file from a dir
 ```
 
 ---

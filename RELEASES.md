@@ -1,9 +1,27 @@
 # throway — Releases
 
-**Current version:** `1.3.0`
+**Current version:** `1.4.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.4.0 — 2026-08-12
+
+### Added
+- **Mutable dirs.** Create a dir (`POST /?dir=1`), keep adding files to it
+  (`POST /<dirid>`), and it's deleted **4h after the latest upload** (capped
+  at 24h total). `GET /<dirid>` returns a JSON listing to agents / an HTML
+  page to browsers; `?zip=1` downloads the whole dir; files are fetched and
+  deleted individually.
+
+### Fixed
+- **Bundle sub-resource 404s in a browser.** A bundle's `index.html` is now
+  served with an injected `<base href="/throway/<id>/">` tag, so relative
+  URLs (`style.css`, `app.js`, images) resolve against the bundle directory
+  instead of the parent path. Previously every multi-file bundle rendered
+  unstyled/broken in a browser.
 
 ---
 

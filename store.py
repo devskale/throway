@@ -32,11 +32,12 @@ THROW_POOL_SIZE = 100 * 1024 * 1024   # 100MB rolling pool
 MAX_FILE = 5 * 1024 * 1024            # 5MB
 RATE_LIMIT = 100                      # req/min per IP
 TTL_HOURS = 4                         # default URL lifetime
+DIR_MAX_AGE = 24 * 3600               # hard ceiling for a dir's total lifetime
 PUBLIC_BASE = "https://lubu.skale.dev/throway"
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -319,6 +320,29 @@ class Handler(BaseHTTPRequestHandler):
                 while c := f.read(65536):
                     self.wfile.write(c)
 
+    def _serve_bundle_index(self, index_path, dirpath, fid):
+        """Serve a bundle's index.html to a browser, injecting a <base> tag
+        so relative sub-resource URLs resolve against /<fid>/ instead of the
+        parent path (fixes 404s for style.css/app.js/img in multi-file
+        bundles viewed at /<fid> with no trailing slash)."""
+        with open(index_path, "rb") as f:
+            html = f.read()
+        base = f'<base href="{PREFIX}/{fid}/">'
+        # inject right after <head> (case-insensitive) or before <html>/start
+        head = re.search(rb"<head[^>]*>", html, re.I)
+        if head:
+            html = html[:head.end()] + base.encode() + html[head.end():]
+        else:
+            # no <head>: prepend a minimal one with the base tag
+            html = b"<head>" + base.encode() + b"</head>" + html
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.send_header("Content-Disposition", "inline")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(html)
+
     def _serve_bundle_zip(self, dirpath, fid):
         """Stream the whole bundle as a zip (for agents / ?download=1).
         Writes to a temp file so we don't hold the whole zip in RAM, then
@@ -397,7 +421,7 @@ class Handler(BaseHTTPRequestHandler):
         force_dl = "download=1" in query
         now = time.time()
 
-        # --- bundle directory ---
+        # --- bundle / dir directory ---
         dirpath = os.path.join(ROOT, os.path.basename(fid))
         if os.path.isdir(dirpath):
             m = _bundle_meta(dirpath, fid)
@@ -407,6 +431,7 @@ class Handler(BaseHTTPRequestHandler):
             if expires < now:
                 shutil.rmtree(dirpath, ignore_errors=True)
                 return self._send(404, "expired\n")
+            is_dir = (m or {}).get("type") == "dir"
             # /<fid>/<file>
             if len(parts) >= 2 and parts[1]:
                 fname = os.path.basename(parts[1])
@@ -419,12 +444,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not ctype:
                     ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
                 return self._serve_file(fpath, ctype, fname, force_dl, fname)
+            # dir root: JSON listing for agents, HTML for browsers, zip on ?zip=1
+            if is_dir:
+                if force_dl or "zip=1" in query or self._is_agent():
+                    # agents get JSON listing; ?zip=1 / ?download=1 get zip
+                    if "zip=1" in query or force_dl:
+                        return self._serve_bundle_zip(dirpath, fid)
+                    return self._dir_response(fid, dirpath, m)
+                return self._dir_listing(dirpath, fid)
             # bundle root
             if force_dl or self._is_agent():
                 return self._serve_bundle_zip(dirpath, fid)
             index = os.path.join(dirpath, "index.html")
             if os.path.isfile(index):
-                return self._serve_file(index, "text/html", "index.html", False, "index.html")
+                return self._serve_bundle_index(index, dirpath, fid)
             return self._bundle_listing(dirpath, fid)
 
         # --- single file ---
@@ -458,9 +491,20 @@ class Handler(BaseHTTPRequestHandler):
         if not self._rate(): return
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         name_hint = None
+        want_dir = False
         for kv in query.split("&"):
             if kv.startswith("name="):
                 name_hint = _safe_name(kv[5:])[:128]
+            elif kv == "dir=1":
+                want_dir = True
+
+        # POST /<dirid> -> add files to an existing dir (multipart)
+        path = self.path.split("?", 1)[0].rstrip("/")
+        parts = path.lstrip("/").split("/")
+        if len(parts) >= 1 and parts[0] and len(parts) == 1 and self.path.split("?", 1)[0] != "/":
+            existing = self._add_to_dir(parts[0])
+            if existing is not None:
+                return existing
 
         ctype = self.headers.get("Content-Type", "application/octet-stream")
         # multipart/form-data upload (browser-friendly / -F)
@@ -470,6 +514,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             files = _parse_multipart(payload, ctype)
             named = [(n, d, c) for (n, d, c) in files if n]
+            if want_dir:
+                return self._store_dir(named)
             if not named:
                 return self._send(400, json.dumps({"error": "no file part in multipart body"}), "application/json")
             # multiple files -> bundle
@@ -480,12 +526,18 @@ class Handler(BaseHTTPRequestHandler):
 
         # raw-body upload: body is the file content
         length = self.headers.get("Content-Length")
+        # empty dir creation: POST /?dir=1 with no body
+        if want_dir and length in (None, "0"):
+            return self._store_dir([])
         if length is None:
             return self._send(411, json.dumps({"error": "length required"}), "application/json")
         length = int(length)
         if length > MAX_FILE:
             return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
         data = self.rfile.read(length)
+        if want_dir:
+            # raw-body dir creation: single file named by ?name=
+            return self._store_dir([(name_hint or "file", data, "application/octet-stream")])
         if name_hint:
             ctype = mimetypes.guess_type(name_hint)[0] or "application/octet-stream"
         else:
@@ -587,10 +639,163 @@ class Handler(BaseHTTPRequestHandler):
         })
         self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
 
+    def _store_dir(self, files):
+        """Create a mutable dir (type=dir) with optional initial files."""
+        clean = []
+        total = 0
+        for n, d, c in files:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            if len(d) > MAX_FILE:
+                return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+            total += len(d)
+            if total > THROW_POOL_SIZE:
+                return self._send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
+            clean.append((safe, d, c))
+        fid = secrets.token_hex(8)
+        dirpath = os.path.join(ROOT, fid)
+        os.makedirs(dirpath, exist_ok=True)
+        now = time.time()
+        files_map = {}
+        for (_, d, c), name in zip(clean, _dedupe_names([n for n, _, _ in clean])):
+            with open(os.path.join(dirpath, name), "wb") as f:
+                f.write(d)
+            files_map[name] = mimetypes.guess_type(name)[0] or c or "application/octet-stream"
+        meta = {
+            "type": "dir",
+            "created": now,
+            "expires": now + TTL_HOURS * 3600,
+            "files": files_map,
+        }
+        json.dump(meta, open(os.path.join(dirpath, fid + ".meta"), "w"))
+        evict(THROW_POOL_SIZE)
+        s = _load_stats()
+        s["files"] += len(clean)
+        s["bytes"] += sum(len(d) for _, d, _ in clean)
+        _save_stats(s)
+        return self._dir_response(fid, dirpath, meta)
+
+    def _add_to_dir(self, fid):
+        """POST /<dirid>: add multipart files to an existing dir, reset TTL.
+        Returns None if fid is not a dir (so do_POST falls through to normal
+        upload handling)."""
+        dirpath = os.path.join(ROOT, os.path.basename(fid))
+        if not os.path.isdir(dirpath):
+            return None
+        m = _bundle_meta(dirpath, fid)
+        if not m or m.get("type") != "dir":
+            return None
+        # expired?
+        now = time.time()
+        if m.get("expires", 0) < now:
+            shutil.rmtree(dirpath, ignore_errors=True)
+            return self._send(404, json.dumps({"error": "expired"}), "application/json")
+        ctype = self.headers.get("Content-Type", "application/octet-stream")
+        if not ctype.startswith("multipart/form-data"):
+            return self._send(400, json.dumps({"error": "dir add requires multipart"}), "application/json")
+        payload = self._read_body()
+        if payload is None:
+            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+        files = _parse_multipart(payload, ctype)
+        named = [(n, d, c) for (n, d, c) in files if n]
+        if not named:
+            return self._send(400, json.dumps({"error": "no file parts"}), "application/json")
+        # enforce per-file + total dir size
+        cur = _dir_size(dirpath)
+        for n, d, c in named:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            if len(d) > MAX_FILE:
+                return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+            cur += len(d)
+            if cur > THROW_POOL_SIZE:
+                return self._send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
+        files_map = m.get("files", {})
+        existing = set(os.listdir(dirpath))
+        existing.discard(fid + ".meta")
+        for n, d, c in named:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            name = _dedupe_names([safe] + [x for x in existing if x != safe])[0]
+            with open(os.path.join(dirpath, name), "wb") as f:
+                f.write(d)
+            files_map[name] = mimetypes.guess_type(name)[0] or c or "application/octet-stream"
+            existing.add(name)
+        # sliding TTL: +4h from now, capped at 24h total from creation
+        m["expires"] = min(now + TTL_HOURS * 3600, m.get("created", now) + DIR_MAX_AGE)
+        m["files"] = files_map
+        json.dump(m, open(os.path.join(dirpath, fid + ".meta"), "w"))
+        evict(THROW_POOL_SIZE)
+        s = _load_stats()
+        s["files"] += len(named)
+        s["bytes"] += sum(len(d) for _, d, _ in named)
+        _save_stats(s)
+        return self._dir_response(fid, dirpath, m)
+
+    def _dir_response(self, fid, dirpath, meta):
+        """JSON response describing a dir."""
+        files = []
+        total = 0
+        for f in sorted(os.listdir(dirpath)):
+            if f.endswith(".meta"):
+                continue
+            fp = os.path.join(dirpath, f)
+            if not os.path.isfile(fp):
+                continue
+            sz = os.path.getsize(fp)
+            total += sz
+            files.append({"name": f, "url": f"{PUBLIC_BASE}/{fid}/{f}", "size": sz,
+                          "content_type": meta.get("files", {}).get(f, "application/octet-stream")})
+        return self._send(200, json.dumps({
+            "id": fid,
+            "url": f"{PUBLIC_BASE}/{fid}",
+            "dir": True,
+            "files": files,
+            "size": total,
+            "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("expires", 0))),
+        }), "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
+
+    def _dir_listing(self, dirpath, fid):
+        """HTML listing for a dir viewed in a browser."""
+        rows = []
+        for f in sorted(os.listdir(dirpath)):
+            if f.endswith(".meta"):
+                continue
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                rows.append((f, os.path.getsize(fp)))
+        lis = "\n".join(
+            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> ({s} B)</li>'
+            for f, s in rows)
+        h = ("<!doctype html><html><head><meta charset=utf-8>"
+             f"<title>throway dir {fid}</title>"
+             "<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#222}"
+             "a{color:#2563eb;text-decoration:none}</style></head><body>"
+             f"<h1>Dir {fid}</h1><ul>{lis}</ul>"
+             f"<p><a href='?zip=1'>download as zip</a></p></body></html>")
+        self._send(200, h, "text/html")
+
     def do_DELETE(self):
         if not self._rate(): return
-        fid = self.path.lstrip("/").split("/")[0]
+        path = self.path.lstrip("/").rstrip("/")
+        parts = path.split("/")
+        fid = parts[0]
         dirpath = os.path.join(ROOT, os.path.basename(fid))
+        # DELETE /<dirid>/<file> -> remove one file from a dir
+        if os.path.isdir(dirpath) and len(parts) >= 2 and parts[1]:
+            m = _bundle_meta(dirpath, fid)
+            fname = os.path.basename(parts[1])
+            fpath = os.path.join(dirpath, fname)
+            if fname.endswith(".meta") or not os.path.isfile(fpath):
+                return self._send(404, "not found\n")
+            os.remove(fpath)
+            if m and "files" in m:
+                m["files"].pop(fname, None)
+                json.dump(m, open(os.path.join(dirpath, fid + ".meta"), "w"))
+            return self._send(200, "deleted\n")
         if os.path.isdir(dirpath):
             shutil.rmtree(dirpath, ignore_errors=True)
             self._send(200, "deleted\n")
@@ -680,6 +885,8 @@ expires after {TTL_HOURS} hours.
 WHAT IT IS FOR
 - Sharing a file (image, text, binary) by giving someone a URL.
 - Sharing a BUNDLE of files (e.g. an html/css/js website) under one URL.
+- Sharing a mutable DIR: keep adding files to one URL; the dir is deleted
+  4h after the latest upload (max 24h total).
 - A scratchpad for text: create a note, append to it, rewrite it.
 - Passing data between agents / machines without setting up accounts.
 
@@ -701,6 +908,17 @@ Base URL: {PUBLIC_BASE}
    -> Returns JSON: id, url, bundle:true, files:[{{name,url,size,content_type}}…].
    The bundle URL serves index.html inline (or a zip for agents).
    Each file is reachable at {PUBLIC_BASE}/<id>/<filename>.
+
+   CREATE a DIR (mutable, keep adding files):
+   POST {PUBLIC_BASE}/?dir=1   -> create an empty dir: {{id, url, dir:true, files:[]}}
+   POST {PUBLIC_BASE}/<dirid>  -> add files (multipart) to that dir, resets TTL
+   GET  {PUBLIC_BASE}/<dirid>  -> JSON listing (agents) / HTML page (browsers)
+   GET  {PUBLIC_BASE}/<dirid>/<file> -> fetch one file
+   GET  {PUBLIC_BASE}/<dirid>?zip=1  -> download the whole dir as a zip
+   DELETE {PUBLIC_BASE}/<dirid>/<file> -> remove one file
+   DELETE {PUBLIC_BASE}/<dirid>       -> delete the whole dir
+   A dir is deleted {TTL_HOURS}h after the latest upload (capped at 24h
+   total). LIST it with GET to see current files + expiry.
 
 2) DOWNLOAD / VIEW a file:
    GET {PUBLIC_BASE}/<id>
@@ -818,6 +1036,11 @@ function copyDesc() {{
                 },
                 "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1", "note": "create a mutable dir; add files later; deleted 4h after latest upload (max 24h total)", "response": {"id": "str", "url": "str", "dir": True, "files": []}},
+                "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/<dirid>", "body": "multipart/form-data file parts", "note": "add files to a dir, resets its TTL"},
+                "list_dir": {"method": "GET", "url": PUBLIC_BASE + "/<dirid>", "note": "JSON listing for agents, HTML page for browsers"},
+                "dir_zip": {"method": "GET", "url": PUBLIC_BASE + "/<dirid>?zip=1", "note": "download the whole dir as a zip"},
+                "delete_dir_file": {"method": "DELETE", "url": PUBLIC_BASE + "/<dirid>/<filename>", "note": "remove one file from a dir"},
                 "delete": {"method": "DELETE", "url": PUBLIC_BASE + "/<id>"},
                 "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content"},
                 "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)"},

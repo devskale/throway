@@ -63,12 +63,16 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 |--------|------|--------|
 | `POST` | `/throway/?name=<file>` | upload a file (raw body or multipart) |
 | `POST` | `/throway/` | upload a bundle (multipart, 2+ files) |
-| `GET` | `/throway/<id>` | download / view a file, or a bundle root |
-| `GET` | `/throway/<id>/<file>` | fetch one file from a bundle |
+| `POST` | `/throway/?dir=1` | create a mutable dir |
+| `POST` | `/throway/<dirid>` | add files to a dir (resets TTL) |
+| `GET` | `/throway/<id>` | download / view a file, bundle root, or dir listing |
+| `GET` | `/throway/<id>/<file>` | fetch one file from a bundle/dir |
+| `GET` | `/throway/<dirid>?zip=1` | download a whole dir as zip |
 | `GET` | `/throway/<id>?download=1` | force download |
 | `PUT` | `/throway/<id>` | replace text (text only) |
 | `PATCH` | `/throway/<id>` | append text (text only) |
-| `DELETE` | `/throway/<id>` | delete |
+| `DELETE` | `/throway/<id>` | delete file / bundle / dir |
+| `DELETE` | `/throway/<dirid>/<file>` | remove one file from a dir |
 | `GET` | `/throway/api` | machine-readable contract (JSON) |
 | `GET` | `/throway/write_for_agents` | agent description (plain text) |
 | `GET` | `/throway/copy_for_agents` | copy-pasteable agent description (HTML) |
@@ -77,7 +81,7 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 
 | Limit | Value |
 |-------|-------|
-| URL lifetime | **4 hours** |
+| URL lifetime | **4 hours** (dirs: 4h after latest upload, max 24h total) |
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |
 | Rate limit | **100 req/min** per IP |
@@ -91,6 +95,9 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
   rendered inline (a real throwaway website), agents get a zip, and each file
   is reachable at `/throway/<id>/<filename>`. The whole bundle shares one
   4-hour expiry and is evicted as one unit.
+- **Dirs** are mutable bundles: create one, keep adding files, and it's
+  deleted **4h after the latest upload** (max 24h total). `GET /<dirid>`
+  returns a JSON listing to agents / an HTML page to browsers.
 - **Text files** are editable — `PUT` rewrites the whole content, `PATCH` appends.
   Images are immutable.
 - **File URLs are never listed** on the main page — you only get them from the
