@@ -1,9 +1,25 @@
 # throway — Releases
 
-**Current version:** `1.4.1`
+**Current version:** `1.4.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.4.2 — 2026-08-12
+
+### Fixed
+- **Dir/bundle listing 404s in a browser.** The HTML listing pages for dirs
+  and bundles (served at `/throway/<id>` with no trailing slash) now inject a
+  `<base href="/throway/<id>/">` tag, so relative links (`a.txt`, `b.txt`)
+  resolve against the dir/bundle directory instead of the parent path.
+  Previously clicking any item in a dir or bundle listing 404'd.
+
+### Changed
+- `PUBLIC_BASE` is now overridable via the `THROWAWAY_PUBLIC_BASE` env var
+  (default `https://skale.dev/throway`), making it easy to switch the public
+  URL without editing code.
 
 ---
 

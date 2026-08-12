@@ -33,11 +33,11 @@ MAX_FILE = 5 * 1024 * 1024            # 5MB
 RATE_LIMIT = 100                      # req/min per IP
 TTL_HOURS = 4                         # default URL lifetime
 DIR_MAX_AGE = 24 * 3600               # hard ceiling for a dir's total lifetime
-PUBLIC_BASE = "https://lubu.skale.dev/throway"
+PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway")
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -387,6 +387,7 @@ class Handler(BaseHTTPRequestHandler):
             f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> <span>{s} B</span></li>'
             for f, s in rows)
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<base href='{PREFIX}/{fid}/'>"
              f"<title>throway bundle {fid}</title>"
              "<style>"
              ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
@@ -787,6 +788,7 @@ class Handler(BaseHTTPRequestHandler):
             f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> ({s} B)</li>'
             for f, s in rows)
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<base href='{PREFIX}/{fid}/'>"
              f"<title>throway dir {fid}</title>"
              "<style>"
              ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
