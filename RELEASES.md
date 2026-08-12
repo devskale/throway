@@ -1,9 +1,23 @@
 # throway — Releases
 
-**Current version:** `1.6.1`
+**Current version:** `1.7.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.7.0 — 2026-08-12
+
+### Changed
+- **Canonical URL is now `https://skale.dev/throway`.** The front door moved
+  to amd2 (`158.180.42.218`), which proxies `/throway/` to lubu and
+  terminates TLS. `skale.dev` and `www.skale.dev` both point there; the root
+  `/` redirects to `/throway/`.
+- `PUBLIC_BASE` default is `https://skale.dev/throway`; all generated URLs
+  (upload responses, dir/named-dir listings) use it. The old
+  `https://lubu.skale.dev/throway` still works via the env override on lubu.
+- Docs (AGENTS/API/README/PRD) updated to the new canonical URL.
 
 ---
 

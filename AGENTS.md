@@ -9,7 +9,7 @@ your agent discover the API by itself.
 ## TL;DR
 
 ```
-Base URL:  https://lubu.skale.dev/throway
+Base URL:  https://skale.dev/throway
 Lifetime:  4 hours (files auto-delete)
 Auth:      none
 ```
@@ -27,7 +27,7 @@ Auth:      none
 Don't hardcode the contract. Read it at runtime:
 
 ```
-GET https://lubu.skale.dev/throway/api
+GET https://skale.dev/throway/api
 ```
 
 Returns current limits and endpoints as JSON.
@@ -50,8 +50,8 @@ GET /throway/help/<topic>      # one topic as plain text
 Help is split into **topics** you can fetch individually:
 
 ```
-GET https://lubu.skale.dev/throway/help          # JSON index of topics (agents)
-GET https://lubu.skale.dev/throway/help/<topic>  # one topic as plain text
+GET https://skale.dev/throway/help          # JSON index of topics (agents)
+GET https://skale.dev/throway/help/<topic>  # one topic as plain text
 ```
 
 Topics: `overview`, `files`, `bundles`, `dirs`, `named_dirs`, `view`,
@@ -65,19 +65,19 @@ need, and pull only those — no need to load the whole description.
 ### Raw body (simplest)
 ```bash
 curl -X POST --data-binary @photo.png \
-  "https://lubu.skale.dev/throway/?name=photo.png"
+  "https://skale.dev/throway/?name=photo.png"
 ```
 
 ### Multipart form
 ```bash
-curl -F "file=@photo.png" "https://lubu.skale.dev/throway/"
+curl -F "file=@photo.png" "https://skale.dev/throway/"
 ```
 
 ### Response (JSON)
 ```json
 {
   "id": "4f2a1c9d0e3b8a77",
-  "url": "https://lubu.skale.dev/throway/4f2a1c9d0e3b8a77",
+  "url": "https://skale.dev/throway/4f2a1c9d0e3b8a77",
   "size": 148,
   "name": "photo.png",
   "content_type": "image/png",
@@ -99,18 +99,18 @@ URL that holds several files (e.g. an `index.html` + `style.css` website).
 ```bash
 curl -F "f=@index.html;type=text/html" \
      -F "f=@style.css;type=text/css" \
-     "https://lubu.skale.dev/throway/"
+     "https://skale.dev/throway/"
 ```
 
 ### Response (JSON)
 ```json
 {
   "id": "9c0f2b8a1d4e6f03",
-  "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03",
+  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03",
   "bundle": true,
   "files": [
-    {"name": "index.html", "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html"},
-    {"name": "style.css",  "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css"}
+    {"name": "index.html", "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html"},
+    {"name": "style.css",  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css"}
   ],
   "size": 277,
   "expires_in": 14400,
@@ -135,24 +135,24 @@ it. It's deleted **4h after the latest upload** (capped at 24h total).
 
 ```bash
 # create an empty dir
-curl -X POST "https://lubu.skale.dev/throway/?dir=1"
+curl -X POST "https://skale.dev/throway/?dir=1"
 # -> {"id":"…","url":"…/<dirid>","dir":true,"files":[],…}
 
 # add files to it (multipart) — resets the 4h TTL
-curl -F "f=@note.txt" "https://lubu.skale.dev/throway/<dirid>"
+curl -F "f=@note.txt" "https://skale.dev/throway/<dirid>"
 
 # list (JSON for agents, HTML page for browsers)
-curl -A "curl" "https://lubu.skale.dev/throway/<dirid>"
+curl -A "curl" "https://skale.dev/throway/<dirid>"
 
 # fetch one file
-curl "https://lubu.skale.dev/throway/<dirid>/note.txt"
+curl "https://skale.dev/throway/<dirid>/note.txt"
 
 # download the whole dir as a zip
-curl "https://lubu.skale.dev/throway/<dirid>?zip=1"
+curl "https://skale.dev/throway/<dirid>?zip=1"
 
 # remove one file, or the whole dir
-curl -X DELETE "https://lubu.skale.dev/throway/<dirid>/note.txt"
-curl -X DELETE "https://lubu.skale.dev/throway/<dirid>"
+curl -X DELETE "https://skale.dev/throway/<dirid>/note.txt"
+curl -X DELETE "https://skale.dev/throway/<dirid>"
 ```
 
 - **TTL:** deleted 4h after the **latest** upload; never lives more than 24h
@@ -172,7 +172,7 @@ shared dir. Everything lives under `n/<name>`.
 
 ```bash
 # create (or get, if it already exists) a named dir
-curl -X POST "https://lubu.skale.dev/throway/?dir=1&name=team7"
+curl -X POST "https://skale.dev/throway/?dir=1&name=team7"
 # -> {"id":"team7","name":"team7","url":"…/n/team7","dir":true,"named":true,…}
 ```
 
@@ -213,7 +213,7 @@ truly dies at its `expires_at`.
 ### Using a named dir
 
 ```bash
-BASE=https://lubu.skale.dev/throway
+BASE=https://skale.dev/throway
 
 # add files (multipart) — bumps updated_at, not expires_at
 curl -F "f=@note.txt" "$BASE/n/team7"
@@ -266,7 +266,7 @@ JSON entries: `{name, url, tags, files, size, created_at, updated_at, expires_at
 ## Download / view
 
 ```bash
-curl "https://lubu.skale.dev/throway/<id>"
+curl "https://skale.dev/throway/<id>"
 ```
 
 - **Images and text-like types** (text, html, json, pdf, svg) render inline
@@ -285,11 +285,11 @@ Images and other binaries are **immutable** — these return `400`.
 ```bash
 # replace the whole content
 curl -X PUT --data-binary "new full text" \
-  "https://lubu.skale.dev/throway/<id>"
+  "https://skale.dev/throway/<id>"
 
 # append to the content
 curl -X PATCH --data-binary "text to add" \
-  "https://lubu.skale.dev/throway/<id>"
+  "https://skale.dev/throway/<id>"
 ```
 
 Both return updated JSON metadata (`size`, `url`, `expires_at`, …).
@@ -299,8 +299,8 @@ Both return updated JSON metadata (`size`, `url`, `expires_at`, …).
 ## Delete
 
 ```bash
-curl -X DELETE "https://lubu.skale.dev/throway/<id>"   # file or whole bundle/dir
-curl -X DELETE "https://lubu.skale.dev/throway/<dirid>/<file>"  # one file from a dir
+curl -X DELETE "https://skale.dev/throway/<id>"   # file or whole bundle/dir
+curl -X DELETE "https://skale.dev/throway/<dirid>/<file>"  # one file from a dir
 ```
 
 ---

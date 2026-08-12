@@ -9,8 +9,8 @@ accounts or setup. Doubles as a text scratchpad. Built for agents and humans
 alike.
 
 ## URL
-- Site: `https://lubu.skale.dev/throway/`
-- Base API: `https://lubu.skale.dev/throway`
+- Site: `https://skale.dev/throway/`
+- Base API: `https://skale.dev/throway`
 
 ## Requirements
 
@@ -105,4 +105,8 @@ alike.
 ## Deployment
 - Single-file Python stdlib server: `/var/www/store/store.py`
 - systemd: `throway-store.service` (port 8111, auto-start/restart)
-- nginx: `/throway/` + `/store/` proxy on `lubu.skale.dev` (443)
+- nginx: `/throway/` proxy on lubu (port 8001)
+- **Front door**: `skale.dev` + `www.skale.dev` -> amd2 (`158.180.42.218`), nginx
+  proxies `/throway/` -> lubu; TLS via certbot (HTTP-01)
+- Canonical URL: `https://skale.dev/throway` (also served at
+  `https://lubu.skale.dev/throway`)

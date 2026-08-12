@@ -30,32 +30,32 @@ Everything you upload gets a URL that **expires in 4 hours** and disappears.
 ```bash
 # upload a file → get a URL back
 curl -X POST --data-binary @photo.png \
-  "https://lubu.skale.dev/throway/?name=photo.png"
+  "https://skale.dev/throway/?name=photo.png"
 
-# → {"id":"4f2a…","url":"https://lubu.skale.dev/throway/4f2a…","size":148,…}
+# → {"id":"4f2a…","url":"https://skale.dev/throway/4f2a…","size":148,…}
 ```
 
 ```bash
 # upload a bundle (a mini website) → one URL, files at /<id>/<file>
 curl -F "f=@index.html;type=text/html" \
      -F "f=@style.css;type=text/css" \
-     "https://lubu.skale.dev/throway/"
+     "https://skale.dev/throway/"
 # → {"id":"…","bundle":true,"files":[{name,url,size,content_type},…]}
 ```
 
 ```bash
 # download / view
-curl "https://lubu.skale.dev/throway/<id>"
+curl "https://skale.dev/throway/<id>"
 
 # edit text (replace / append)
-curl -X PUT   --data-binary "new text"     "https://lubu.skale.dev/throway/<id>"
-curl -X PATCH --data-binary "append this"  "https://lubu.skale.dev/throway/<id>"
+curl -X PUT   --data-binary "new text"     "https://skale.dev/throway/<id>"
+curl -X PATCH --data-binary "append this"  "https://skale.dev/throway/<id>"
 
 # delete
-curl -X DELETE "https://lubu.skale.dev/throway/<id>"
+curl -X DELETE "https://skale.dev/throway/<id>"
 ```
 
-> **Live instance:** `https://lubu.skale.dev/throway/`
+> **Live instance:** `https://skale.dev/throway/`
 
 ## 🧭 Endpoints
 
@@ -119,16 +119,16 @@ root URL it gets a compact, structured `--help` summary with pointers to the
 full guide and the machine-readable contract:
 
 ```bash
-curl -A "curl" "https://lubu.skale.dev/throway/"   # --help summary + pointers
-curl "https://lubu.skale.dev/throway/api"          # machine-readable contract
-curl "https://lubu.skale.dev/throway/write_for_agents"  # full usage guide
+curl -A "curl" "https://skale.dev/throway/"   # --help summary + pointers
+curl "https://skale.dev/throway/api"          # machine-readable contract
+curl "https://skale.dev/throway/write_for_agents"  # full usage guide
 ```
 
 Help is **modular** — fetch an index, then pull only the topics you need:
 
 ```bash
-curl -A "curl" "https://lubu.skale.dev/throway/help"          # JSON topic index
-curl -A "curl" "https://lubu.skale.dev/throway/help/named_dirs"  # one topic
+curl -A "curl" "https://skale.dev/throway/help"          # JSON topic index
+curl -A "curl" "https://skale.dev/throway/help/named_dirs"  # one topic
 ```
 
 See **[`AGENTS.md`](AGENTS.md)** for the complete agent guide.

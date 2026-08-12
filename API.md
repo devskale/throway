@@ -4,7 +4,7 @@ A disposable file store. Upload a file — or a **bundle** of files (e.g. a
 website) — and get back a URL valid for **4 hours**. Files auto-expire and
 are deleted. No auth required.
 
-**Base URL:** `https://lubu.skale.dev/throway`
+**Base URL:** `https://skale.dev/throway`
 
 > The machine-readable contract is always available at `GET {base}/api`.
 > An agent should read that endpoint first to discover current limits.
@@ -22,19 +22,19 @@ are deleted. No auth required.
 ### Option A — raw body (simplest)
 ```bash
 curl -X POST --data-binary @photo.png \
-  "https://lubu.skale.dev/throway/?name=photo.png"
+  "https://skale.dev/throway/?name=photo.png"
 ```
 
 ### Option B — multipart form (single file)
 ```bash
-curl -F "file=@photo.png" "https://lubu.skale.dev/throway/"
+curl -F "file=@photo.png" "https://skale.dev/throway/"
 ```
 
 ### Success response (JSON)
 ```json
 {
   "id": "96c31bf491abdf91",
-  "url": "https://lubu.skale.dev/throway/96c31bf491abdf91",
+  "url": "https://skale.dev/throway/96c31bf491abdf91",
   "size": 148,
   "name": "photo.png",
   "content_type": "image/png",
@@ -60,18 +60,18 @@ URL holding several files (e.g. an `index.html` + `style.css` website).
 ```bash
 curl -F "f=@index.html;type=text/html" \
      -F "f=@style.css;type=text/css" \
-     "https://lubu.skale.dev/throway/"
+     "https://skale.dev/throway/"
 ```
 
 ### Success response (JSON)
 ```json
 {
   "id": "9c0f2b8a1d4e6f03",
-  "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03",
+  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03",
   "bundle": true,
   "files": [
-    {"name": "index.html", "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html"},
-    {"name": "style.css",  "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css"}
+    {"name": "index.html", "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html"},
+    {"name": "style.css",  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css"}
   ],
   "size": 277,
   "expires_in": 14400,
@@ -87,7 +87,7 @@ curl -F "f=@index.html;type=text/html" \
 - Append `?download=1` to force a download of any file.
 
 ```bash
-curl -O "https://lubu.skale.dev/throway/<id>"
+curl -O "https://skale.dev/throway/<id>"
 ```
 
 ## View / download a bundle
@@ -104,7 +104,7 @@ If a bundle has no `index.html`, browsers get a simple file listing instead.
 The whole bundle shares one 4-hour expiry and is evicted as one unit.
 
 ```bash
-curl -O "https://lubu.skale.dev/throway/<id>/style.css"
+curl -O "https://skale.dev/throway/<id>/style.css"
 ```
 
 ## Create / use a dir (mutable)
@@ -115,14 +115,14 @@ deleted **4h after the latest upload** (capped at 24h total).
 ### Create
 `POST {base}/?dir=1` — create an empty dir.
 ```bash
-curl -X POST "https://lubu.skale.dev/throway/?dir=1"
+curl -X POST "https://skale.dev/throway/?dir=1"
 # -> {"id":"…","url":"…/<dirid>","dir":true,"files":[],"expires_at":"…"}
 ```
 
 ### Add files
 `POST {base}/<dirid>` — multipart file parts; **resets the 4h TTL**.
 ```bash
-curl -F "f=@note.txt" "https://lubu.skale.dev/throway/<dirid>"
+curl -F "f=@note.txt" "https://skale.dev/throway/<dirid>"
 # -> {"id":"…","dir":true,"files":[{name,url,size,content_type},…],"expires_at":"…"}
 ```
 
@@ -150,7 +150,7 @@ so a team of agents can remember and reuse one shared dir. Lives under `n/<name>
 ### Create-or-get
 `POST {base}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]`
 ```bash
-curl -X POST "https://lubu.skale.dev/throway/?dir=1&name=team7"
+curl -X POST "https://skale.dev/throway/?dir=1&name=team7"
 # -> {"id":"team7","name":"team7","url":"…/n/team7","dir":true,"named":true,"listed":false,"tags":[],"files":[],"expires_at":"…","max_age":604800}
 ```
 **Create-or-get** (idempotent): any agent calling the same create converges
@@ -172,7 +172,7 @@ deleting files does **not** extend it. A named dir dies at its `expires_at`.
 
 ### Using a named dir
 ```bash
-BASE=https://lubu.skale.dev/throway
+BASE=https://skale.dev/throway
 curl -F "f=@note.txt" "$BASE/n/team7"          # add files (bumps updated_at)
 curl -A "curl" "$BASE/n/team7"                 # list (JSON for agents, HTML for browsers)
 curl "$BASE/n/team7/note.txt"                  # fetch one file
@@ -202,34 +202,34 @@ For **text** files only (images are immutable). Both return the updated JSON met
 
 ### Replace (edit) — `PUT /<id>`
 ```bash
-curl -X PUT --data-binary "new full text" "https://lubu.skale.dev/throway/<id>"
+curl -X PUT --data-binary "new full text" "https://skale.dev/throway/<id>"
 ```
 
 ### Append — `PATCH /<id>`
 ```bash
-curl -X PATCH --data-binary "text to add" "https://lubu.skale.dev/throway/<id>"
+curl -X PATCH --data-binary "text to add" "https://skale.dev/throway/<id>"
 ```
 
 > `PUT`/`PATCH` on a non-text file (e.g. an image) returns `400`.
 
 ## Delete a file
 ```bash
-curl -X DELETE "https://lubu.skale.dev/throway/<id>"
+curl -X DELETE "https://skale.dev/throway/<id>"
 ```
 
 ## Contract endpoint
 ```bash
-curl "https://lubu.skale.dev/throway/api"
+curl "https://skale.dev/throway/api"
 ```
 Returns current limits + endpoint descriptions as JSON.
 
 ## Help (modular, API-gatherable)
 ```bash
 # JSON index of help topics (agents)
-curl -A "curl" "https://lubu.skale.dev/throway/help"
+curl -A "curl" "https://skale.dev/throway/help"
 
 # one topic as plain text
-curl -A "curl" "https://lubu.skale.dev/throway/help/named_dirs"
+curl -A "curl" "https://skale.dev/throway/help/named_dirs"
 ```
 Topics: `overview`, `files`, `bundles`, `dirs`, `named_dirs`, `view`,
 `edit`, `delete`, `limits`, `contract`. Browsers get an HTML index / page;
