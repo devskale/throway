@@ -37,7 +37,7 @@ PUBLIC_BASE = "https://lubu.skale.dev/throway"
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)

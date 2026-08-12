@@ -1,9 +1,19 @@
 # throway — Releases
 
-**Current version:** `1.4.0`
+**Current version:** `1.4.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.4.1 — 2026-08-12
+
+### Changed
+- Polished the web UI across all pages: a clean white design with drag &
+  drop upload, one-click URL copy, a "create a dir" toggle, feature cards,
+  and a stats grid on the landing page. Releases and bundle/dir listing
+  pages match the same minimal white look.
 
 ---
 
