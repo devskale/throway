@@ -9,9 +9,9 @@
 [![Zero deps](https://img.shields.io/badge/dependencies-zero-4caf50)](store.py)
 [![Status](https://img.shields.io/badge/status-live-00c853)](#-live-instance)
 
-Share a file, pass data between agents, or keep a text scratchpad — without
-accounts, without setup, without leftovers. Everything you upload gets a URL
-that **expires in 4 hours** and disappears.
+Share a file, pass data between agents, host a throwaway website, or keep a
+text scratchpad — without accounts, without setup, without leftovers.
+Everything you upload gets a URL that **expires in 4 hours** and disappears.
 
 </div>
 
@@ -36,6 +36,14 @@ curl -X POST --data-binary @photo.png \
 ```
 
 ```bash
+# upload a bundle (a mini website) → one URL, files at /<id>/<file>
+curl -F "f=@index.html;type=text/html" \
+     -F "f=@style.css;type=text/css" \
+     "https://lubu.skale.dev/throway/"
+# → {"id":"…","bundle":true,"files":[{name,url,size,content_type},…]}
+```
+
+```bash
 # download / view
 curl "https://lubu.skale.dev/throway/<id>"
 
@@ -53,8 +61,10 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 
 | Method | Path | Action |
 |--------|------|--------|
-| `POST` | `/throway/?name=<file>` | upload (raw body or multipart) |
-| `GET` | `/throway/<id>` | download / view |
+| `POST` | `/throway/?name=<file>` | upload a file (raw body or multipart) |
+| `POST` | `/throway/` | upload a bundle (multipart, 2+ files) |
+| `GET` | `/throway/<id>` | download / view a file, or a bundle root |
+| `GET` | `/throway/<id>/<file>` | fetch one file from a bundle |
 | `GET` | `/throway/<id>?download=1` | force download |
 | `PUT` | `/throway/<id>` | replace text (text only) |
 | `PATCH` | `/throway/<id>` | append text (text only) |
@@ -74,8 +84,13 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 
 ## 🖼️ Behavior
 
-- **Images** render inline in the browser (a viewer). Everything else downloads.
-  Append `?download=1` to force a download of any file.
+- **Images and text-like types** (text, html, json, pdf, svg) render inline in
+  the browser (a viewer). Everything else downloads. Append `?download=1` to
+  force a download of any file.
+- **Bundles** (2+ files) are served under one URL: browsers get `index.html`
+  rendered inline (a real throwaway website), agents get a zip, and each file
+  is reachable at `/throway/<id>/<filename>`. The whole bundle shares one
+  4-hour expiry and is evicted as one unit.
 - **Text files** are editable — `PUT` rewrites the whole content, `PATCH` appends.
   Images are immutable.
 - **File URLs are never listed** on the main page — you only get them from the

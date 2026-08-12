@@ -17,6 +17,8 @@ Auth:      none
 1. `POST` a file → get back JSON with an `id` and `url`.
 2. Share that `url`. It's valid for 4 hours.
 3. `GET` to download, `PUT`/`PATCH` to edit text, `DELETE` to remove.
+4. `POST` 2+ files in one multipart body → a **bundle** (e.g. a website)
+   under one URL, served at `/throway/<id>/<filename>`.
 
 ---
 
@@ -65,15 +67,55 @@ curl -F "file=@photo.png" "https://lubu.skale.dev/throway/"
 
 ---
 
+## Upload a bundle (multiple files)
+
+`POST` 2+ file parts in a single multipart body to create a **bundle** — one
+URL that holds several files (e.g. an `index.html` + `style.css` website).
+
+```bash
+curl -F "f=@index.html;type=text/html" \
+     -F "f=@style.css;type=text/css" \
+     "https://lubu.skale.dev/throway/"
+```
+
+### Response (JSON)
+```json
+{
+  "id": "9c0f2b8a1d4e6f03",
+  "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03",
+  "bundle": true,
+  "files": [
+    {"name": "index.html", "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html"},
+    {"name": "style.css",  "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css"}
+  ],
+  "size": 277,
+  "expires_in": 14400,
+  "expires_at": "2026-08-12T12:19:14Z"
+}
+```
+
+- **Bundle root** `GET /throway/<id>` serves `index.html` inline to browsers
+  (a real mini-website), or the whole bundle as a **zip** to agents/curl.
+- **Each file** is reachable at `GET /throway/<id>/<filename>` (inline for
+  text/images, download otherwise). Relative links between files just work.
+- **`?download=1`** forces the whole bundle as a zip.
+- If a bundle has no `index.html`, browsers get a simple file listing instead.
+- The whole bundle shares one 4-hour expiry and is evicted as one unit.
+
+---
+
 ## Download / view
 
 ```bash
 curl "https://lubu.skale.dev/throway/<id>"
 ```
 
-- **Images** render inline in a browser (viewer).
+- **Images and text-like types** (text, html, json, pdf, svg) render inline
+  in a browser (viewer).
 - **Everything else** downloads.
 - Append `?download=1` to force a download of any file.
+- For a **bundle**, `GET /throway/<id>` renders `index.html` inline (browser)
+  or returns a zip (agent); `GET /throway/<id>/<file>` serves one file.
 
 ---
 

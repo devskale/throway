@@ -1,9 +1,12 @@
 # PRD — Throway
 
-A disposable file store. Upload a thing, get back a short-lived URL. No auth, nothing permanent.
+A disposable file store. Upload a thing — or a **bundle** of files (e.g. a
+website) — and get back a short-lived URL. No auth, nothing permanent.
 
 ## Purpose
-Share files (images, text, binaries) via a URL without accounts or setup. Doubles as a text scratchpad. Built for agents and humans alike.
+Share files (images, text, binaries) or a whole mini-website via a URL without
+accounts or setup. Doubles as a text scratchpad. Built for agents and humans
+alike.
 
 ## URL
 - Site: `https://lubu.skale.dev/throway/`
@@ -13,8 +16,11 @@ Share files (images, text, binaries) via a URL without accounts or setup. Double
 
 ### Must
 - Upload a file → returns a URL
+- Upload **2+ files (multipart) → a bundle** under one URL; files served at
+  `/throway/<id>/<file>`; `index.html` renders inline for browsers (a real
+  throwaway website); agents get a zip
 - URL valid **4 hours** by default, then auto-expired & deleted
-- Images render inline (viewer); other files download; `?download=1` forces download
+- Images and text-like types render inline (viewer); other files download; `?download=1` forces download
 - Text files editable: `PUT` = replace, `PATCH` = append
 - Rolling **100 MB** pool (oldest evicted first)
 - Max file **5 MB**
@@ -26,19 +32,22 @@ Share files (images, text, binaries) via a URL without accounts or setup. Double
 ### Should
 - Simple raw-body `POST` + standard multipart `POST`
 - Clean JSON responses with `id`, `url`, `size`, `name`, `content_type`, `expires_in`, `expires_at`
-- Safe filenames (sanitized, no path traversal)
+- Safe filenames (sanitized, no path traversal); dedupe name collisions in a bundle
 
 ### Won't (v1)
 - No persistence beyond 4h
 - No per-file auth / private files
 - No search, no user accounts, no quota per user
+- No adding files to an existing bundle (bundles are immutable snapshots)
 
 ## API
 
 | Method | Path | Action |
 |---|---|---|
-| POST | `/throway/?name=<file>` | upload (raw body or multipart) |
-| GET | `/throway/<id>` | download / view |
+| POST | `/throway/?name=<file>` | upload a file (raw body or multipart) |
+| POST | `/throway/` | upload a bundle (multipart, 2+ files) |
+| GET | `/throway/<id>` | download / view a file, or a bundle root |
+| GET | `/throway/<id>/<file>` | fetch one file from a bundle |
 | GET | `/throway/<id>?download=1` | force download |
 | PUT | `/throway/<id>` | replace text content (text only) |
 | PATCH | `/throway/<id>` | append text (text only) |
@@ -55,8 +64,11 @@ Share files (images, text, binaries) via a URL without accounts or setup. Double
 
 ## Storage
 - Location: `/srv/storage2/throway/` (USB HDD)
-- Files stored by random hex id; original name kept in `.meta`
-- Sweep deletes expired files
+- Single files stored by random hex id; original name kept in `.meta`
+- Bundles stored as a directory per id: `ROOT/<bundleid>/` with the files plus
+  a `<bundleid>.meta` manifest (shared expiry, ctype map)
+- Sweep deletes expired files and whole bundles; eviction treats a bundle as
+  one unit (oldest first)
 
 ## Errors
 | Code | Meaning |

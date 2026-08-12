@@ -2,17 +2,23 @@
 """Disposable throwaway store — upload, get a 4-hour URL back.
 
 - Upload a thing -> stored under a random ID -> returns a URL
+- Upload 2+ files (multipart) -> a BUNDLE under one URL, files served
+  at /<id>/<filename>; index.html renders inline for browsers (a mini
+  throwaway website), whole bundle is a zip for agents
 - URL valid for TTL_HOURS (default 4) — files expire & auto-delete
-- Images render inline in browser (viewer); non-images download
+- Images + text-like types render inline in browser; others download
   ?download=1 forces a download for any file
 - Rolling THROW_POOL_SIZE pool (oldest evicted first)
 - Max file MAX_FILE, no auth, RATE_LIMIT req/min per IP
 """
 import os
 import re
+import io
 import json
 import time
+import shutil
 import secrets
+import zipfile
 import mimetypes
 import html as _html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -82,29 +88,55 @@ def allowed(ip):
     t.append(now)
     return True
 
+def _dir_size(p):
+    """Total bytes of all files inside a bundle directory (excl. .meta)."""
+    total = 0
+    try:
+        for f in os.listdir(p):
+            fp = os.path.join(p, f)
+            if os.path.isfile(fp) and not f.endswith(".meta"):
+                total += os.path.getsize(fp)
+    except OSError:
+        pass
+    return total
+
 def total_size():
-    return sum(os.path.getsize(os.path.join(ROOT, f))
-               for f in os.listdir(ROOT)
-               if os.path.isfile(os.path.join(ROOT, f))
-               and not f.endswith(".meta"))
+    """Total bytes of all stored data (single files + bundle contents)."""
+    total = 0
+    for f in os.listdir(ROOT):
+        p = os.path.join(ROOT, f)
+        if os.path.isfile(p):
+            if not f.endswith(".meta"):
+                total += os.path.getsize(p)
+        elif os.path.isdir(p):
+            total += _dir_size(p)
+    return total
+
+def _units():
+    """Yield (path, is_dir, mtime) for each top-level storage unit.
+    Units are single files OR whole bundle directories — eviction/expiry
+    treats each as one atomic thing."""
+    for f in os.listdir(ROOT):
+        if f.endswith(".meta"):
+            continue
+        p = os.path.join(ROOT, f)
+        if os.path.isfile(p) or os.path.isdir(p):
+            yield p, os.path.isdir(p), os.path.getmtime(p)
 
 def evict(target):
-    """Delete oldest files (by mtime) until total data size <= target."""
+    """Delete oldest units (by mtime) until total data size <= target."""
     while total_size() > target:
-        files = [os.path.join(ROOT, f) for f in os.listdir(ROOT)
-                 if os.path.isfile(os.path.join(ROOT, f))
-                 and not f.endswith(".meta")]
-        if not files:
+        units = list(_units())
+        if not units:
             return
-        oldest = min(files, key=os.path.getmtime)
-        _remove(oldest)
+        oldest = min(units, key=lambda u: u[2])
+        _remove_unit(oldest[0], oldest[1])
 
 def _remove(fp):
     try:
         os.remove(fp)
     except OSError:
         pass
-    # remove matching .meta
     mp = fp + ".meta"
     if os.path.isfile(mp):
         try:
@@ -112,26 +144,48 @@ def _remove(fp):
         except OSError:
             pass
 
+def _remove_unit(path, is_dir):
+    if is_dir:
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        _remove(path)
+
+def _bundle_meta(dirpath, fid):
+    """Read a bundle's manifest; None if missing/unreadable."""
+    mp = os.path.join(dirpath, fid + ".meta")
+    if os.path.isfile(mp):
+        try:
+            return json.load(open(mp))
+        except Exception:
+            pass
+    return None
+
 def sweep():
-    """Delete expired files."""
+    """Delete expired files and bundles."""
     now = time.time()
     for f in os.listdir(ROOT):
         if f.endswith(".meta"):
             continue
-        fp = os.path.join(ROOT, f)
-        if not os.path.isfile(fp):
-            continue
-        mp = fp + ".meta"
-        expires = None
-        if os.path.isfile(mp):
-            try:
-                expires = json.load(open(mp)).get("expires")
-            except Exception:
-                pass
-        if expires is None:
-            expires = os.path.getmtime(fp) + TTL_HOURS * 3600
-        if expires < now:
-            _remove(fp)
+        p = os.path.join(ROOT, f)
+        if os.path.isfile(p):
+            mp = p + ".meta"
+            expires = None
+            if os.path.isfile(mp):
+                try:
+                    expires = json.load(open(mp)).get("expires")
+                except Exception:
+                    pass
+            if expires is None:
+                expires = os.path.getmtime(p) + TTL_HOURS * 3600
+            if expires < now:
+                _remove(p)
+        elif os.path.isdir(p):
+            m = _bundle_meta(p, f)
+            expires = (m or {}).get("expires")
+            if expires is None:
+                expires = os.path.getmtime(p) + TTL_HOURS * 3600
+            if expires < now:
+                shutil.rmtree(p, ignore_errors=True)
 
 def _safe_name(name):
     """Reduce a user filename to a safe basename for Content-Disposition."""
@@ -143,34 +197,53 @@ def _safe_name(name):
     return name or None
 
 def _parse_multipart(payload, content_type):
-    """Extract (filename, data, ctype) from a multipart/form-data body."""
+    """Extract a list of (filename, data, ctype) from multipart/form-data."""
     import email
     import email.parser
     try:
         msg = email.parser.BytesParser().parsebytes(payload)
     except Exception:
-        return None, None, None
+        return []
     if not msg.is_multipart():
         # fallback: manual boundary split
         m = re.search(r'boundary="?([^";]+)"?', content_type)
         if not m:
-            return None, None, None
+            return []
         boundary = m.group(1).encode()
         parts = payload.split(b"--" + boundary)
+        out = []
         for part in parts:
             if b"filename=" in part[:200]:
                 header, _, body = part.partition(b"\r\n\r\n")
                 hm = re.search(r'filename="([^"]*)"', header.decode("latin1"))
                 name = hm.group(1) if hm else None
                 ctype = re.search(r'Content-Type:\s*(\S+)', header.decode("latin1"), re.I)
-                return name, body.rstrip(b"\r\n--"), (ctype.group(1) if ctype else "application/octet-stream")
-        return None, None, None
+                out.append((name, body.rstrip(b"\r\n--"),
+                            ctype.group(1) if ctype else "application/octet-stream"))
+        return out
+    out = []
     for part in msg.get_payload():
         fn = part.get_filename()
         if fn:
             data = part.get_payload(decode=True) or b""
-            return fn, data, part.get_content_type() or "application/octet-stream"
-    return None, None, None
+            out.append((fn, data, part.get_content_type() or "application/octet-stream"))
+    return out
+
+def _dedupe_names(names):
+    """Rename collisions within a bundle: a.txt, a-1.txt, a-2.txt …"""
+    seen = {}
+    out = []
+    for n in names:
+        base = n
+        if base in seen:
+            stem, ext = os.path.splitext(base)
+            i = 1
+            while f"{stem}-{i}{ext}" in seen:
+                i += 1
+            base = f"{stem}-{i}{ext}"
+        seen[base] = True
+        out.append(base)
+    return out
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -201,6 +274,68 @@ class Handler(BaseHTTPRequestHandler):
         return not any(b in ua for b in browsers)
 
 
+    def _serve_file(self, fp, ctype, orig, force_dl, fid):
+        """Serve a single stored file (inline or attachment)."""
+        size = os.path.getsize(fp)
+        is_inline = any(ctype.startswith(p) for p in INLINE_TYPES)
+        if force_dl or not is_inline:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            fname = _safe_name(orig) or fid
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{fname}"')
+            self.end_headers()
+        else:
+            ct = ctype
+            if ctype.startswith("text/") and "charset" not in ctype:
+                ct = ctype + "; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", "inline")
+            self.end_headers()
+        with open(fp, "rb") as f:
+            while c := f.read(65536):
+                self.wfile.write(c)
+
+    def _serve_bundle_zip(self, dirpath, fid):
+        """Stream the whole bundle as a zip (for agents / ?download=1)."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(os.listdir(dirpath)):
+                if f.endswith(".meta"):
+                    continue
+                z.write(os.path.join(dirpath, f), arcname=f)
+        data = buf.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{fid}.zip"')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _bundle_listing(self, dirpath, fid):
+        """Simple HTML file listing for a bundle with no index.html."""
+        rows = []
+        for f in sorted(os.listdir(dirpath)):
+            if f.endswith(".meta"):
+                continue
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                rows.append((f, os.path.getsize(fp)))
+        lis = "\n".join(
+            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> ({s} B)</li>'
+            for f, s in rows)
+        h = ("<!doctype html><html><head><meta charset=utf-8>"
+             f"<title>throway bundle {fid}</title>"
+             "<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#222}"
+             "a{color:#2563eb;text-decoration:none}</style></head><body>"
+             f"<h1>Bundle {fid}</h1><ul>{lis}</ul>"
+             f"<p><a href='?download=1'>download as zip</a></p></body></html>")
+        self._send(200, h, "text/html")
+
     def do_GET(self):
         if not self._rate(): return
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
@@ -214,13 +349,48 @@ class Handler(BaseHTTPRequestHandler):
             return self._write_for_agents()
         if path == "/copy_for_agents":
             return self._copy_for_agents()
-        fid = path.lstrip("/").split("/")[0]
+        parts = path.lstrip("/").split("/")
+        fid = parts[0]
         if not fid or fid.endswith(".meta"):
             return self._send(404, "not found\n")
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        force_dl = "download=1" in query
+        now = time.time()
+
+        # --- bundle directory ---
+        dirpath = os.path.join(ROOT, os.path.basename(fid))
+        if os.path.isdir(dirpath):
+            m = _bundle_meta(dirpath, fid)
+            expires = (m or {}).get("expires")
+            if expires is None:
+                expires = os.path.getmtime(dirpath) + TTL_HOURS * 3600
+            if expires < now:
+                shutil.rmtree(dirpath, ignore_errors=True)
+                return self._send(404, "expired\n")
+            # /<fid>/<file>
+            if len(parts) >= 2 and parts[1]:
+                fname = os.path.basename(parts[1])
+                if not fname or fname.endswith(".meta"):
+                    return self._send(404, "not found\n")
+                fpath = os.path.join(dirpath, fname)
+                if not os.path.isfile(fpath):
+                    return self._send(404, "not found\n")
+                ctype = (m or {}).get("files", {}).get(fname)
+                if not ctype:
+                    ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+                return self._serve_file(fpath, ctype, fname, force_dl, fname)
+            # bundle root
+            if force_dl or self._is_agent():
+                return self._serve_bundle_zip(dirpath, fid)
+            index = os.path.join(dirpath, "index.html")
+            if os.path.isfile(index):
+                return self._serve_file(index, "text/html", "index.html", False, "index.html")
+            return self._bundle_listing(dirpath, fid)
+
+        # --- single file ---
         fp = _id_path(fid)
         if not os.path.isfile(fp):
             return self._send(404, "not found\n")
-        # expiry check
         mp = fp + ".meta"
         expires = None
         if os.path.isfile(mp):
@@ -230,11 +400,9 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         if expires is None:
             expires = os.path.getmtime(fp) + TTL_HOURS * 3600
-        if expires < time.time():
+        if expires < now:
             _remove(fp)
             return self._send(404, "expired\n")
-
-        # meta content-type / original name
         ctype = "application/octet-stream"
         orig = None
         if os.path.isfile(mp):
@@ -244,31 +412,7 @@ class Handler(BaseHTTPRequestHandler):
                 orig = m.get("name")
             except Exception:
                 pass
-        query = self.path.split("?", 1)[1] if "?" in self.path else ""
-        force_dl = "download=1" in query
-        is_inline = any(ctype.startswith(p) for p in INLINE_TYPES)
-        size = os.path.getsize(fp)
-        if force_dl or not is_inline:
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(size))
-            fname = _safe_name(orig) or fid
-            self.send_header("Content-Disposition",
-                             f'attachment; filename="{fname}"')
-            self.end_headers()
-        else:
-            # viewer: render inline (images + text-like types)
-            ct = ctype
-            if ctype.startswith("text/") and "charset" not in ctype:
-                ct = ctype + "; charset=utf-8"
-            self.send_response(200)
-            self.send_header("Content-Type", ct)
-            self.send_header("Content-Length", str(size))
-            self.send_header("Content-Disposition", "inline")
-            self.end_headers()
-        with open(fp, "rb") as f:
-            while c := f.read(65536):
-                self.wfile.write(c)
+        self._serve_file(fp, ctype, orig, force_dl, fid)
 
     def do_POST(self):
         if not self._rate(): return
@@ -284,12 +428,15 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_body()
             if payload is None:
                 return
-            name, data, ctype = _parse_multipart(payload, ctype)
-            if data is None:
+            files = _parse_multipart(payload, ctype)
+            named = [(n, d, c) for (n, d, c) in files if n]
+            if not named:
                 return self._send(400, json.dumps({"error": "no file part in multipart body"}), "application/json")
-            if name:
-                name_hint = _safe_name(name)[:128]
-            return self._store(data, name_hint or None, ctype)
+            # multiple files -> bundle
+            if len(named) > 1:
+                return self._store_bundle(named)
+            n, d, c = named[0]
+            return self._store(d, _safe_name(n)[:128] or None, c)
 
         # raw-body upload: body is the file content
         length = self.headers.get("Content-Length")
@@ -343,9 +490,65 @@ class Handler(BaseHTTPRequestHandler):
         })
         self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
 
+    def _store_bundle(self, files):
+        """Store multiple files as a bundle directory; return JSON response."""
+        clean = []
+        for n, d, c in files:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            if len(d) > MAX_FILE:
+                return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+            clean.append((safe, d, c))
+        if not clean:
+            return self._send(400, json.dumps({"error": "no valid file parts"}), "application/json")
+        names = _dedupe_names([n for n, _, _ in clean])
+        fid = secrets.token_hex(8)
+        dirpath = os.path.join(ROOT, fid)
+        os.makedirs(dirpath, exist_ok=True)
+        files_map = {}
+        for (_, d, c), name in zip(clean, names):
+            with open(os.path.join(dirpath, name), "wb") as f:
+                f.write(d)
+            files_map[name] = c or "application/octet-stream"
+        meta = {
+            "bundle": True,
+            "expires": time.time() + TTL_HOURS * 3600,
+            "created": time.time(),
+            "files": files_map,
+        }
+        json.dump(meta, open(os.path.join(dirpath, fid + ".meta"), "w"))
+        evict(THROW_POOL_SIZE)
+        s = _load_stats()
+        s["files"] += len(clean)
+        s["bytes"] += sum(len(d) for _, d, _ in clean)
+        _save_stats(s)
+        expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"]))
+        body = json.dumps({
+            "id": fid,
+            "url": f"{PUBLIC_BASE}/{fid}",
+            "bundle": True,
+            "files": [
+                {"name": n,
+                 "url": f"{PUBLIC_BASE}/{fid}/{n}",
+                 "size": os.path.getsize(os.path.join(dirpath, n)),
+                 "content_type": files_map[n]}
+                for n in names
+            ],
+            "size": sum(os.path.getsize(os.path.join(dirpath, n)) for n in names),
+            "expires_in": TTL_HOURS * 3600,
+            "expires_at": expires_at,
+        })
+        self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
+
     def do_DELETE(self):
         if not self._rate(): return
         fid = self.path.lstrip("/").split("/")[0]
+        dirpath = os.path.join(ROOT, os.path.basename(fid))
+        if os.path.isdir(dirpath):
+            shutil.rmtree(dirpath, ignore_errors=True)
+            self._send(200, "deleted\n")
+            return
         fp = _id_path(fid)
         if os.path.isfile(fp):
             _remove(fp); self._send(200, "deleted\n")
@@ -430,6 +633,7 @@ expires after {TTL_HOURS} hours.
 
 WHAT IT IS FOR
 - Sharing a file (image, text, binary) by giving someone a URL.
+- Sharing a BUNDLE of files (e.g. an html/css/js website) under one URL.
 - A scratchpad for text: create a note, append to it, rewrite it.
 - Passing data between agents / machines without setting up accounts.
 
@@ -446,11 +650,20 @@ Base URL: {PUBLIC_BASE}
    with the file bytes as the body.
    -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.
 
+   UPLOAD a BUNDLE (multiple files, e.g. a website):
+   POST {PUBLIC_BASE}/   with multipart/form-data containing 2+ file parts.
+   -> Returns JSON: id, url, bundle:true, files:[{name,url,size,content_type}…].
+   The bundle URL serves index.html inline (or a zip for agents).
+   Each file is reachable at {PUBLIC_BASE}/<id>/<filename>.
+
 2) DOWNLOAD / VIEW a file:
    GET {PUBLIC_BASE}/<id>
    Images and text-like types (text, html, json, pdf, svg) render inline
    in a browser; other files download.
-   Append ?download=1 to force a download of any file.
+   For a bundle, GET {PUBLIC_BASE}/<id> serves index.html inline (browser)
+   or the whole bundle as a zip (agents). GET {PUBLIC_BASE}/<id>/<file>
+   serves one file.
+   Append ?download=1 to force a download of any file or the bundle zip.
 
 3) EDIT TEXT (text files only; images are immutable):
    PUT   {PUBLIC_BASE}/<id>   with new text body  -> replace whole content
@@ -522,7 +735,15 @@ function copyDesc() {{
                     "body": "raw file bytes (or multipart/form-data with a file part)",
                     "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "expires_in": "int", "expires_at": "str"},
                 },
-                "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types (text, html, json, pdf, svg) render inline; append ?download=1 to force download"},
+                "upload_bundle": {
+                    "method": "POST",
+                    "url": PUBLIC_BASE + "/",
+                    "body": "multipart/form-data with 2+ file parts",
+                    "note": "creates a bundle: one URL, files served at /<id>/<filename>, index.html inline for browsers",
+                    "response": {"id": "str", "url": "str", "bundle": True, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str"}], "expires_at": "str"},
+                },
+                "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
+                "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
                 "delete": {"method": "DELETE", "url": PUBLIC_BASE + "/<id>"},
                 "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content"},
                 "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)"},
@@ -592,7 +813,7 @@ def _index(self):
          f"<div><b>total:</b> {tot_files} files, {_fmt_size(tot_bytes)} ever</div>"
          f"</div>"
          f"<form id='upload' method='post' action='{PREFIX}/' enctype='multipart/form-data'>"
-         "<input type='file' name='f' required><input type='submit' value='Upload'></form>"
+         "<input type='file' name='f' multiple required><input type='submit' value='Upload'></form>"
          "<div id='status'></div>"
          "<div id='result'></div>"
          f"<p class='hint'>Files live ~{TTL_HOURS}h. "

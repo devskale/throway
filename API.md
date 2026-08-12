@@ -1,7 +1,8 @@
 # Throwaway Store — Agent API
 
-A disposable file store. Upload a file, get back a URL valid for **4 hours**.
-Files auto-expire and are deleted. No auth required.
+A disposable file store. Upload a file — or a **bundle** of files (e.g. a
+website) — and get back a URL valid for **4 hours**. Files auto-expire and
+are deleted. No auth required.
 
 **Base URL:** `https://lubu.skale.dev/throway`
 
@@ -24,7 +25,7 @@ curl -X POST --data-binary @photo.png \
   "https://lubu.skale.dev/throway/?name=photo.png"
 ```
 
-### Option B — multipart form
+### Option B — multipart form (single file)
 ```bash
 curl -F "file=@photo.png" "https://lubu.skale.dev/throway/"
 ```
@@ -51,14 +52,59 @@ The `url` field is what you share. It is valid until `expires_at`.
 | 413 | file too large (> 5 MB) |
 | 429 | rate limit exceeded |
 
+## Upload a bundle (multiple files)
+
+`POST` 2+ file parts in a single multipart body creates a **bundle** — one
+URL holding several files (e.g. an `index.html` + `style.css` website).
+
+```bash
+curl -F "f=@index.html;type=text/html" \
+     -F "f=@style.css;type=text/css" \
+     "https://lubu.skale.dev/throway/"
+```
+
+### Success response (JSON)
+```json
+{
+  "id": "9c0f2b8a1d4e6f03",
+  "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03",
+  "bundle": true,
+  "files": [
+    {"name": "index.html", "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html"},
+    {"name": "style.css",  "url": "https://lubu.skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css"}
+  ],
+  "size": 277,
+  "expires_in": 14400,
+  "expires_at": "2026-08-12T12:19:14Z"
+}
+```
+
 ## Download / view a file
 `GET {base}/<id>`
-- **Images** render inline in the browser (viewer).
+- **Images and text-like types** (text, html, json, pdf, svg) render inline
+  in the browser (viewer).
 - **Everything else** downloads.
 - Append `?download=1` to force a download of any file.
 
 ```bash
 curl -O "https://lubu.skale.dev/throway/<id>"
+```
+
+## View / download a bundle
+`GET {base}/<id>` — the bundle root:
+- **Browsers** get `index.html` rendered inline (a real mini-website);
+  relative links to other bundle files just work.
+- **Agents / curl** get the whole bundle as a **zip**.
+- `?download=1` forces the zip download for anyone.
+
+`GET {base}/<id>/<filename>` — fetch one file from the bundle (inline for
+text/images, download otherwise).
+
+If a bundle has no `index.html`, browsers get a simple file listing instead.
+The whole bundle shares one 4-hour expiry and is evicted as one unit.
+
+```bash
+curl -O "https://lubu.skale.dev/throway/<id>/style.css"
 ```
 
 ## Edit / append text
