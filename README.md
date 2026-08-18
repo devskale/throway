@@ -11,7 +11,8 @@
 
 Share a file, pass data between agents, host a throwaway website, or keep a
 text scratchpad — without accounts, without setup, without leftovers.
-Everything you upload gets a URL that **expires in 4 hours** and disappears.
+Everything you upload is **short-lived and auto-expires** (files/bundles in
+4 hours, dirs in up to 7 days) and disappears.
 
 </div>
 
@@ -19,7 +20,8 @@ Everything you upload gets a URL that **expires in 4 hours** and disappears.
 
 ## ✨ Why throway?
 
-- **Disposable by design** — nothing lives longer than 4 hours. No cleanup, no clutter.
+- **Disposable by design** — nothing is permanent. Files/bundles live 4
+  hours; dirs up to 7 days. No cleanup, no clutter.
 - **Dead simple** — one `curl` to upload, one URL to share.
 - **Zero dependencies** — a single Python stdlib file. Runs anywhere.
 - **Agent-friendly** — self-describing API with a machine-readable contract.
@@ -63,22 +65,21 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 |--------|------|--------|
 | `POST` | `/throway/?name=<file>` | upload a file (raw body or multipart) |
 | `POST` | `/throway/` | upload a bundle (multipart, 2+ files) |
-| `POST` | `/throway/?dir=1` | create a mutable dir |
-| `POST` | `/throway/<dirid>` | add files to a dir (resets TTL) |
-| `POST` | `/throway/?dir=1&name=<name>` | create-or-get a **named dir** (`&listed=1`, `&tag=`, `&ttl=`) |
-| `GET` | `/throway/n` | list named dirs (only `listed=1`; filter/sort via query) |
-| `GET` | `/throway/n/<name>` | view a named dir (listing / zip / files) |
-| `POST` | `/throway/n/<name>` | add files to a named dir |
-| `PUT`/`PATCH` | `/throway/n/<name>/<file>` | edit/append text in a named dir |
-| `DELETE` | `/throway/n/<name>` | delete a named dir |
+| `POST` | `/throway/?dir=1[&name=<name>]` | create a dir (unnamed or named; `&listed=1`, `&tag=`, `&ttl=`) |
+| `GET` | `/throway/d` | list dirs (only `listed=1`; filter/sort via query) |
+| `GET` | `/throway/d/<key>` | view a dir (listing / zip / files) |
+| `POST` | `/throway/d/<key>` | add files to a dir |
+| `GET` | `/throway/d/<key>/history` | edit history (JSON for agents, HTML for browsers) |
+| `PUT`/`PATCH` | `/throway/d/<key>/<file>` | edit/append text in a dir |
+| `DELETE` | `/throway/d/<key>` | delete a dir |
+| `DELETE` | `/throway/d/<key>/<file>` | remove one file from a dir |
 | `GET` | `/throway/<id>` | download / view a file, bundle root, or dir listing |
 | `GET` | `/throway/<id>/<file>` | fetch one file from a bundle/dir |
-| `GET` | `/throway/<dirid>?zip=1` | download a whole dir as zip |
+| `GET` | `/throway/d/<key>?zip=1` | download a whole dir as zip |
 | `GET` | `/throway/<id>?download=1` | force download |
 | `PUT` | `/throway/<id>` | replace text (text only) |
 | `PATCH` | `/throway/<id>` | append text (text only) |
 | `DELETE` | `/throway/<id>` | delete file / bundle / dir |
-| `DELETE` | `/throway/<dirid>/<file>` | remove one file from a dir |
 | `GET` | `/throway/api` | machine-readable contract (JSON) |
 | `GET` | `/throway/help` | modular help index (JSON for agents, HTML for browsers) |
 | `GET` | `/throway/help/<topic>` | one help topic (plain text for agents) |
@@ -89,8 +90,9 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 
 | Limit | Value |
 |-------|-------|
-| URL lifetime | **4 hours** (dirs: 4h after latest upload, max 24h total) |
-| Named dir lifetime | **fixed** (default 7 days, `ttl=` override clamped to [4h, 7d]) |
+| URL lifetime | **4 hours** (single files & bundles) |
+| Dir lifetime | **fixed** (default 7 days, `ttl=` override clamped to [4h, 7d]) |
+| Dir history | **last 50 edits** per dir |
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |
 | Rate limit | **100 req/min** per IP |
@@ -104,9 +106,10 @@ curl -X DELETE "https://skale.dev/throway/<id>"
   rendered inline (a real throwaway website), agents get a zip, and each file
   is reachable at `/throway/<id>/<filename>`. The whole bundle shares one
   4-hour expiry and is evicted as one unit.
-- **Dirs** are mutable bundles: create one, keep adding files, and it's
-  deleted **4h after the latest upload** (max 24h total). `GET /<dirid>`
-  returns a JSON listing to agents / an HTML page to browsers.
+- **Dirs** are long-lived, nameable collections under `/d/<key>`: create one,
+  keep adding files and editing them over days, with a **fixed lifetime**
+  (default 7 days) and a lightweight **edit history**. `GET /d/<key>` returns
+  a JSON listing to agents / an HTML page to browsers.
 - **Text files** are editable — `PUT` rewrites the whole content, `PATCH` appends.
   Images are immutable.
 - **File URLs are never listed** on the main page — you only get them from the
@@ -114,21 +117,22 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 
 ## 🤖 For agents
 
-Throway is built to be consumed by other programs. When an agent curls the
-root URL it gets a compact, structured `--help` summary with pointers to the
-full guide and the machine-readable contract:
+Throway is built to be consumed by other programs. **The core principle
+(PRIO 1): an agent needs nothing pre-loaded — it pulls everything it needs
+from the HTML pages, then confirms exact details via `/api` and `/help`.**
 
 ```bash
-curl -A "curl" "https://skale.dev/throway/"   # --help summary + pointers
-curl "https://skale.dev/throway/api"          # machine-readable contract
+curl "https://skale.dev/throway/"              # HTML homepage (embedded Agent info)
+curl "https://skale.dev/throway/api"           # machine-readable contract (JSON)
+curl -A "curl" "https://skale.dev/throway/"    # --help summary + pointers
 curl "https://skale.dev/throway/write_for_agents"  # full usage guide
 ```
 
 Help is **modular** — fetch an index, then pull only the topics you need:
 
 ```bash
-curl -A "curl" "https://skale.dev/throway/help"          # JSON topic index
-curl -A "curl" "https://skale.dev/throway/help/named_dirs"  # one topic
+curl -A "curl" "https://skale.dev/throway/help"       # JSON topic index
+curl -A "curl" "https://skale.dev/throway/help/dirs"   # one topic
 ```
 
 See **[`AGENTS.md`](AGENTS.md)** for the complete agent guide.

@@ -19,14 +19,18 @@ alike.
 - Upload **2+ files (multipart) → a bundle** under one URL; files served at
   `/throway/<id>/<file>`; `index.html` renders inline for browsers (a real
   throwaway website); agents get a zip
-- **Mutable dirs**: create a dir (`?dir=1`), keep adding files, deleted **4h
-  after the latest upload** (capped at 24h total)
-- **Named dirs**: create-or-get a dir by a memorable name (`?dir=1&name=<name>`),
-  fixed lifetime (default 7 days, `ttl=` override clamped to [4h, 7d]), optional
-  `listed=1` + tags, full CRUD under `n/<name>`
+- **Dirs** (one unified concept): create a dir (`?dir=1`, unnamed hex id or
+  `&name=<name>` named), keep adding files, fixed lifetime (default 7 days,
+  `ttl=` override clamped to [4h, 7d]), optional `listed=1` + tags, full CRUD
+  under `/d/<key>`, and a **lightweight edit history** (`GET /d/<key>/history`
+  — last 50 entries: date, file, action, byte deltas)
 - URL valid **4 hours** by default, then auto-expired & deleted
 - Images and text-like types render inline (viewer); other files download; `?download=1` forces download
 - Text files editable: `PUT` = replace, `PATCH` = append
+- **Self-describing responses**: every upload/listing returns `editable` (per
+  file) and a `persistence` block (`type`, `expires_at`, `extendable_by`,
+  `max_age`) so an agent can discover editability & lifetime from the response
+  instead of guessing
 - Rolling **100 MB** pool (oldest evicted first)
 - Max file **5 MB**
 - No auth
@@ -37,15 +41,15 @@ alike.
 
 ### Should
 - Simple raw-body `POST` + standard multipart `POST`
-- Clean JSON responses with `id`, `url`, `size`, `name`, `content_type`, `expires_in`, `expires_at`
+- Clean JSON responses with `id`, `url`, `size`, `name`, `content_type`, `editable`, `persistence`, `expires_in`, `expires_at`
 - Safe filenames (sanitized, no path traversal); dedupe name collisions in a bundle
-- Dir JSON listing (`dir:true`, `files:[{name,url,size,content_type}]`, `expires_at`) for agents
+- Dir JSON listing (`dir:true`, `files:[{name,url,size,content_type,editable}]`, `persistence`, `expires_at`) for agents
 
 ### Won't (v1)
-- No persistence beyond 4h (dirs: beyond 24h total)
 - No per-file auth / private files
 - No search, no user accounts, no quota per user
 - No adding files to an existing bundle (bundles are immutable snapshots)
+- No full-text history / revert — dir history is an overview only (last 50 entries)
 
 ## API
 
@@ -53,22 +57,21 @@ alike.
 |---|---|---|
 | POST | `/throway/?name=<file>` | upload a file (raw body or multipart) |
 | POST | `/throway/` | upload a bundle (multipart, 2+ files) |
-| POST | `/throway/?dir=1` | create a mutable dir |
-| POST | `/throway/?dir=1&name=<name>` | create-or-get a **named dir** (`&listed=1`, `&tag=`, `&ttl=`) |
-| GET | `/throway/n` | list named dirs (only `listed=1`; filter/sort) |
-| POST | `/throway/n/<name>` | add files to a named dir |
-| GET | `/throway/n/<name>` | view a named dir (listing / zip / files) |
-| PUT/PATCH | `/throway/n/<name>/<file>` | edit/append text in a named dir |
-| DELETE | `/throway/n/<name>` | delete a named dir |
-| POST | `/throway/<dirid>` | add files to a dir (resets TTL) |
+| POST | `/throway/?dir=1[&name=<name>]` | create a dir (unnamed or named; `&listed=1`, `&tag=`, `&ttl=`) |
+| GET | `/throway/d` | list dirs (only `listed=1`; filter/sort) |
+| POST | `/throway/d/<key>` | add files to a dir |
+| GET | `/throway/d/<key>` | view a dir (listing / zip / files) |
+| GET | `/throway/d/<key>/history` | edit history (JSON for agents / HTML for browsers) |
+| PUT/PATCH | `/throway/d/<key>/<file>` | edit/append text in a dir |
+| DELETE | `/throway/d/<key>` | delete a dir |
 | GET | `/throway/<id>` | download / view a file, bundle root, or dir listing |
 | GET | `/throway/<id>/<file>` | fetch one file from a bundle/dir |
-| GET | `/throway/<dirid>?zip=1` | download a whole dir as zip |
+| GET | `/throway/d/<key>?zip=1` | download a whole dir as zip |
 | GET | `/throway/<id>?download=1` | force download |
 | PUT | `/throway/<id>` | replace text content (text only) |
 | PATCH | `/throway/<id>` | append text (text only) |
 | DELETE | `/throway/<id>` | delete file / bundle / dir |
-| DELETE | `/throway/<dirid>/<file>` | remove one file from a dir |
+| DELETE | `/throway/d/<key>/<file>` | remove one file from a dir |
 | GET | `/throway/api` | contract (JSON) |
 | GET | `/throway/help` | modular help index (JSON for agents) |
 | GET | `/throway/help/<topic>` | one help topic (plain text for agents) |
@@ -76,8 +79,9 @@ alike.
 | GET | `/throway/copy_for_agents` | copyable description (HTML) |
 
 ## Limits
-- TTL: 4h (14400s); dirs: 4h after latest upload, max 24h total
-- Named dirs: fixed lifetime, default 7d, `ttl=` override clamped to [4h, 7d]
+- TTL: 4h (14400s) for single files & bundles
+- Dirs: fixed lifetime, default 7d, `ttl=` override clamped to [4h, 7d]
+- Dir history: last 50 edits per dir
 - Max file: 5 MB
 - Pool: 100 MB
 - Rate: 100 req/min/IP
@@ -87,11 +91,12 @@ alike.
 - Single files stored by random hex id; original name kept in `.meta`
 - Bundles stored as a directory per id: `ROOT/<bundleid>/` with the files plus
   a `<bundleid>.meta` manifest (shared expiry, ctype map)
-- Named dirs stored at `ROOT/n/<name>/` (separate namespace, no collision with
-  hex ids) with a `<name>.meta` manifest (`named`, `listed`, `tags`, `max_age`,
-  `created`, `updated`, `expires`)
+- Dirs stored at `ROOT/d/<key>/` (keys are hex ids or names; the `d/`
+  namespace keeps names from colliding with hex ids) with a `<key>.meta`
+  manifest (`type`, `created`, `updated`, `expires`, `max_age`, `listed`,
+  `tags`, `files`) and a `<key>.history` log (last 50 edit entries)
 - Sweep deletes expired files and whole bundles; eviction treats a bundle or
-  named dir as one unit (oldest first)
+  dir as one unit (oldest first)
 
 ## Errors
 | Code | Meaning |

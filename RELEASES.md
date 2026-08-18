@@ -1,13 +1,35 @@
 # throway — Releases
 
-**Current version:** `1.7.0`
+**Current version:** `1.9.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
-## 1.7.0 — 2026-08-12
+## 1.9.0 — 2026-08-18
+
+### Changed
+- **Unified the two dir types into one concept.** Mutable dirs (`/<dirid>`,
+  sliding 4h/24h) and named dirs (`n/<name>`) are now a single **dir** under
+  `/d/<key>`, addressable by an opaque id or a memorable name. One storage
+  layout, one TTL model (fixed lifetime, default 7 days, `ttl=` clamped to
+  [4h, 7d]), no duplicated code.
+- All dir endpoints moved under `/d/`: `POST /d/<key>` (add files),
+  `GET /d/<key>` (listing), `GET /d/<key>/<file>`, `PUT`/`PATCH`
+  `/d/<key>/<file>` (edit/append), `DELETE /d/<key>[/<file>]`,
+  `GET /d` (list `listed=1` dirs).
+- **Edit history per dir.** `GET /d/<key>/history` returns the last
+  `HISTORY_LIMIT` (50) entries, newest first — date, file, action
+  (`add`|`put`|`append`|`delete`) and byte deltas. Lightweight by design:
+  no full-text versions, no revert. JSON for agents, HTML for browsers.
+- Removed the old `n/` namespace and the short-lived mutable dirs; existing
+  real dirs were migrated from `n/<name>` to `d/<name>`.
+- Responses carry `editable` (per file) and a `persistence` block (`type`,
+  `expires_at`, `extendable_by`, `max_age`) so agents can discover
+  editability and lifetime from the response instead of guessing.
+
+---
 
 ### Changed
 - **Canonical URL is now `https://skale.dev/throway`.** The front door moved

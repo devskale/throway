@@ -12,7 +12,9 @@ are deleted. No auth required.
 ## Limits
 | Limit | Value |
 |---|---|
-| URL lifetime | 4 hours (14400s) |
+| URL lifetime | 4 hours (14400s) — single files & bundles, fixed |
+| Dir lifetime | fixed, default 7 days (`ttl=` clamp [4h, 7d]) |
+| Dir history | last 50 edits per dir |
 | Max file size | 5 MB |
 | Pool size | 100 MB (oldest files evicted first) |
 | Rate limit | 100 req/min per IP |
@@ -38,12 +40,28 @@ curl -F "file=@photo.png" "https://skale.dev/throway/"
   "size": 148,
   "name": "photo.png",
   "content_type": "image/png",
+  "editable": false,
+  "persistence": {
+    "type": "single",
+    "expires_at": "2026-08-10T14:57:09Z",
+    "extendable_by": "none",
+    "max_age": null
+  },
   "expires_in": 14400,
   "expires_at": "2026-08-10T14:57:09Z"
 }
 ```
 
 The `url` field is what you share. It is valid until `expires_at`.
+
+**`editable`** — `true` for `text/*` and `application/json` (PUT/PATCH work);
+`false` for images and binaries.
+
+**`persistence`** — how long the resource lives and how to keep it alive:
+- `type` — `single` | `dir` | `bundle`.
+- `expires_at` — when it dies.
+- `extendable_by` — `none` (fixed lifetime).
+- `max_age` — max total lifetime in seconds (`null` for fixed).
 
 ### Errors
 | Code | Meaning |
@@ -69,15 +87,25 @@ curl -F "f=@index.html;type=text/html" \
   "id": "9c0f2b8a1d4e6f03",
   "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03",
   "bundle": true,
+  "editable": false,
+  "persistence": {
+    "type": "bundle",
+    "expires_at": "2026-08-12T12:19:14Z",
+    "extendable_by": "none",
+    "max_age": null
+  },
   "files": [
-    {"name": "index.html", "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html"},
-    {"name": "style.css",  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css"}
+    {"name": "index.html", "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html", "editable": true},
+    {"name": "style.css",  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css", "editable": true}
   ],
   "size": 277,
   "expires_in": 14400,
   "expires_at": "2026-08-12T12:19:14Z"
 }
 ```
+
+A **bundle itself is immutable** (`editable:false`); individual `text/*` or
+`application/json` files within it are editable (`editable:true` in `files[]`).
 
 ## Download / view a file
 `GET {base}/<id>`
@@ -107,51 +135,20 @@ The whole bundle shares one 4-hour expiry and is evicted as one unit.
 curl -O "https://skale.dev/throway/<id>/style.css"
 ```
 
-## Create / use a dir (mutable)
+## Dirs (one unified concept, under /d/<key>)
 
-A **dir** is a mutable bundle: create it once, keep adding files. It's
-deleted **4h after the latest upload** (capped at 24h total).
+A **dir** is a collection of files you keep adding to and editing over time —
+a disposable workspace for an agent. One concept, addressable by an opaque
+**id** (unnamed) or a memorable **name** (named), always under `/d/<key>`.
+Fixed lifetime (default 7 days) and a lightweight edit history.
 
 ### Create
-`POST {base}/?dir=1` — create an empty dir.
+`POST {base}/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]`
+
 ```bash
-curl -X POST "https://skale.dev/throway/?dir=1"
-# -> {"id":"…","url":"…/<dirid>","dir":true,"files":[],"expires_at":"…"}
-```
-
-### Add files
-`POST {base}/<dirid>` — multipart file parts; **resets the 4h TTL**.
-```bash
-curl -F "f=@note.txt" "https://skale.dev/throway/<dirid>"
-# -> {"id":"…","dir":true,"files":[{name,url,size,content_type},…],"expires_at":"…"}
-```
-
-### List
-`GET {base}/<dirid>` — **JSON** listing for agents (`dir:true`, `files`, `expires_at`), HTML page for browsers.
-
-### Fetch one file
-`GET {base}/<dirid>/<filename>`
-
-### Download whole dir
-`GET {base}/<dirid>?zip=1` (or `?download=1`) — zip of all files.
-
-### Delete
-- `DELETE {base}/<dirid>/<filename>` — remove one file.
-- `DELETE {base}/<dirid>` — remove the whole dir.
-
-**TTL:** deleted 4h after the latest upload; never more than 24h total from
-creation. `GET /<dirid>` shows the current `expires_at`.
-
-## Named dirs (rememberable, team-reusable)
-
-A **named dir** is a mutable dir addressed by a **name** instead of a hex id,
-so a team of agents can remember and reuse one shared dir. Lives under `n/<name>`.
-
-### Create-or-get
-`POST {base}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]`
-```bash
-curl -X POST "https://skale.dev/throway/?dir=1&name=team7"
-# -> {"id":"team7","name":"team7","url":"…/n/team7","dir":true,"named":true,"listed":false,"tags":[],"files":[],"expires_at":"…","max_age":604800}
+curl -X POST "https://skale.dev/throway/?dir=1"          # unnamed (hex id)
+curl -X POST "https://skale.dev/throway/?dir=1&name=team7" # named (create-or-get)
+# -> {"id":"team7","name":"team7","url":"…/d/team7","dir":true,"editable":false,"persistence":{"type":"dir","extendable_by":"none",...},"listed":false,"tags":[],"files":[],"expires_at":"…","max_age":604800}
 ```
 **Create-or-get** (idempotent): any agent calling the same create converges
 on the shared dir. Create flags are honored **only on first creation**;
@@ -159,46 +156,62 @@ re-calling create on an existing name silently returns it.
 
 ### Naming rules
 Rejected if: length <5 or >32; not `[a-z0-9-]`; all digits (no letter); or a
-reserved word (`api`, `index`, `n`, `releases`, `llms`, `store`, …).
+reserved word (`api`, `index`, `d`, `releases`, `llms`, `store`, …).
 
 ### Create flags (immutable at create)
-- `&listed=1` — appears in the public `GET /n` listing.
+- `&listed=1` — appears in the public `GET /d` listing.
 - `&tag=<t>` — up to 5 discoverability tags (lowercase `[a-z0-9-]`, 1-24 chars).
 - `&ttl=<h|d>` — **fixed lifetime**, clamped to `[4h, 7d]`, default **7 days**.
 
 ### Fixed lifetime
 `expires_at` is set at creation and **never moves**. Adding, editing, or
-deleting files does **not** extend it. A named dir dies at its `expires_at`.
+deleting files does **not** extend it. A dir dies at its `expires_at`.
 
-### Using a named dir
+### Using a dir
 ```bash
 BASE=https://skale.dev/throway
-curl -F "f=@note.txt" "$BASE/n/team7"          # add files (bumps updated_at)
-curl -A "curl" "$BASE/n/team7"                 # list (JSON for agents, HTML for browsers)
-curl "$BASE/n/team7/note.txt"                  # fetch one file
-curl "$BASE/n/team7?zip=1"                     # whole dir as zip
-curl -X PUT --data-binary "new" "$BASE/n/team7/note.txt"   # edit text
-curl -X PATCH --data-binary " more" "$BASE/n/team7/note.txt" # append text
-curl -X DELETE "$BASE/n/team7/note.txt"        # delete one file
-curl -X DELETE "$BASE/n/team7"                 # delete whole dir
+curl -F "f=@note.txt" "$BASE/d/team7"          # add files (bumps updated_at)
+curl -A "curl" "$BASE/d/team7"                 # list (JSON for agents, HTML for browsers)
+curl "$BASE/d/team7/note.txt"                  # fetch one file
+curl "$BASE/d/team7?zip=1"                     # whole dir as zip
+curl -X PUT --data-binary "new" "$BASE/d/team7/note.txt"   # edit text
+curl -X PATCH --data-binary " more" "$BASE/d/team7/note.txt" # append text
+curl -A "curl" "$BASE/d/team7/history"         # edit history (JSON)
+curl -X DELETE "$BASE/d/team7/note.txt"        # delete one file
+curl -X DELETE "$BASE/d/team7"                 # delete whole dir
 ```
 - **`updated_at`** = last add/edit/delete. Tracks activity; does **not** affect lifetime.
-- **Privacy:** unlisted by default; only `listed=1` dirs appear in `GET /n`.
+- **Privacy:** unlisted by default; only `listed=1` dirs appear in `GET /d`.
 
-### Listing `GET /n` (only listed dirs)
+### Edit history
+`GET /d/<key>/history` — lightweight history of the last **50** edits,
+newest first. JSON for agents, HTML for browsers.
+```json
+{"dir":"team7","history":[
+  {"ts":1787051638,"file":"note.txt","action":"put","old_bytes":5,"new_bytes":16},
+  {"ts":1787051638,"file":"note.txt","action":"add"}
+],"total":2}
+```
+Actions: `add` | `put` | `append` | `delete`, each with a timestamp and a
+byte delta where relevant. No full-text versions, no revert.
+
+### Listing `GET /d` (only listed dirs)
 JSON for agents, HTML for browsers. Entries: `{name, url, tags, files, size,
-created_at, updated_at, expires_at, max_age}` + `total`.
+created_at, updated_at, expires_at, max_age, persistence}` + `total`. Each
+`files[]` carries a per-file `editable` boolean; the dir's `persistence` has
+`type:"dir"`, `extendable_by:"none"` (fixed lifetime) and `max_age`.
 ```bash
-curl -A "curl" "$BASE/n"                                    # all listed
-curl -A "curl" "$BASE/n?q=team"                            # name/tag substring
-curl -A "curl" "$BASE/n?created_after=1750000000"          # by creation time
-curl -A "curl" "$BASE/n?updated_before=1750000000"         # by update time
-curl -A "curl" "$BASE/n?sort=updated&order=asc"            # sort created|updated|name, asc|desc
+curl -A "curl" "$BASE/d"                                    # all listed
+curl -A "curl" "$BASE/d?q=team"                            # name/tag substring
+curl -A "curl" "$BASE/d?created_after=1750000000"          # by creation time
+curl -A "curl" "$BASE/d?updated_before=1750000000"         # by update time
+curl -A "curl" "$BASE/d?sort=updated&order=asc"            # sort created|updated|name, asc|desc
 ```
 
 ## Edit / append text
 
-For **text** files only (images are immutable). Both return the updated JSON metadata.
+For **text** and **JSON** files only (images are immutable). Both return the
+updated JSON metadata (with `editable` and `persistence`).
 
 ### Replace (edit) — `PUT /<id>`
 ```bash
@@ -211,6 +224,10 @@ curl -X PATCH --data-binary "text to add" "https://skale.dev/throway/<id>"
 ```
 
 > `PUT`/`PATCH` on a non-text file (e.g. an image) returns `400`.
+
+Every response's `editable` field tells you whether PUT/PATCH will work on a
+given file — `true` for `text/*` and `application/json`, `false` otherwise.
+Trust it instead of guessing from the filename.
 
 ## Delete a file
 ```bash
