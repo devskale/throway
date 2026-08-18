@@ -1,9 +1,19 @@
 # throway — Releases
 
-**Current version:** `1.9.0`
+**Current version:** `1.9.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.9.1 — 2026-08-18
+
+### Changed
+- **Homepage stats: two cards** — each shows files + size. Card 1 is the
+  current live state ("now"); card 2 is activity since this server started
+  ("since start"), a RAM-only counter reset on each restart. Replaces the
+  old four cards (files now / stored / files ever / uploaded ever).
 
 ---
 

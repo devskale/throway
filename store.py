@@ -54,7 +54,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -73,7 +73,16 @@ os.makedirs(ROOT, exist_ok=True)
 _hits = {}
 STATS_FILE = os.path.join(os.path.dirname(__file__), "stats.json")
 
+# Since-start counters (RAM-only): reset to zero on every process start.
+# Unlike stats.json (all-time, persisted across restarts), these track only
+# activity since this server instance came up.
+_since_start = {"files": 0, "bytes": 0}
 
+
+def _bump_since_start(files, bytes_):
+    """Increment the since-start counters (files count, bytes)."""
+    _since_start["files"] += files
+    _since_start["bytes"] += bytes_
 def _load_stats():
     try:
         with open(STATS_FILE) as f:
@@ -969,6 +978,7 @@ class Handler(BaseHTTPRequestHandler):
         s["files"] += 1
         s["bytes"] += len(data)
         _save_stats(s)
+        _bump_since_start(1, len(data))
         url = f"{PUBLIC_BASE}/{fid}"
         body = json.dumps({
             "id": fid,
@@ -1022,6 +1032,7 @@ class Handler(BaseHTTPRequestHandler):
         s["files"] += len(clean)
         s["bytes"] += sum(len(d) for _, d, _ in clean)
         _save_stats(s)
+        _bump_since_start(len(clean), sum(len(d) for _, d, _ in clean))
         expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"]))
         body = json.dumps({
             "id": fid,
@@ -1128,6 +1139,7 @@ class Handler(BaseHTTPRequestHandler):
         s["files"] += added
         s["bytes"] += added_bytes
         _save_stats(s)
+        _bump_since_start(added, added_bytes)
         return (files_map, added_bytes, added)
 
     def _dir_add(self, key):
@@ -1850,9 +1862,6 @@ def _index(self):
         s = os.path.getsize(os.path.join(ROOT, f))
         rows.append((f, s))
         actual += s
-    cum = _cumulative()
-    tot_files = cum["files"]
-    tot_bytes = cum["bytes"]
     pct = 100.0 * actual / THROW_POOL_SIZE
     h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
          "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -1902,6 +1911,8 @@ def _index(self):
          ".stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem}"
          ".stat b{font-size:1.15rem;display:block}"
          ".stat span{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}"
+         ".stat .sub{font-size:.9rem;color:var(--ink);margin:.15rem 0}"
+         ".stat .when{font-size:.7rem;color:var(--accent);margin-top:.2rem;text-transform:uppercase;letter-spacing:.04em}"
          ".meter{height:6px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:.4rem}"
          ".meter i{display:block;height:100%;background:var(--accent);border-radius:999px}"
          "nav.links{display:flex;gap:1.2rem;margin-top:2rem;font-size:.88rem;flex-wrap:wrap}"
@@ -1937,11 +1948,13 @@ def _index(self):
          "<div id='status'></div>"
          "<div id='result'></div>"
          "<div class='stats'>"
-         f"<div class='stat'><b>{len(rows)}</b><span>files live now</span></div>"
-         f"<div class='stat'><b>{_fmt_size(actual)}</b><span>stored</span>"
-         f"<div class='meter'><i style='width:{min(100,pct):.0f}%'></i></div></div>"
-         f"<div class='stat'><b>{tot_files}</b><span>files ever</span></div>"
-         f"<div class='stat'><b>{_fmt_size(tot_bytes)}</b><span>uploaded ever</span></div>"
+         f"<div class='stat'><b>{len(rows)}</b><span>files</span>"
+         f"<div class='sub'>{_fmt_size(actual)}</div>"
+         f"<div class='meter'><i style='width:{min(100,pct):.0f}%'></i></div>"
+         f"<div class='when'>now</div></div>"
+         f"<div class='stat'><b>{_since_start['files']}</b><span>files</span>"
+         f"<div class='sub'>{_fmt_size(_since_start['bytes'])}</div>"
+         f"<div class='when'>since start</div></div>"
          "</div>"
          "<nav class='links'>"
          f"<a href='{PREFIX}/api'>API</a>"
