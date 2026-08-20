@@ -55,7 +55,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.9.3"
+VERSION = "1.9.4"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1750,6 +1750,9 @@ WHERE TO GET MORE
                 md = f.read()
         except OSError:
             return self._send(404, "release notes unavailable\n")
+        # Single source of truth for the version: VERSION. Rewrite the
+        # "Current version" line in RELEASES.md so it can never drift.
+        md = re.sub(r'(?m)^\*\*Current version:\*\*.*$', f'**Current version:** `{VERSION}`', md, count=1)
         if self._is_agent():
             return self._send(200, md, "text/markdown; charset=utf-8")
         # browsers: render as an HTML page (escape + minimal md-ish styling)
@@ -1990,7 +1993,7 @@ def _index(self):
          "file.addEventListener('change',showFiles);"
          "['dragover','dragenter'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.add('drag');});});"
          "drop.addEventListener('dragleave',function(){drop.classList.remove('drag');});"
-         "drop.addEventListener('drop',function(ev){ev.preventDefault();drop.classList.remove('drag');file.files=ev.dataTransfer.files;showFiles();});"
+         "drop.addEventListener('drop',function(ev){ev.preventDefault();drop.classList.remove('drag');var dt=new DataTransfer();for(var i=0;i<ev.dataTransfer.files.length;i++)dt.items.add(ev.dataTransfer.files[i]);file.files=dt.files;showFiles();});"
          "drop.addEventListener('click',function(){file.click();});"
          "up.addEventListener('click',function(){if(!file.files.length){status.textContent='Choose at least one file';status.className='err';return;}"
          "var fd=new FormData();for(var i=0;i<file.files.length;i++)fd.append('f',file.files[i]);"

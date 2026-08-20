@@ -1,9 +1,27 @@
 # throway — Releases
 
-**Current version:** `1.9.3`
+**Current version:** `1.9.4`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.9.4 — 2026-08-20
+
+### Fixed
+- **Homepage upload dropzone: drag-and-drop uploads now work.** The drop
+  handler assigned the read-only `input.files = ev.dataTransfer.files` file
+  list directly, which silently becomes an empty `FileList` in some
+  browsers, so dropping a file onto the card showed an empty list and the
+  upload reported "Choose at least one file". The handler now copies the
+  dropped files into a fresh `DataTransfer` and assigns `input.files =
+  dt.files`, the standard cross-browser technique (Chrome + Firefox).
+  The file-picker path and direct API uploads already worked.
+- **Version is now single-sourced from `store.py` `VERSION`.** The
+  "Current version" line served on the releases page is derived from the
+  code constant at request time, so it can never drift from the running
+  build.
 
 ---
 
