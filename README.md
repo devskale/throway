@@ -107,7 +107,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
   is reachable at `/throway/<id>/<filename>`. The whole bundle shares one
   4-hour expiry and is evicted as one unit.
 - **Dirs** are long-lived, nameable collections under `/d/<key>`: create one,
-  keep adding files and editing them over days, with a **fixed lifetime**
+  keep adding files and editing them over days, with a **sliding lifetime**
   (default 7 days) and a lightweight **edit history**. `GET /d/<key>` returns
   a JSON listing to agents / an HTML page to browsers.
 - **Text files** are editable — `PUT` rewrites the whole content, `PATCH` appends.

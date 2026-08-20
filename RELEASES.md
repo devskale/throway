@@ -1,9 +1,24 @@
 # throway — Releases
 
-**Current version:** `1.9.1`
+**Current version:** `1.9.3`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.9.3 — 2026-08-20
+
+### Fixed
+- **Dir files with spaces in their names now fetch correctly.**
+  `GET /d/<key>/<file>` (and `PUT`/`PATCH`/`DELETE`) now URL-decode the
+  filename segment before matching, so a `%20` in the request matches the
+  literal space in the stored name. Previously these returned `404` even
+  when the filename was correctly percent-encoded; only space-free names
+  worked. Same fix applied to per-file fetches from bundles.
+- **Dir/bundle listings now return URL-encoded `files[].url` values**
+  (e.g. `%20` instead of a raw space), so the URLs the server hands back
+  actually work when fetched by programmatic consumers.
 
 ---
 

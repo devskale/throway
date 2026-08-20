@@ -20,7 +20,7 @@ alike.
   `/throway/<id>/<file>`; `index.html` renders inline for browsers (a real
   throwaway website); agents get a zip
 - **Dirs** (one unified concept): create a dir (`?dir=1`, unnamed hex id or
-  `&name=<name>` named), keep adding files, fixed lifetime (default 7 days,
+  `&name=<name>` named), keep adding files, sliding lifetime (default 7 days,
   `ttl=` override clamped to [4h, 7d]), optional `listed=1` + tags, full CRUD
   under `/d/<key>`, and a **lightweight edit history** (`GET /d/<key>/history`
   — last 50 entries: date, file, action, byte deltas)

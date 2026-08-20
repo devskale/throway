@@ -206,7 +206,7 @@ curl -F "f=@index.html;type=text/html" \
 A **dir** is a collection of files you keep adding to and editing over time
 — a disposable workspace for an agent. One concept, addressable by an
 **opaque id** (unnamed) or a **memorable name** (named), always under
-`/d/<key>`. It has a **fixed lifetime** (default 7 days) and a lightweight
+`/d/<key>`. It has a **sliding lifetime** (default 7 days) and a lightweight
 **edit history**.
 
 ```bash
@@ -220,7 +220,7 @@ curl -X POST "https://skale.dev/throway/?dir=1&name=team7"
 
 BASE=https://skale.dev/throway
 
-# add files (multipart) — bumps updated_at, not expires_at
+# add files (multipart) — slides expires_at forward by ttl
 curl -F "f=@note.txt" "$BASE/d/team7"
 
 # list (JSON for agents, HTML for browsers)
@@ -232,7 +232,7 @@ curl "$BASE/d/team7/note.txt"
 # whole dir as zip
 curl "$BASE/d/team7?zip=1"
 
-# edit / append text (bumps updated_at)
+# edit / append text (slides expires_at forward by ttl)
 curl -X PUT   --data-binary "new text"  "$BASE/d/team7/note.txt"
 curl -X PATCH --data-binary " more"     "$BASE/d/team7/note.txt"
 
@@ -244,17 +244,16 @@ curl -X DELETE "$BASE/d/team7/note.txt"
 curl -X DELETE "$BASE/d/team7"
 ```
 
-- **Lifetime:** fixed, default **7 days** (override `ttl=` clamped to
-  [4h, 7d]). `expires_at` is set at creation and **never moves** — add/edit/
-  delete does **not** extend it.
-- **`updated_at`** = last add/edit/delete. Tracks activity, does **not**
-  affect the fixed lifetime.
+- **Lifetime:** sliding, default **7 days** (override `ttl=` clamped to
+  [4h, 7d]). `expires_at` slides forward by `ttl` on each add/edit/delete,
+  capped at 30 days total from creation.
+- **`updated_at`** = last add/edit/delete. Slides `expires_at` forward.
 - **Listing:** `GET /d/<key>` returns JSON (`dir:true`,
   `files:[{name,url,size,content_type,editable}]`, `persistence`,
   `expires_at`) to agents, an HTML page to browsers.
 - **Zip:** `?zip=1` (or `?download=1`) downloads the whole dir.
 - **Persistence:** the dir's `persistence` block has `type:"dir"`,
-  `extendable_by:"none"` (fixed lifetime) and `max_age`. The dir object
+  `extendable_by:"activity"` (sliding lifetime) and `max_age`. The dir object
   itself is `editable:false`; individual `text/*`/`application/json` files
   are editable.
 
@@ -328,7 +327,7 @@ curl -A "curl" "$BASE/d?sort=name&order=asc"
 JSON entries: `{name, url, tags, files, size, created_at, updated_at,
 expires_at, max_age, persistence}` plus `total`. Each entry's `files[]`
 carries a per-file `editable` boolean; the dir's `persistence` block has
-`type:"dir"`, `extendable_by:"none"` (fixed lifetime) and `max_age`.
+`type:"dir"`, `extendable_by:"activity"` (sliding lifetime) and `max_age`.
 
 - **Privacy:** dirs are **unlisted by default**. Only dirs created with
   `listed=1` appear in `GET /d`; names are never enumerated otherwise.
@@ -390,7 +389,8 @@ of guessing:
 - **`persistence.type`** — `single` | `dir` | `bundle`.
 - **`persistence.extendable_by`** — how to keep it alive:
   - `none` — fixed lifetime, cannot be extended.
-- **`persistence.max_age`** — max total lifetime in seconds (`null` for fixed).
+  - `activity` — sliding lifetime, each add/edit/delete slides `expires_at` forward (dirs only).
+- **`persistence.max_age`** — max total lifetime in seconds (`null` for single files/bundles; dirs have a TTL value).
 
 A **bundle** or **dir object** itself is `editable:false`; only its `text/*` or
 `application/json` files are editable (those appear as `editable:true` in the

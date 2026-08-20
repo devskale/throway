@@ -21,6 +21,7 @@ import secrets
 import zipfile
 import mimetypes
 import html as _html
+from urllib.parse import unquote, quote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -32,15 +33,15 @@ THROW_POOL_SIZE = 100 * 1024 * 1024   # 100MB rolling pool
 MAX_FILE = 5 * 1024 * 1024            # 5MB
 RATE_LIMIT = 100                      # req/min per IP
 TTL_HOURS = 4                         # default URL lifetime
-DIR_MAX_AGE = 24 * 3600               # hard ceiling for a dir's total lifetime
 
 # Dirs — one unified concept under /d/<key>. A dir is addressable by an
-# opaque hex id (unnamed) or a memorable name (named). Fixed lifetime,
+# opaque hex id (unnamed) or a memorable name (named). Sliding lifetime,
 # optional tags/listed, and a lightweight edit history.
 DIR_NS = "d"                          # namespace prefix for all dirs
-DIR_MIN_AGE = 4 * 3600                # min fixed lifetime (4h)
-DIR_MAX_AGE = 7 * 24 * 3600           # max fixed lifetime (7 days)
+DIR_MIN_AGE = 4 * 3600                # min sliding lifetime (4h)
+DIR_MAX_AGE = 7 * 24 * 3600           # max sliding lifetime (7 days)
 DIR_DEFAULT_AGE = DIR_MAX_AGE         # default when &ttl= not given
+DIR_ABS_MAX = 30 * 24 * 3600          # absolute ceiling on total lifetime (30d)
 HISTORY_LIMIT = 50                    # max history entries kept per dir
 MAX_TAGS = 5
 MAX_TAG_LEN = 24
@@ -54,7 +55,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.9.1"
+VERSION = "1.9.3"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -83,6 +84,18 @@ def _bump_since_start(files, bytes_):
     """Increment the since-start counters (files count, bytes)."""
     _since_start["files"] += files
     _since_start["bytes"] += bytes_
+
+
+def _dir_touch(meta, now):
+    """Slide a dir's expiry forward by its TTL on activity, capped at an
+    absolute ceiling from creation. Returns the new expires timestamp."""
+    ttl = meta.get("max_age", DIR_DEFAULT_AGE)
+    created = meta.get("created", now)
+    # sliding: now + ttl, but never beyond created + DIR_ABS_MAX
+    expires = min(now + ttl, created + DIR_ABS_MAX)
+    meta["expires"] = expires
+    meta["updated"] = now
+    return expires
 def _load_stats():
     try:
         with open(STATS_FILE) as f:
@@ -251,7 +264,7 @@ def sweep():
 
 
 def _sweep_dirs(now):
-    """Delete expired dirs (fixed lifetime from manifest)."""
+    """Delete expired dirs (sliding lifetime from manifest, absolute cap)."""
     nd = os.path.join(ROOT, DIR_NS)
     if not os.path.isdir(nd):
         return
@@ -482,7 +495,7 @@ Base URL: {PUBLIC_BASE}""",
     },
     "dirs": {
         "title": "Dirs",
-        "summary": "One dir concept under /d/<key>: id or name, fixed lifetime, history",
+        "summary": "One dir concept under /d/<key>: id or name, sliding lifetime, history",
         "body": """CREATE a DIR (one unified concept, addressable by id or name):
    POST {PUBLIC_BASE}/?dir=1            -> unnamed dir, opaque hex id
    POST {PUBLIC_BASE}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]
@@ -490,8 +503,10 @@ Base URL: {PUBLIC_BASE}""",
    Naming: 5-32 chars, [a-z0-9-], must contain a letter, not a reserved word.
    - &listed=1 -> appears in the public listing GET {PUBLIC_BASE}/d
    - &tag=<t>  -> up to 5 discoverability tags (lowercase [a-z0-9-])
-   - &ttl=<h|d> -> FIXED lifetime, clamped to [4h, 7d]; default 7 days.
-     Nothing extends it: add/edit/delete do not move expires_at.
+   - &ttl=<h|d> -> SLIDING lifetime, clamped to [4h, 7d]; default 7 days.
+     Each add/edit/append/delete slides expires_at forward by ttl (capped at
+     30 days total from creation). An active dir keeps living; an idle one
+     dies ttl after its last activity.
    Reach a dir at {PUBLIC_BASE}/d/<key> (key = id or name):
    POST {PUBLIC_BASE}/d/<key>          -> add files (multipart)
    GET  {PUBLIC_BASE}/d/<key>          -> JSON (agents) / HTML (browsers)
@@ -504,7 +519,7 @@ Base URL: {PUBLIC_BASE}""",
    GET  {PUBLIC_BASE}/d/<key>/history  -> edit history (JSON for agents,
         HTML for browsers): last {HISTORY_LIMIT} entries, newest first, with
         date, file, action (add|put|append|delete) and byte deltas.
-   updated_at = last add/edit/delete (does NOT affect the fixed lifetime).
+   updated_at = last add/edit/delete (slides expires_at forward).
    LIST dirs: GET {PUBLIC_BASE}/d  -> only dirs created with listed=1.
    Filters: ?q=<substring over name or tag>, ?created_after/before=<ts>,
    ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.""",
@@ -546,7 +561,8 @@ itself is editable:false; only its text/* or application/json files are.""",
         "summary": "Lifetimes, sizes, pool, rate limit",
         "body": """LIMITS
 - URL lifetime:  {TTL_HOURS} hours
-- Dir lifetime: fixed, default 7 days (ttl= override, clamped [4h, 7d])
+- Dir lifetime: sliding, default 7 days (ttl= override, clamped [4h, 7d]);
+  each add/edit/delete slides expires_at forward, capped at 30 days total
 - Max file size: {MAX_FILE_MB} MB
 - Pool size:     {POOL_MB} MB (oldest files evicted first)
 - Rate limit:    {RATE_LIMIT} requests/min per IP
@@ -555,7 +571,8 @@ itself is editable:false; only its text/* or application/json files are.""",
 PERSISTENCE — how long something lives, per type (also in each response's
 \"persistence\" block):
 - single file:  fixed {TTL_HOURS}h, not extendable (extendable_by:none)
-- dir:          fixed lifetime (default 7d), not extendable (extendable_by:none)
+- dir:          sliding lifetime (default 7d), extendable by activity
+                (extendable_by:activity), capped at 30 days total
 - bundle:       fixed {TTL_HOURS}h snapshot, not extendable (extendable_by:none)""",
     },
     "contract": {
@@ -822,7 +839,7 @@ class Handler(BaseHTTPRequestHandler):
             is_dir = (m or {}).get("type") == "dir"
             # /<fid>/<file>
             if len(parts) >= 2 and parts[1]:
-                fname = os.path.basename(parts[1])
+                fname = os.path.basename(unquote(parts[1]))
                 if not fname or fname.endswith(".meta"):
                     return self._send(404, "not found\n")
                 fpath = os.path.join(dirpath, fname)
@@ -1042,7 +1059,7 @@ class Handler(BaseHTTPRequestHandler):
             "persistence": _persistence_block("bundle", meta["expires"]),
             "files": [
                 {"name": n,
-                 "url": f"{PUBLIC_BASE}/{fid}/{n}",
+                 "url": f"{PUBLIC_BASE}/{fid}/{quote(n)}",
                  "size": os.path.getsize(os.path.join(dirpath, n)),
                  "content_type": files_map[n]}
                 for n in names
@@ -1133,7 +1150,7 @@ class Handler(BaseHTTPRequestHandler):
             added += 1
             added_bytes += len(d)
         meta["files"] = files_map
-        meta["updated"] = time.time()
+        _dir_touch(meta, time.time())
         json.dump(meta, open(_dir_meta_path(key), "w"))
         s = _load_stats()
         s["files"] += added
@@ -1201,7 +1218,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._dir_history_view(key, dirpath, m)
         # /d/<key>/<file>
         if len(parts) >= 2 and parts[1]:
-            fname = os.path.basename(parts[1])
+            fname = os.path.basename(unquote(parts[1]))
             if not fname or fname.endswith(".meta") or fname.endswith(".history"):
                 return self._send(404, "not found\n")
             fpath = os.path.join(dirpath, fname)
@@ -1230,7 +1247,7 @@ class Handler(BaseHTTPRequestHandler):
             sz = os.path.getsize(fp)
             total += sz
             ctype = meta.get("files", {}).get(f, "application/octet-stream")
-            files.append({"name": f, "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}/{f}", "size": sz,
+            files.append({"name": f, "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}/{quote(f)}", "size": sz,
                           "content_type": ctype, "editable": _is_editable(ctype)})
         expires = meta.get("expires", 0)
         resp = {
@@ -1239,7 +1256,8 @@ class Handler(BaseHTTPRequestHandler):
             "dir": True,
             "editable": False,
             "persistence": _persistence_block("dir", expires,
-                                              max_age=meta.get("max_age", DIR_DEFAULT_AGE)),
+                                              max_age=meta.get("max_age", DIR_DEFAULT_AGE),
+                                              extendable_by="activity"),
             "files": files,
             "size": total,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("created", 0))),
@@ -1300,7 +1318,7 @@ class Handler(BaseHTTPRequestHandler):
         """PUT/PATCH /d/<key>/<file> — replace or append text in a dir."""
         if len(parts) < 2 or not parts[1]:
             return self._send(400, json.dumps({"error": "file required"}), "application/json")
-        fname = os.path.basename(parts[1])
+        fname = os.path.basename(unquote(parts[1]))
         dirpath = _dir_path(key)
         m = _dir_meta(key)
         now = time.time()
@@ -1329,7 +1347,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
             with open(fpath, "wb") as f:
                 f.write(data)
-        m["updated"] = now
+        _dir_touch(m, now)
         json.dump(m, open(_dir_meta_path(key), "w"))
         # history entry: action, file, delta
         entry = {"ts": now, "file": fname, "action": "append" if append else "put"}
@@ -1351,13 +1369,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, json.dumps({"error": "not found"}), "application/json")
         now = time.time()
         if len(parts) >= 2 and parts[1]:
-            fname = os.path.basename(parts[1])
+            fname = os.path.basename(unquote(parts[1]))
             fpath = os.path.join(dirpath, fname)
             if fname.endswith(".meta") or fname.endswith(".history") or not os.path.isfile(fpath):
                 return self._send(404, "not found\n")
             os.remove(fpath)
             m["files"].pop(fname, None)
-            m["updated"] = now
+            _dir_touch(m, now)
             json.dump(m, open(_dir_meta_path(key), "w"))
             _dir_append_history(key, {"ts": now, "action": "delete", "file": fname})
             return self._send(200, "deleted\n")
@@ -1805,7 +1823,7 @@ function copyDesc() {{
                     "method": "POST",
                     "url": PUBLIC_BASE + "/?name=<filename>",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
-                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
+                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
                 },
                 "upload_bundle": {
                     "method": "POST",
@@ -1816,8 +1834,8 @@ function copyDesc() {{
                 },
                 "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
-                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = fixed lifetime clamped to [4h,7d] default 7d. Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "none", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
-                "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir, bumps updated_at (fixed lifetime unchanged)"},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime clamped to [4h,7d] default 7d, each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
+                "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
                 "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir"},
                 "dir_zip": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>?zip=1", "note": "download the whole dir as a zip"},
@@ -1931,7 +1949,7 @@ def _index(self):
          "<ul class='feats'>"
          "<li><b>Files</b> — one URL per upload<small>inline for images &amp; text, download otherwise</small></li>"
          "<li><b>Bundles</b> — a whole mini-website<small>index.html renders inline; zip for agents</small></li>"
-         "<li><b>Dirs</b> — keep adding files over days<small>fixed lifetime (default 7d); edit history</small></li>"
+         "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (default 7d); edit history</small></li>"
          "</ul>"
          "<div id='drop'>"
          "<div class='big'>Drop files here, or click to choose</div>"

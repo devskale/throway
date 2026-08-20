@@ -44,7 +44,7 @@ curl -F "file=@photo.png" "https://skale.dev/throway/"
   "persistence": {
     "type": "single",
     "expires_at": "2026-08-10T14:57:09Z",
-    "extendable_by": "none",
+    "extendable_by": "activity",
     "max_age": null
   },
   "expires_in": 14400,
@@ -60,7 +60,7 @@ The `url` field is what you share. It is valid until `expires_at`.
 **`persistence`** — how long the resource lives and how to keep it alive:
 - `type` — `single` | `dir` | `bundle`.
 - `expires_at` — when it dies.
-- `extendable_by` — `none` (fixed lifetime).
+- `extendable_by` — `none` (fixed lifetime) | `activity` (sliding lifetime).
 - `max_age` — max total lifetime in seconds (`null` for fixed).
 
 ### Errors
@@ -91,7 +91,7 @@ curl -F "f=@index.html;type=text/html" \
   "persistence": {
     "type": "bundle",
     "expires_at": "2026-08-12T12:19:14Z",
-    "extendable_by": "none",
+    "extendable_by": "activity",
     "max_age": null
   },
   "files": [
@@ -148,7 +148,7 @@ Fixed lifetime (default 7 days) and a lightweight edit history.
 ```bash
 curl -X POST "https://skale.dev/throway/?dir=1"          # unnamed (hex id)
 curl -X POST "https://skale.dev/throway/?dir=1&name=team7" # named (create-or-get)
-# -> {"id":"team7","name":"team7","url":"…/d/team7","dir":true,"editable":false,"persistence":{"type":"dir","extendable_by":"none",...},"listed":false,"tags":[],"files":[],"expires_at":"…","max_age":604800}
+# -> {"id":"team7","name":"team7","url":"…/d/team7","dir":true,"editable":false,"persistence":{"type":"dir","extendable_by":"activity",...},"listed":false,"tags":[],"files":[],"expires_at":"…","max_age":604800}
 ```
 **Create-or-get** (idempotent): any agent calling the same create converges
 on the shared dir. Create flags are honored **only on first creation**;
@@ -161,11 +161,12 @@ reserved word (`api`, `index`, `d`, `releases`, `llms`, `store`, …).
 ### Create flags (immutable at create)
 - `&listed=1` — appears in the public `GET /d` listing.
 - `&tag=<t>` — up to 5 discoverability tags (lowercase `[a-z0-9-]`, 1-24 chars).
-- `&ttl=<h|d>` — **fixed lifetime**, clamped to `[4h, 7d]`, default **7 days**.
+- `&ttl=<h|d>` — **sliding lifetime**, clamped to `[4h, 7d]`, default **7 days**.
 
 ### Fixed lifetime
-`expires_at` is set at creation and **never moves**. Adding, editing, or
-deleting files does **not** extend it. A dir dies at its `expires_at`.
+`expires_at` slides forward by `ttl` on each add/edit/delete (capped at 30 days
+total from creation). An active dir keeps living; an idle one dies `ttl` after
+its last activity.
 
 ### Using a dir
 ```bash
@@ -199,7 +200,7 @@ byte delta where relevant. No full-text versions, no revert.
 JSON for agents, HTML for browsers. Entries: `{name, url, tags, files, size,
 created_at, updated_at, expires_at, max_age, persistence}` + `total`. Each
 `files[]` carries a per-file `editable` boolean; the dir's `persistence` has
-`type:"dir"`, `extendable_by:"none"` (fixed lifetime) and `max_age`.
+`type:"dir"`, `extendable_by:"activity"` (sliding lifetime) and `max_age`.
 ```bash
 curl -A "curl" "$BASE/d"                                    # all listed
 curl -A "curl" "$BASE/d?q=team"                            # name/tag substring
