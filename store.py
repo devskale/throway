@@ -55,7 +55,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.9.4"
+VERSION = "1.10.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1873,6 +1873,118 @@ def _fmt_size(n):
 class _IndexMixin:
     pass
 
+
+# ---------------------------------------------------------------- homepage UI
+# Upload UI is Dropzone.js from a CDN: battle-tested click-to-browse +
+# drag-and-drop file handling. We only queue files, compose the POST
+# (one multipart request for the whole queue -> file | bundle | dir) and
+# render the result box.
+DROPZONE_VERSION = "5.9.3"
+DROPZONE_CSS = f"https://cdn.jsdelivr.net/npm/dropzone@{DROPZONE_VERSION}/dist/min/dropzone.min.css"
+DROPZONE_JS = f"https://cdn.jsdelivr.net/npm/dropzone@{DROPZONE_VERSION}/dist/min/dropzone.min.js"
+
+_INDEX_JS = r"""(function () {
+  'use strict';
+
+  /* Works under any mount point: '' at root, '/throway' behind the proxy. */
+  var PREFIX = location.pathname.replace(/\/+$/, '');
+  var MAX_MB = __MAX_MB__;
+
+  function $(id) { return document.getElementById(id); }
+  var statusEl = $('status'), resultEl = $('result'), upBtn = $('up'), dirMode = $('dirMode');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function setStatus(msg, isErr) {
+    statusEl.textContent = msg || '';
+    statusEl.className = isErr ? 'err' : '';
+  }
+  function asObj(r) {
+    if (r && typeof r === 'object') return r;
+    try { return JSON.parse(r); } catch (e) { return { error: String(r) }; }
+  }
+
+  /* --- result box --- */
+  function row(label, html) {
+    return '<div class=row><span class=lbl>' + esc(label) + '</span>' + html + '</div>';
+  }
+  function filesBlock(files) {
+    return '<div class=files>' + files.map(function (f) {
+      return '<div>\u2022 <a href="' + esc(f.url) + '" target=_blank>' + esc(f.name) + '</a> (' + f.size + ' B)</div>';
+    }).join('') + '</div>';
+  }
+  function showResult(d) {
+    var html = '<h3>Done \u2713</h3>' + row('URL',
+      '<div class=urlbox><input readonly value="' + esc(d.url) + '"><button class=btn data-copy>copy</button></div>');
+    if (d.dir) {
+      html += row('Dir', d.files.length + ' files \u00b7 expires ' + esc(d.expires_at)) + filesBlock(d.files);
+    } else if (d.bundle) {
+      html += row('Bundle', d.files.length + ' files \u00b7 expires ' + esc(d.expires_at)) + filesBlock(d.files);
+    } else {
+      html += row('Name', esc(d.name)) + row('Size', d.size + ' B') +
+              row('Type', esc(d.content_type)) + row('Expires', esc(d.expires_at));
+    }
+    resultEl.innerHTML = html;
+    resultEl.style.display = 'block';
+    resultEl.querySelector('[data-copy]').addEventListener('click', function () {
+      navigator.clipboard.writeText(this.previousElementSibling.value);
+    });
+  }
+
+  /* --- dropzone --- */
+  Dropzone.autoDiscover = false;
+  var dz = new Dropzone('#drop', {
+    url: PREFIX + '/',
+    autoProcessQueue: false,
+    uploadMultiple: true,      /* one POST for the whole queue -> file | bundle | dir */
+    parallelUploads: 100,
+    paramName: 'f',
+    maxFilesize: MAX_MB,
+    createImageThumbnails: false,
+    clickable: true,
+    previewTemplate: [
+      '<div class="dz-preview dz-file-preview">',
+      '  <span class="dz-filename" data-dz-name></span>',
+      '  <span class="dz-size" data-dz-size></span>',
+      '  <span class="dz-progress"><i data-dz-uploadprogress></i></span>',
+      '  <span class="dz-error-msg" data-dz-errormessage></span>',
+      '  <a class="dz-remove" href="javascript:undefined" data-dz-remove>remove</a>',
+      '</div>'
+    ].join('')
+  });
+
+  upBtn.addEventListener('click', function () {
+    if (!dz.files.length) { setStatus('Choose at least one file', true); return; }
+    dz.options.url = PREFIX + '/' + (dirMode.checked ? '?dir=1' : '');
+    resultEl.style.display = 'none';
+    dz.processQueue();
+  });
+
+  dz.on('sendingmultiple', function () {
+    upBtn.disabled = true;
+    setStatus('Uploading\u2026');
+  });
+  dz.on('successmultiple', function (files, resp) {
+    upBtn.disabled = false;
+    var d = asObj(resp);
+    if (d && d.url) { setStatus(''); showResult(d); dz.removeAllFiles(true); }
+    else { setStatus('Error: ' + ((d && d.error) || 'upload failed'), true); }
+  });
+  dz.on('errormultiple', function (files, resp) {
+    upBtn.disabled = false;
+    var d = asObj(resp);
+    setStatus('Error: ' + ((d && d.error) || 'upload failed'), true);
+  });
+  dz.on('error', function (file, msg) {
+    upBtn.disabled = false;
+    setStatus('Error: ' + (file.status === Dropzone.CANCELED ? 'canceled' : msg), true);
+  });
+})();
+"""
+
 def _index(self):
     sweep()
     rows = []
@@ -1887,6 +1999,7 @@ def _index(self):
     h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
          "<meta name=viewport content='width=device-width,initial-scale=1'>"
          "<title>throway — disposable file store</title>"
+         f"<link rel=stylesheet href='{DROPZONE_CSS}'>"
          "<style>"
          ":root{--bg:#ffffff;--card:#fafafa;--card2:#f4f4f5;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
          "*{box-sizing:border-box}"
@@ -1901,13 +2014,20 @@ def _index(self):
          "ul.feats li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem;font-size:.9rem}"
          "ul.feats li b{color:var(--accent)}"
          "ul.feats li small{display:block;color:var(--muted);margin-top:.15rem}"
-         "#drop{border:2px dashed #d1d5db;border-radius:14px;padding:2.2rem 1.5rem;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;background:var(--card);margin-bottom:.8rem}"
-         "#drop:hover,#drop.drag{border-color:var(--accent);background:#eff6ff}"
+                  "#drop{border:2px dashed #d1d5db;border-radius:14px;padding:2rem 1.5rem;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;background:var(--card);margin-bottom:.8rem}"
+         "#drop:hover,#drop.dz-drag-hover{border-color:var(--accent);background:#eff6ff}"
          "#drop .big{font-size:1.05rem;font-weight:600}"
          "#drop .sub{color:var(--muted);font-size:.85rem;margin-top:.2rem}"
-         "#drop input{display:none}"
-         "#fileList{margin:.4rem 0 .8rem;font-size:.85rem;color:var(--muted)}"
-         "#fileList span{display:inline-block;background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:.15rem .5rem;margin:.15rem;font-size:.8rem}"
+         ".dz-preview{display:flex;align-items:center;gap:.6rem;text-align:left;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:.35rem .6rem;margin:.35rem .2rem 0;font-size:.85rem}"
+         ".dz-preview .dz-filename{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}"
+         ".dz-preview .dz-size{color:var(--muted);font-size:.75rem;white-space:nowrap}"
+         ".dz-preview .dz-progress{position:relative;height:3px;width:90px;background:#e5e7eb;border-radius:999px;overflow:hidden}"
+         ".dz-preview .dz-progress i{display:block;height:100%;width:0;background:var(--accent);border-radius:999px}"
+         ".dz-preview .dz-error-msg{color:#dc2626;font-size:.75rem;display:none}"
+         ".dz-preview.dz-error{border-color:#fecaca;background:#fef2f2}"
+         ".dz-preview.dz-error .dz-error-msg{display:block}"
+         ".dz-preview .dz-remove{color:var(--muted);font-size:.75rem;text-decoration:none;white-space:nowrap}"
+         ".dz-preview .dz-remove:hover{color:#dc2626}"
          ".controls{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
          "label.mode{display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted);cursor:pointer}"
          "label.mode input{margin:0}"
@@ -1954,12 +2074,11 @@ def _index(self):
          "<li><b>Bundles</b> — a whole mini-website<small>index.html renders inline; zip for agents</small></li>"
          "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (default 7d); edit history</small></li>"
          "</ul>"
-         "<div id='drop'>"
+         "<div id='drop' class='dropzone'>"
+         "<div class='dz-message'>"
          "<div class='big'>Drop files here, or click to choose</div>"
          "<div class='sub'>Select one or many files</div>"
-         "<input type='file' id='file' name='f' multiple>"
-         "</div>"
-         "<div id='fileList'></div>"
+         "</div></div>"
          "<div class='controls'>"
          "<button id='up'>Upload</button>"
          "<label class='mode'><input type='checkbox' id='dirMode'>create a <b>dir</b></label>"
@@ -1984,38 +2103,8 @@ def _index(self):
          f"<a href='{PREFIX}/releases'>releases</a>"
          "</nav>"
          "<details class='agents' open><summary>Agent info</summary><pre>" + _html_escape(self._agent_description()) + "</pre></details>"
-         "<script>"
-         "var drop=document.getElementById('drop'),file=document.getElementById('file'),list=document.getElementById('fileList');"
-         "var up=document.getElementById('up'),status=document.getElementById('status'),res=document.getElementById('result');"
-         "var dirMode=document.getElementById('dirMode');"
-         "function showFiles(){var n=file.files.length;if(!n){list.textContent='';return;}"
-         "list.innerHTML='';for(var i=0;i<n;i++){var s=document.createElement('span');s.textContent=file.files[i].name;list.appendChild(s);}}"
-         "file.addEventListener('change',showFiles);"
-         "['dragover','dragenter'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.add('drag');});});"
-         "drop.addEventListener('dragleave',function(){drop.classList.remove('drag');});"
-         "drop.addEventListener('drop',function(ev){ev.preventDefault();drop.classList.remove('drag');var dt=new DataTransfer();for(var i=0;i<ev.dataTransfer.files.length;i++)dt.items.add(ev.dataTransfer.files[i]);file.files=dt.files;showFiles();});"
-         "drop.addEventListener('click',function(){file.click();});"
-         "up.addEventListener('click',function(){if(!file.files.length){status.textContent='Choose at least one file';status.className='err';return;}"
-         "var fd=new FormData();for(var i=0;i<file.files.length;i++)fd.append('f',file.files[i]);"
-         "var url='" + PREFIX + "/'+(dirMode.checked?'?dir=1':'');"
-         "status.textContent='Uploading…';status.className='';res.style.display='none';up.disabled=true;"
-         "fetch(url,{method:'POST',body:fd}).then(function(r){return r.json().then(function(d){return {ok:r.ok,data:d};});})"
-         ".then(function(o){up.disabled=false;if(!o.ok){status.textContent='Error: '+(o.data.error||'upload failed');status.className='err';return;}"
-         "var d=o.data;status.textContent='';res.style.display='block';"
-         "var html='<h3>Done ✓</h3>'"
-         "+'<div class=row><span class=lbl>URL</span><div class=urlbox><input readonly value=\"'+d.url+'\"><button class=btn onclick=\"navigator.clipboard.writeText(this.previousElementSibling.value)\">copy</button></div></div>'"
-         "+(d.dir?('<div class=row><span class=lbl>Dir</span> '+d.files.length+' files · expires '+d.expires_at+'</div>')"
-         "+'<div class=files>'+d.files.map(function(f){return '<div>• <a href=\"'+f.url+'\" target=_blank>'+f.name+'</a> ('+f.size+' B)</div>';}).join('')+'</div>')"
-         ":d.bundle?('<div class=row><span class=lbl>Bundle</span> '+d.files.length+' files · expires '+d.expires_at+'</div>'"
-         "+'<div class=files>'+d.files.map(function(f){return '<div>• <a href=\"'+f.url+'\" target=_blank>'+f.name+'</a></div>';}).join('')+'</div>')"
-         ":('<div class=row><span class=lbl>Name</span> '+d.name+'</div>'"
-         "+'<div class=row><span class=lbl>Size</span> '+d.size+' B</div>'"
-         "+'<div class=row><span class=lbl>Type</span> '+d.content_type+'</div>'"
-         "+'<div class=row><span class=lbl>Expires</span> '+d.expires_at+'</div>');"
-         "res.innerHTML=html;file.value='';showFiles();"
-         "}).catch(function(err){up.disabled=false;status.textContent='Error: '+err;status.className='err';});"
-         "});"
-         "</script>"
+         f"<script src='{DROPZONE_JS}'></script>"
+         f"<script>{_INDEX_JS.replace('__MAX_MB__', str(MAX_FILE // (1024 * 1024)))}</script>"
          "</main></body></html>")
     self._send(200, h, "text/html")
 

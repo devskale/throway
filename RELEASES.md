@@ -1,9 +1,36 @@
 # throway — Releases
 
-**Current version:** `1.9.4`
+**Current version:** `1.10.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.10.0 — 2026-08-20
+
+### Fixed
+- **Homepage upload was completely broken** (click AND drop did nothing):
+  the inline script had a JS syntax error (a ternary branch's `)` closed
+  the outer paren, leaving `:d.bundle?` dangling), so the browser never
+  ran any of it. Found via `node --check` on the extracted script.
+
+### Changed
+- **Homepage upload UI now uses [Dropzone.js](https://dropzone.dev)
+  (5.9.3) via CDN.** Battle-tested click-to-browse + drag-and-drop with
+  file previews, progress and per-file remove — replacing the hand-rolled
+  dropzone. `maxFilesize` is injected from the server's `MAX_FILE`, so the
+  client limit always matches the real one.
+- **Homepage JS modularized**: small named functions (`esc`, `row`,
+  `filesBlock`, `showResult`, …) instead of one nested string-concat
+  expression; upload URL derives from `location.pathname`, so the page
+  works under any mount point (root or `/throway` behind the proxy).
+- Upload still sends **one multipart POST for the whole queue** → file,
+  bundle, or dir (`?dir=1`) exactly as before. Result box unchanged.
+
+### Note
+- The homepage now loads Dropzone.js from jsDelivr; if the CDN is
+  unreachable the upload card won't function (agents/curl unaffected).
 
 ---
 
