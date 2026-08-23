@@ -1,13 +1,24 @@
 # throway — Releases
 
-**Current version:** `1.10.0`
+**Current version:** `1.11.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
-## 1.10.0 — 2026-08-20
+## 1.11.0 — 2026-08-23
+
+### Added
+- **Paste-to-upload**: press **Ctrl+V** (or Cmd+V) anywhere on the homepage
+  and any image on the clipboard is queued in the dropzone for upload — no
+  need to save it to disk first. A page-wide `paste` listener grabs `file`
+  items from the clipboard, wraps them in a named `File` (deriving a
+  sensible name + extension from the MIME type, e.g. `pasted-…png`), and
+  calls `dz.addFile()`. Text pastes are left untouched. Multiple pasted
+  images queue together and upload in the same POST as any dropped files.
+
+---
 
 ### Fixed
 - **Homepage upload was completely broken** (click AND drop did nothing):

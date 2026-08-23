@@ -55,7 +55,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.10.0"
+VERSION = "1.11.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1982,6 +1982,39 @@ _INDEX_JS = r"""(function () {
     upBtn.disabled = false;
     setStatus('Error: ' + (file.status === Dropzone.CANCELED ? 'canceled' : msg), true);
   });
+
+  /* --- paste-to-upload (Ctrl+V images) --- */
+  /* Listen on the whole page so a paste anywhere (not just the dropzone)
+     grabs an image from the clipboard and queues it for upload. */
+  function handlePaste(e) {
+    var items = (e.clipboardData || window.clipboardData);
+    if (!items || !items.items) return;
+    var added = 0;
+    for (var i = 0; i < items.items.length; i++) {
+      var it = items.items[i];
+      if (it.kind !== 'file') continue;
+      var f = it.getAsFile();
+      if (!f) continue;
+      if (f.type && f.type.indexOf('image/') !== 0) continue;  /* only images */
+      var base = (f.name || 'pasted').replace(/\.[^.]+$/, '');
+      var ext = (f.type || 'image/png').split('/')[1] || 'png';
+      var name = base + '-' + Date.now() + '.' + ext;
+      var blob = new Blob([f], { type: f.type });
+      blob.name = name;
+      blob.lastModified = Date.now();
+      /* Dropzone expects a File; wrap the blob with a name so it's accepted. */
+      try {
+        blob = new File([f], name, { type: f.type, lastModified: Date.now() });
+      } catch (err) { /* older browsers: keep the named blob */ }
+      dz.addFile(blob);
+      added++;
+    }
+    if (added) {
+      e.preventDefault();
+      setStatus('Pasted ' + added + ' image' + (added > 1 ? 's' : '') + ' — click Upload');
+    }
+  }
+  document.addEventListener('paste', handlePaste);
 })();
 """
 
