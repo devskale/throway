@@ -55,7 +55,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.12.1"
+VERSION = "1.12.2"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -503,7 +503,8 @@ Base URL: {PUBLIC_BASE}""",
    Naming: 5-32 chars, [a-z0-9-], must contain a letter, not a reserved word.
    - &listed=1 -> appears in the public listing GET {PUBLIC_BASE}/d
    - &tag=<t>  -> up to 5 discoverability tags (lowercase [a-z0-9-])
-   - &ttl=<h|d> -> SLIDING lifetime, clamped to [4h, 14d]; default 7 days.
+   - &ttl=<h|d> -> SLIDING lifetime, clamped to [4h, 14d] (MAX 14 days);
+     default 7 days.
      Each add/edit/append/delete slides expires_at forward by ttl (capped at
      30 days total from creation). An active dir keeps living; an idle one
      dies ttl after its last activity.
@@ -561,7 +562,8 @@ itself is editable:false; only its text/* or application/json files are.""",
         "summary": "Lifetimes, sizes, pool, rate limit",
         "body": """LIMITS
 - URL lifetime:  {TTL_HOURS} hours
-- Dir lifetime: sliding, default 7 days (ttl= override, clamped [4h, 14d]);
+- Dir lifetime: sliding, default 7 days, MAX 14 days via ttl= (clamped
+  [4h, 14d]);
   each add/edit/delete slides expires_at forward, capped at 30 days total
 - Max file size: {MAX_FILE_MB} MB
 - Pool size:     {POOL_MB} MB (oldest files evicted first)
@@ -1837,7 +1839,7 @@ function copyDesc() {{
                 },
                 "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
-                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime clamped to [4h,14d] default 7d, each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime clamped to [4h,14d] (MAX 14d) default 7d, each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
                 "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir"},

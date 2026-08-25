@@ -7,6 +7,16 @@ website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
+## 1.12.2 — 2026-08-25
+
+### Changed
+- **Docs: 14d dir-TTL-Maximum explizit gemacht** — AGENTS.md, API.md und die
+  eingebetteten Agent-Texte (`/api`, `/help/limits`, write-for-agents)
+  sagen jetzt ausdrücklich "**MAX 14 days**", damit Agents das Limit nicht
+  nur aus der Clamp-Angabe erraten müssen.
+
+---
+
 ## 1.12.1 — 2026-08-25
 
 ### Changed
