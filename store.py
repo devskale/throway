@@ -2092,7 +2092,7 @@ function copyDesc() {{
                     "method": "POST",
                     "url": PUBLIC_BASE + "/?name=<filename>",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
-                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags": ["str"] + "(when set)", "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
+                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
                 },
                 "upload_bundle": {
                     "method": "POST",
