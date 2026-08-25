@@ -18,10 +18,14 @@ import json
 import time
 import shutil
 import secrets
+import socket
 import zipfile
+import ipaddress
 import mimetypes
+import urllib.error
+import urllib.request
 import html as _html
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -66,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.12.3"
+VERSION = "1.13.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -299,6 +303,95 @@ def _safe_name(name):
     name = re.sub(r'[\r\n\"\x00-\x1f]', "", name).strip()
     return name or None
 
+
+# --- URL import & link docs -------------------------------------------------
+# POST /?url=<u>            -> fetch the remote document server-side, store it
+# POST /?url=<u>&link=1     -> store the URL itself as a tiny redirect HTML doc
+
+class _FetchError(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code, self.msg = code, msg
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None  # we follow redirects manually to re-check SSRF per hop
+
+
+def _assert_public_host(host):
+    """Reject hosts that resolve to private/loopback/reserved IPs (SSRF guard)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        raise _FetchError(400, "cannot resolve host")
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise _FetchError(400, "blocked host (private/reserved IP)")
+
+
+def _fetch_remote(raw_url):
+    """Fetch an http(s) URL server-side. Returns (data, name, ctype).
+    Raises _FetchError on any problem. Size-capped at MAX_FILE."""
+    u = urlparse(raw_url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise _FetchError(400, "url must be http(s) and absolute")
+    name = os.path.basename(unquote(u.path)) or None
+    ctype = None
+    url = raw_url
+    opener = urllib.request.build_opener(_NoRedirect())
+    resp = None
+    for _hop in range(4):
+        hop = urlparse(url)
+        if hop.scheme not in ("http", "https") or not hop.hostname:
+            raise _FetchError(400, "redirect target must be http(s)")
+        _assert_public_host(hop.hostname)
+        req = urllib.request.Request(url, headers={"User-Agent": "throway-import/1.12"})
+        try:
+            resp = opener.open(req, timeout=10)
+            break
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get("Location") if 300 <= e.code < 400 else None
+            if not loc:
+                raise _FetchError(502, f"upstream HTTP {e.code}")
+            url = urljoin(url, loc)
+        except (urllib.error.URLError, OSError):
+            raise _FetchError(502, "upstream unreachable")
+    else:
+        raise _FetchError(502, "too many redirects")
+    disp = resp.headers.get("Content-Disposition", "")
+    m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^\";]+)"?', disp)
+    if m:
+        name = unquote(m.group(1))
+    ct_hdr = resp.headers.get("Content-Type", "")
+    ctype = ct_hdr.split(";")[0].strip() or None
+    data = resp.read(MAX_FILE + 1)
+    if len(data) > MAX_FILE:
+        raise _FetchError(413, "too large (max 5MB)")
+    fname = _safe_name(name) if name else None
+    if not ctype or ctype == "application/octet-stream":
+        if fname:
+            ctype = mimetypes.guess_type(fname)[0] or ctype
+    return data, fname, ctype or "application/octet-stream"
+
+
+def _link_doc(target):
+    """Tiny redirect HTML document for a stored URL (link=1 uploads)."""
+    esc = _html.escape(target, quote=True)
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<meta http-equiv=\"refresh\" content=\"0; url={esc}\">"
+        f"<title>{esc}</title></head>"
+        "<body style=\"font-family:sans-serif;padding:2em\">"
+        f"<p>Redirecting to <a href=\"{esc}\">{esc}</a>&hellip;</p>"
+        "</body></html>"
+    ).encode()
+
 def _parse_multipart(payload, content_type):
     """Extract a list of (filename, data, ctype) from multipart/form-data."""
     import email
@@ -493,7 +586,16 @@ Base URL: {PUBLIC_BASE}""",
         "body": """UPLOAD a file (raw body or multipart):
    POST {PUBLIC_BASE}/?name=filename.ext
    with the file bytes as the body.
-   -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.""",
+   -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.
+
+IMPORT FROM A URL (server-side fetch):
+   POST {PUBLIC_BASE}/?url=<encoded-url>[&name=<filename>]
+   -> server downloads the document and stores it like a normal upload.
+   Max 5MB; private/loopback hosts are blocked.
+
+STORE A URL AS A DOCUMENT (link doc):
+   POST {PUBLIC_BASE}/?url=<encoded-url>&link=1[&name=<name>]
+   -> stores a tiny editable HTML redirect page for that URL.""",
     },
     "bundles": {
         "title": "Upload a bundle",
@@ -928,6 +1030,10 @@ class Handler(BaseHTTPRequestHandler):
             if r is not None:
                 return r
 
+        # POST /?url=<url>[&name=<name>][&link=1] -> server-side import / link doc
+        if "url" in qp:
+            return self._url_import(qp)
+
         # POST /?dir=1[&name=<name>][&listed=1][&tag=..][&ttl=..] -> create a dir
         if want_dir:
             if name_hint:
@@ -982,6 +1088,29 @@ class Handler(BaseHTTPRequestHandler):
             if ctype.startswith("multipart") or "boundary" in ctype:
                 ctype = "application/octet-stream"
         return self._store(data, name_hint or None, ctype)
+
+    def _url_import(self, qp):
+        """POST /?url=<u>[&name=<name>][&link=1]
+        Default: fetch the remote document server-side and store it.
+        link=1:  store the URL itself as a tiny redirect HTML document."""
+        raw = unquote(qp["url"][0]).strip()
+        override = qp.get("name", [None])[0]
+        if override:
+            override = _safe_name(unquote(override))[:128] or None
+        if not raw.startswith(("http://", "https://")):
+            return self._send(400, json.dumps({"error": "url must start with http:// or https://"}), "application/json")
+        if "link" in qp:
+            base = (override or
+                    _safe_name(os.path.basename(unquote(urlparse(raw).path))) or
+                    urlparse(raw).hostname or "link")
+            if not base.lower().endswith((".html", ".htm")):
+                base += ".html"
+            return self._store(_link_doc(raw), base, "text/html")
+        try:
+            data, fname, ctype = _fetch_remote(raw)
+        except _FetchError as e:
+            return self._send(e.code, json.dumps({"error": e.msg}), "application/json")
+        return self._store(data, override or fname, ctype)
 
     def _read_body(self):
         length = self.headers.get("Content-Length")
@@ -1850,6 +1979,7 @@ function copyDesc() {{
                     "response": {"id": "str", "url": "str", "bundle": True, "editable": False, "persistence": {"type": "bundle", "expires_at": "str", "extendable_by": "none", "max_age": None}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str"}], "expires_at": "str"},
                 },
                 "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
+                "import_url": {"method": "POST", "url": PUBLIC_BASE + "/?url=<url>[&name=<name>][&link=1]", "note": "MAX 5MB. Two modes: (1) default — fetch the remote http(s) document SERVER-SIDE and store it as a normal file (name from Content-Disposition/URL path, overridable via &name=); (2) &link=1 — store the URL itself as a tiny redirect HTML document (browsers get redirected, agents can PUT/PATCH it). Private/loopback hosts are blocked.", "response": "same JSON as upload"},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
                 "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl"},

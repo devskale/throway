@@ -7,6 +7,23 @@ website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
+## 1.13.0 — 2026-08-25
+
+### Added
+- **Import from URL**: `POST /?url=<encoded-url>[&name=<filename>]` — the
+  server fetches the remote http(s) document itself and stores it like a
+  normal upload (name from Content-Disposition / URL path, overridable via
+  `&name=`; content type from response header, fallback via extension).
+  Guard rails: max 5 MB, max 3 redirects (re-validated per hop), private/
+  loopback/link-local/reserved hosts blocked (SSRF), 10s timeout.
+- **URL as document format (`&link=1`)**: `POST
+  /?url=<url>&link=1[&name=<name>]` stores the URL itself as a tiny,
+  editable HTML redirect page — browsers are redirected via meta refresh,
+  agents can `PUT`/`PATCH` it like any text file.
+- Both documented in `/api` (new `import_url` endpoint) and `/help/files`.
+
+---
+
 ## 1.12.3 — 2026-08-25
 
 ### Added
