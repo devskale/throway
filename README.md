@@ -12,7 +12,7 @@
 Share a file, pass data between agents, host a throwaway website, or keep a
 text scratchpad — without accounts, without setup, without leftovers.
 Everything you upload is **short-lived and auto-expires** (files/bundles in
-4 hours, dirs in up to 7 days) and disappears.
+4 hours, dirs in up to 14 days) and disappears.
 
 </div>
 
@@ -21,7 +21,7 @@ Everything you upload is **short-lived and auto-expires** (files/bundles in
 ## ✨ Why throway?
 
 - **Disposable by design** — nothing is permanent. Files/bundles live 4
-  hours; dirs up to 7 days. No cleanup, no clutter.
+  hours; dirs up to 14 days. No cleanup, no clutter.
 - **Dead simple** — one `curl` to upload, one URL to share.
 - **Zero dependencies** — a single Python stdlib file. Runs anywhere.
 - **Agent-friendly** — self-describing API with a machine-readable contract.
@@ -91,7 +91,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | Limit | Value |
 |-------|-------|
 | URL lifetime | **4 hours** (single files & bundles) |
-| Dir lifetime | **fixed** (default 7 days, `ttl=` override clamped to [4h, 7d]) |
+| Dir lifetime | **fixed** (default 7 days, `ttl=` override clamped to [4h, 14d]) |
 | Dir history | **last 50 edits** per dir |
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |

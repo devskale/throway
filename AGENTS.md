@@ -14,6 +14,14 @@ Lifetime:  4 hours (files auto-delete)
 Auth:      none
 ```
 
+> **Bumppush-Pflicht:** Jede Änderung am Code wird immer als **Bumppush**
+> gelandet — per Default ein **Minor-Bump (`x.y.Z` → `x.y+1.0`-Stelle:
+> `1.11.0` → `1.12.0`)**; Patch-Bumps nur für reine Bugfixes, Major nur bei
+> Breaking Changes. Das heißt: `VERSION` in `store.py` hochziehen,
+> Release-Note in `RELEASES.md` ergänzen, committen (mit `(x.y.z)` im
+> Betreff), pushen und auf lubu deployen (`store.py` nach `/var/www/store/`
+> kopieren + `sudo systemctl restart throway-store`).
+
 1. `POST` a file → get back JSON with an `id` and `url`.
 2. Share that `url`. It's valid for 4 hours.
 3. `GET` to download, `PUT`/`PATCH` to edit text, `DELETE` to remove.
@@ -245,7 +253,7 @@ curl -X DELETE "$BASE/d/team7"
 ```
 
 - **Lifetime:** sliding, default **7 days** (override `ttl=` clamped to
-  [4h, 7d]). `expires_at` slides forward by `ttl` on each add/edit/delete,
+  [4h, 14d]). `expires_at` slides forward by `ttl` on each add/edit/delete,
   capped at 30 days total from creation.
 - **`updated_at`** = last add/edit/delete. Slides `expires_at` forward.
 - **Listing:** `GET /d/<key>` returns JSON (`dir:true`,
@@ -274,7 +282,7 @@ curl -X POST "…/?dir=1&name=team7&listed=1"
 # tags: up to 5 discoverability tags (lowercase [a-z0-9-], 1-24 chars)
 curl -X POST "…/?dir=1&name=team7&listed=1&tag=docs&tag=2026"
 
-# ttl: FIXED lifetime, clamped to [4h, 7d], default 7 days
+# ttl: FIXED lifetime, clamped to [4h, 14d], default 7 days
 curl -X POST "…/?dir=1&name=team7&ttl=2d"   # 2 days
 curl -X POST "…/?dir=1&name=team7&ttl=48h"  # 48 hours
 curl -X POST "…/?dir=1&name=team7&ttl=24"   # 24 hours

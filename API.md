@@ -13,7 +13,7 @@ are deleted. No auth required.
 | Limit | Value |
 |---|---|
 | URL lifetime | 4 hours (14400s) — single files & bundles, fixed |
-| Dir lifetime | fixed, default 7 days (`ttl=` clamp [4h, 7d]) |
+| Dir lifetime | fixed, default 7 days (`ttl=` clamp [4h, 14d]) |
 | Dir history | last 50 edits per dir |
 | Max file size | 5 MB |
 | Pool size | 100 MB (oldest files evicted first) |
@@ -161,7 +161,7 @@ reserved word (`api`, `index`, `d`, `releases`, `llms`, `store`, …).
 ### Create flags (immutable at create)
 - `&listed=1` — appears in the public `GET /d` listing.
 - `&tag=<t>` — up to 5 discoverability tags (lowercase `[a-z0-9-]`, 1-24 chars).
-- `&ttl=<h|d>` — **sliding lifetime**, clamped to `[4h, 7d]`, default **7 days**.
+- `&ttl=<h|d>` — **sliding lifetime**, clamped to `[4h, 14d]`, default **7 days**.
 
 ### Fixed lifetime
 `expires_at` slides forward by `ttl` on each add/edit/delete (capped at 30 days

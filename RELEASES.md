@@ -1,11 +1,20 @@
 # throway — Releases
 
-**Current version:** `1.11.0`
+**Current version:** `1.12.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.12.0 — 2026-08-25
+
+### Changed
+- **Dirs: `ttl=` max raised from 7d to 14d.** `&ttl=` at dir creation is now
+  clamped to `[4h, 14d]` (was `[4h, 7d]`). Default (no `ttl=`) stays 7 days;
+  sliding behavior and the 30-day absolute cap are unchanged. Updated in the
+  embedded help, `/api` spec, homepage copy, AGENTS.md, API.md, PRD.md,
+  README.md.
 
 ## 1.11.0 — 2026-08-23
 

@@ -21,7 +21,7 @@ alike.
   throwaway website); agents get a zip
 - **Dirs** (one unified concept): create a dir (`?dir=1`, unnamed hex id or
   `&name=<name>` named), keep adding files, sliding lifetime (default 7 days,
-  `ttl=` override clamped to [4h, 7d]), optional `listed=1` + tags, full CRUD
+  `ttl=` override clamped to [4h, 14d]), optional `listed=1` + tags, full CRUD
   under `/d/<key>`, and a **lightweight edit history** (`GET /d/<key>/history`
   — last 50 entries: date, file, action, byte deltas)
 - URL valid **4 hours** by default, then auto-expired & deleted
@@ -80,7 +80,7 @@ alike.
 
 ## Limits
 - TTL: 4h (14400s) for single files & bundles
-- Dirs: fixed lifetime, default 7d, `ttl=` override clamped to [4h, 7d]
+- Dirs: fixed lifetime, default 7d, `ttl=` override clamped to [4h, 14d]
 - Dir history: last 50 edits per dir
 - Max file: 5 MB
 - Pool: 100 MB
