@@ -28,22 +28,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 def _html_escape(s):
     return _html.escape(s)
 
-ROOT = "/srv/storage2/throway"
-THROW_POOL_SIZE = 100 * 1024 * 1024   # 100MB rolling pool
-MAX_FILE = 5 * 1024 * 1024            # 5MB
-RATE_LIMIT = 100                      # req/min per IP
-TTL_HOURS = 4                         # default URL lifetime
+# ---------------------------------------------------------------------------
+# Build config — every important operational parameter lives here and can be
+# overridden via THROWAWAY_* env vars (e.g. in the systemd unit). Defaults
+# below are the shipped configuration.
+# ---------------------------------------------------------------------------
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+ROOT = os.environ.get("THROWAWAY_ROOT", "/srv/storage2/throway")
+THROW_POOL_SIZE = _env_int("THROWAWAY_POOL_BYTES", 100 * 1024 * 1024)   # 100MB rolling pool
+MAX_FILE = _env_int("THROWAWAY_MAX_FILE_BYTES", 5 * 1024 * 1024)        # 5MB
+RATE_LIMIT = _env_int("THROWAWAY_RATE_LIMIT", 100)                      # req/min per IP
+TTL_HOURS = _env_int("THROWAWAY_TTL_HOURS", 4)                          # default URL lifetime
 
 # Dirs — one unified concept under /d/<key>. A dir is addressable by an
 # opaque hex id (unnamed) or a memorable name (named). Sliding lifetime,
 # optional tags/listed, and a lightweight edit history.
 DIR_NS = "d"                          # namespace prefix for all dirs
-DIR_MIN_AGE = 4 * 3600                # min sliding lifetime (4h)
-DIR_MAX_AGE = 14 * 24 * 3600          # max sliding lifetime (14 days)
-DIR_DEFAULT_AGE = 7 * 24 * 3600       # default when &ttl= not given
-DIR_ABS_MAX = 30 * 24 * 3600          # absolute ceiling on total lifetime (30d)
-HISTORY_LIMIT = 50                    # max history entries kept per dir
-MAX_TAGS = 5
+DIR_MIN_AGE = _env_int("THROWAWAY_DIR_MIN_AGE", 4 * 3600)             # min sliding lifetime (4h)
+DIR_MAX_AGE = _env_int("THROWAWAY_DIR_MAX_AGE", 14 * 24 * 3600)       # max sliding lifetime (14 days)
+DIR_DEFAULT_AGE = _env_int("THROWAWAY_DIR_DEFAULT_AGE", 7 * 24 * 3600)  # default when &ttl= not given
+DIR_ABS_MAX = _env_int("THROWAWAY_DIR_ABS_MAX", 30 * 24 * 3600)       # absolute ceiling on total lifetime (30d)
+HISTORY_LIMIT = _env_int("THROWAWAY_HISTORY_LIMIT", 50)                 # max history entries kept per dir
+MAX_TAGS = _env_int("THROWAWAY_MAX_TAGS", 5)
 MAX_TAG_LEN = 24
 RESERVED_NAMES = {
     "api", "index", "d", "releases", "llms", "llms-full", "llms_full",
@@ -55,7 +66,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.12.2"
+VERSION = "1.12.3"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1820,6 +1831,7 @@ function copyDesc() {{
             "version": VERSION,
             "base_url": PUBLIC_BASE,
             "ttl_seconds": TTL_HOURS * 3600,
+            "dir_ttl_seconds": {"min": DIR_MIN_AGE, "default": DIR_DEFAULT_AGE, "max": DIR_MAX_AGE},
             "max_file_bytes": MAX_FILE,
             "pool_bytes": THROW_POOL_SIZE,
             "rate_limit_per_min": RATE_LIMIT,
@@ -1839,7 +1851,7 @@ function copyDesc() {{
                 },
                 "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
-                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime clamped to [4h,14d] (MAX 14d) default 7d, each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
                 "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir"},

@@ -7,6 +7,22 @@ website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
+## 1.12.3 — 2026-08-25
+
+### Added
+- **Build config**: alle wichtigen Betriebsparameter sind jetzt zentrale
+  Konfigurationsvariablen am Dateianfang von `store.py` und per
+  `THROWAWAY_*`-Env-Vars überschreibbar (z.B. im systemd-Unit):
+  `THROWAWAY_ROOT`, `_POOL_BYTES`, `_MAX_FILE_BYTES`, `_RATE_LIMIT`,
+  `_TTL_HOURS`, `_DIR_MIN_AGE`, `_DIR_MAX_AGE` (das 14d-Max),
+  `_DIR_DEFAULT_AGE`, `_DIR_ABS_MAX`, `_HISTORY_LIMIT`, `_MAX_TAGS`.
+  Defaults unverändert.
+- **`/api`**: neues Feld `dir_ttl_seconds: {min, default, max}` — Agents
+  können das 14d-Max nun direkt als Daten lesen statt aus Prosa zu raten;
+  `create_dir.note` führt das MAX 14 days vorne an.
+
+---
+
 ## 1.12.2 — 2026-08-25
 
 ### Changed
