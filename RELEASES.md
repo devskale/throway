@@ -7,6 +7,23 @@ website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
+## 1.14.0 — 2026-08-25
+
+### Added
+- **Tags on single files** (wie bisher schon bei Dirs): bei Upload und
+  URL-Import per `&tag=<t>` (wiederholbar, max 5, `[a-z0-9-]`, 1–24
+  Zeichen); stehen danach in der Upload-Response und in der File-Meta.
+- **Tag-Update ohne Rewrite**: `POST /<id>?tag=a&tag=b&untag=c` ändert nur
+  die Tags — Content und Expiry bleiben unangetastet.
+- **`GET /browse`** — Filtern & Sortieren über alle lebenden Einzeldateien:
+  `?tag=<t>[&tag=<t2>]` (UND-Filter), `&q=<substr>` (Name/Tag),
+  `&sort=created|name|size|expires`, `&order=asc|desc`. JSON für Agents,
+  HTML-Seite für Browser.
+- Dokumentiert in `/api` (neue Endpoints `browse_files`, `tag_file`;
+  Upload-Response mit `tags`) und `/help/files`.
+
+---
+
 ## 1.13.0 — 2026-08-25
 
 ### Added

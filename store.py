@@ -70,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -588,6 +588,13 @@ Base URL: {PUBLIC_BASE}""",
    with the file bytes as the body.
    -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.
 
+TAGS on uploads/imports (filter+sort later):
+   POST {PUBLIC_BASE}/?name=x.pdf&tag=papers&tag=2026
+   -> up to 5 tags per file ([a-z0-9-], 1-24 chars); returned in the JSON.
+   Update later:  POST {PUBLIC_BASE}/<id>?tag=a&untag=b
+   Browse/filter: GET  {PUBLIC_BASE}/browse?tag=papers&q=&sort=created&order=desc
+   (sort: created | name | size | expires)
+
 IMPORT FROM A URL (server-side fetch):
    POST {PUBLIC_BASE}/?url=<encoded-url>[&name=<filename>]
    -> server downloads the document and stores it like a normal upload.
@@ -930,6 +937,9 @@ class Handler(BaseHTTPRequestHandler):
         # --- dirs: /d (listing) and /d/<key>[/<file>|/history] ---
         if path == "/" + DIR_NS:
             return self._dir_listing_browse()
+        # --- tagged file browser: /browse?tag=<t>&q=&sort=&order= ---
+        if path == "/browse":
+            return self._browse(self.path.split("?", 1)[1] if "?" in self.path else "")
         parts = path.lstrip("/").split("/")
         if parts and parts[0] == DIR_NS and len(parts) >= 2 and parts[1]:
             return self._dir_get(parts[1], parts[1:], query=self.path.split("?", 1)[1] if "?" in self.path else "")
@@ -1018,11 +1028,19 @@ class Handler(BaseHTTPRequestHandler):
             qp.setdefault(k, []).append(v)
         name_hint = None
         want_dir = ("dir=1" in query)
+        tags = _parse_tags(qp.get("tag", []))
         if "name" in qp:
             name_hint = _safe_name(qp["name"][0])[:128]
 
         path = self.path.split("?", 1)[0].rstrip("/")
         parts = path.lstrip("/").split("/")
+
+        # POST /<id>?tag=a&tag=b&untag=c -> update tags on an existing file
+        # (single-file ids only; dirs have their own tag handling at create)
+        if len(parts) == 1 and parts[0] and parts[0] != DIR_NS \
+                and not want_dir and "url" not in qp \
+                and ("tag" in qp or "untag" in qp):
+            return self._file_tags(parts[0], qp)
 
         # POST /d/<key> -> add files to an existing dir (multipart)
         if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
@@ -1032,7 +1050,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # POST /?url=<url>[&name=<name>][&link=1] -> server-side import / link doc
         if "url" in qp:
-            return self._url_import(qp)
+            return self._url_import(qp, tags)
 
         # POST /?dir=1[&name=<name>][&listed=1][&tag=..][&ttl=..] -> create a dir
         if want_dir:
@@ -1072,7 +1090,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(named) > 1:
                 return self._store_bundle(named)
             n, d, c = named[0]
-            return self._store(d, _safe_name(n)[:128] or None, c)
+            return self._store(d, _safe_name(n)[:128] or None, c, tags)
 
         # raw-body upload: body is the file content
         length = self.headers.get("Content-Length")
@@ -1087,9 +1105,38 @@ class Handler(BaseHTTPRequestHandler):
         else:
             if ctype.startswith("multipart") or "boundary" in ctype:
                 ctype = "application/octet-stream"
-        return self._store(data, name_hint or None, ctype)
+        return self._store(data, name_hint or None, ctype, tags)
 
-    def _url_import(self, qp):
+    def _file_tags(self, fid, qp):
+        """POST /<id>?tag=<t>&untag=<t> — update meta tags on a stored file."""
+        fp = _id_path(fid)
+        mp = fp + ".meta"
+        if not os.path.isfile(fp) or not os.path.isfile(mp):
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        try:
+            meta = json.load(open(mp))
+        except Exception:
+            return self._send(500, json.dumps({"error": "meta unreadable"}), "application/json")
+        add = _parse_tags(qp.get("tag", []))
+        remove = _parse_tags(qp.get("untag", []))
+        cur = list(meta.get("tags", []))
+        cur = [t for t in cur if t not in remove]
+        for t in add:
+            if t not in cur:
+                cur.append(t)
+            if len(cur) >= MAX_TAGS:
+                break
+        meta["tags"] = cur
+        json.dump(meta, open(mp, "w"))
+        body = json.dumps({
+            "id": fid,
+            "url": f"{PUBLIC_BASE}/{fid}",
+            "name": meta.get("name", fid),
+            "tags": cur,
+        })
+        return self._send(200, body, "application/json")
+
+    def _url_import(self, qp, tags=None):
         """POST /?url=<u>[&name=<name>][&link=1]
         Default: fetch the remote document server-side and store it.
         link=1:  store the URL itself as a tiny redirect HTML document."""
@@ -1105,12 +1152,85 @@ class Handler(BaseHTTPRequestHandler):
                     urlparse(raw).hostname or "link")
             if not base.lower().endswith((".html", ".htm")):
                 base += ".html"
-            return self._store(_link_doc(raw), base, "text/html")
+            return self._store(_link_doc(raw), base, "text/html", tags)
         try:
             data, fname, ctype = _fetch_remote(raw)
         except _FetchError as e:
             return self._send(e.code, json.dumps({"error": e.msg}), "application/json")
-        return self._store(data, override or fname, ctype)
+        return self._store(data, override or fname, ctype, tags)
+
+    def _browse(self, query):
+        """GET /browse?tag=<t>[&tag=<t2>][&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]
+        JSON listing of live single files, filterable by tags (AND) and name
+        substring. JSON for agents, simple HTML for browsers."""
+        qp = {}
+        for kv in query.split("&"):
+            if not kv:
+                continue
+            k, _, v = kv.partition("=")
+            qp.setdefault(k, []).append(v)
+        want_tags = _parse_tags(qp.get("tag", []))
+        qtext = (unquote((qp.get("q") or [""])[0]) or "").strip().lower()
+        sort = (unquote((qp.get("sort") or [""])[0]) or "created").strip().lower()
+        order = (unquote((qp.get("order") or [""])[0]) or "desc").strip().lower()
+        if sort not in ("created", "name", "size", "expires"):
+            sort = "created"
+        if order not in ("asc", "desc"):
+            order = "desc"
+        now = time.time()
+        entries = []
+        for f in os.listdir(ROOT):
+            if f.endswith(".meta"):
+                continue
+            p = os.path.join(ROOT, f)
+            if not os.path.isfile(p):
+                continue  # bundles/dirs are listed elsewhere
+            mp = p + ".meta"
+            try:
+                meta = json.load(open(mp))
+            except Exception:
+                continue
+            expires = meta.get("expires", os.path.getmtime(p) + TTL_HOURS * 3600)
+            if expires < now:
+                continue
+            ftags = meta.get("tags", [])
+            if want_tags and not all(t in ftags for t in want_tags):
+                continue
+            name = meta.get("name", f)
+            if qtext and qtext not in name.lower() and not any(qtext in t for t in ftags):
+                continue
+            entries.append({
+                "id": f,
+                "url": f"{PUBLIC_BASE}/{f}",
+                "name": name,
+                "content_type": meta.get("ctype", "application/octet-stream"),
+                "size": os.path.getsize(p),
+                "tags": ftags,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("created", now))),
+                "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
+                "_k": {"created": meta.get("created", 0), "name": name.lower(),
+                        "size": os.path.getsize(p), "expires": expires}[sort],
+            })
+        entries.sort(key=lambda e: e["_k"], reverse=(order != "asc"))
+        total = len(entries)
+        for e in entries:
+            e.pop("_k", None)
+        if self._is_agent():
+            return self._send(200, json.dumps({"files": entries, "total": total}), "application/json")
+        rows = "".join(
+            f'<li><a href="{_html_escape(e["url"])}">{_html_escape(e["name"])}</a> '
+            f'<span class=meta>{_fmt_size(e["size"])} · {e["content_type"]} · exp {e["expires_at"]}</span>'
+            + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
+            + '</li>'
+            for e in entries)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             "<title>throway — files</title><style>"
+             "body{font-family:sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}"
+             "h1 small{color:#6b7280;font-weight:normal}li{margin:.5rem 0}"
+             ".meta{color:#6b7280;font-size:.75rem;display:block}"
+             ".tags{color:#2563eb;font-size:.75rem}</style></head><body>"
+             f"<h1>throway files <small>{total}</small></h1><ul>{rows}</ul></body></html>")
+        return self._send(200, h, "text/html")
 
     def _read_body(self):
         length = self.headers.get("Content-Length")
@@ -1118,7 +1238,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(int(length))
 
-    def _store(self, data, name_hint, ctype):
+    def _store(self, data, name_hint, ctype, tags=None):
         if len(data) > MAX_FILE:
             return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
         fid = secrets.token_hex(8)
@@ -1131,6 +1251,8 @@ class Handler(BaseHTTPRequestHandler):
             "name": name_hint or fid,
             "created": time.time(),
         }
+        if tags:
+            meta["tags"] = tags
         json.dump(meta, open(fp + ".meta", "w"))
         evict(THROW_POOL_SIZE)
         s = _load_stats()
@@ -1146,6 +1268,7 @@ class Handler(BaseHTTPRequestHandler):
             "name": meta["name"],
             "content_type": meta["ctype"],
             "editable": _is_editable(meta["ctype"]),
+            **({"tags": meta["tags"]} if meta.get("tags") else {}),
             "persistence": _persistence_block("single", meta["expires"]),
             "expires_in": TTL_HOURS * 3600,
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"])),
@@ -1969,7 +2092,7 @@ function copyDesc() {{
                     "method": "POST",
                     "url": PUBLIC_BASE + "/?name=<filename>",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
-                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
+                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags": ["str"] + "(when set)", "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
                 },
                 "upload_bundle": {
                     "method": "POST",
@@ -1979,7 +2102,9 @@ function copyDesc() {{
                     "response": {"id": "str", "url": "str", "bundle": True, "editable": False, "persistence": {"type": "bundle", "expires_at": "str", "extendable_by": "none", "max_age": None}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str"}], "expires_at": "str"},
                 },
                 "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
-                "import_url": {"method": "POST", "url": PUBLIC_BASE + "/?url=<url>[&name=<name>][&link=1]", "note": "MAX 5MB. Two modes: (1) default — fetch the remote http(s) document SERVER-SIDE and store it as a normal file (name from Content-Disposition/URL path, overridable via &name=); (2) &link=1 — store the URL itself as a tiny redirect HTML document (browsers get redirected, agents can PUT/PATCH it). Private/loopback hosts are blocked.", "response": "same JSON as upload"},
+                "import_url": {"method": "POST", "url": PUBLIC_BASE + "/?url=<url>[&name=<name>][&link=1][&tag=<t>]", "note": "MAX 5MB. Two modes: (1) default — fetch the remote http(s) document SERVER-SIDE and store it as a normal file (name from Content-Disposition/URL path, overridable via &name=); (2) &link=1 — store the URL itself as a tiny redirect HTML document (browsers get redirected, agents can PUT/PATCH it). Private/loopback hosts are blocked. Optional &tag=<t> (repeatable, up to 5) attaches tags.", "response": "same JSON as upload"},
+                "browse_files": {"method": "GET", "url": PUBLIC_BASE + "/browse?tag=<t>[&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]", "note": "JSON listing of live single files for agents (HTML page for browsers). Filter by one or more &tag= values (AND), by name/tag substring &q=; sort with &sort= (default created) and &order= (default desc). Each entry: id, url, name, content_type, size, tags, created_at, expires_at."},
+                "tag_file": {"method": "POST", "url": PUBLIC_BASE + "/<id>?tag=<t>[&tag=<t2>][&untag=<t3>]", "note": "update tags on an existing single file without touching its content or expiry. Tags: lowercase [a-z0-9-], 1-24 chars, max 5 per file."},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
                 "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl"},
