@@ -7,6 +7,14 @@ website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
+## 1.12.1 — 2026-08-25
+
+### Changed
+- **AGENTS.md: Bumppush-Regel geschärft** — per Default ein **Patch-Release**
+  (`x.y.z` → `x.y.z+1`); Minor für Features, Major für Breaking Changes.
+
+---
+
 ## 1.12.0 — 2026-08-25
 
 ### Changed

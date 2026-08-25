@@ -15,9 +15,10 @@ Auth:      none
 ```
 
 > **Bumppush-Pflicht:** Jede Änderung am Code wird immer als **Bumppush**
-> gelandet — per Default ein **Minor-Bump (`x.y.Z` → `x.y+1.0`-Stelle:
-> `1.11.0` → `1.12.0`)**; Patch-Bumps nur für reine Bugfixes, Major nur bei
-> Breaking Changes. Das heißt: `VERSION` in `store.py` hochziehen,
+> gelandet — per Default ein **Patch-Release** (`x.y.z` → `x.y.z+1`, also
+> nur die dritte Stelle, z.B. `1.12.0` → `1.12.1`). Neue Features dürfen
+> auch als Minor-Release (`y`-Stelle) gelanden, Breaking Changes als Major
+> (`x`-Stelle). Das heißt: `VERSION` in `store.py` hochziehen,
 > Release-Note in `RELEASES.md` ergänzen, committen (mit `(x.y.z)` im
 > Betreff), pushen und auf lubu deployen (`store.py` nach `/var/www/store/`
 > kopieren + `sudo systemctl restart throway-store`).
