@@ -18,6 +18,10 @@ Auth:      none
 > gelandet — per Default ein **Minor-Bump (`x.y.Z` → `x.y+1.0`-Stelle:
 > `1.11.0` → `1.12.0`)**; Patch-Bumps nur für reine Bugfixes, Major nur bei
 > Breaking Changes. Das heißt: `VERSION` in `store.py` hochziehen,
+> gelandet — per Default ein **Patch-Release** (`x.y.z` → `x.y.z+1`, also
+> nur die dritte Stelle, z.B. `1.12.0` → `1.12.1`). Neue Features dürfen
+> auch als Minor-Release (`y`-Stelle) gelanden, Breaking Changes als Major
+> (`x`-Stelle). Das heißt: `VERSION` in `store.py` hochziehen,
 > Release-Note in `RELEASES.md` ergänzen, committen (mit `(x.y.z)` im
 > Betreff), pushen und auf lubu deployen (`store.py` nach `/var/www/store/`
 > kopieren + `sudo systemctl restart throway-store`).
@@ -215,6 +219,7 @@ A **dir** is a collection of files you keep adding to and editing over time
 — a disposable workspace for an agent. One concept, addressable by an
 **opaque id** (unnamed) or a **memorable name** (named), always under
 `/d/<key>`. It has a **sliding lifetime** (default 7 days) and a lightweight
+`/d/<key>`. It has a **sliding lifetime** (default 7 days, **max 14 days**) and a lightweight
 **edit history**.
 
 ```bash
@@ -254,6 +259,8 @@ curl -X DELETE "$BASE/d/team7"
 
 - **Lifetime:** sliding, default **7 days** (override `ttl=` clamped to
   [4h, 14d]). `expires_at` slides forward by `ttl` on each add/edit/delete,
+- **Lifetime:** sliding, default **7 days**, **max 14 days** (override `ttl=`
+  clamped to [4h, 14d]). `expires_at` slides forward by `ttl` on each add/edit/delete,
   capped at 30 days total from creation.
 - **`updated_at`** = last add/edit/delete. Slides `expires_at` forward.
 - **Listing:** `GET /d/<key>` returns JSON (`dir:true`,
@@ -283,6 +290,7 @@ curl -X POST "…/?dir=1&name=team7&listed=1"
 curl -X POST "…/?dir=1&name=team7&listed=1&tag=docs&tag=2026"
 
 # ttl: FIXED lifetime, clamped to [4h, 14d], default 7 days
+# ttl: sliding lifetime, clamped to [4h, 14d] — MAX is 14 days; default 7 days
 curl -X POST "…/?dir=1&name=team7&ttl=2d"   # 2 days
 curl -X POST "…/?dir=1&name=team7&ttl=48h"  # 48 hours
 curl -X POST "…/?dir=1&name=team7&ttl=24"   # 24 hours

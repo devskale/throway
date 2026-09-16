@@ -1,11 +1,89 @@
 # throway — Releases
 
 **Current version:** `1.11.0`
+**Current version:** `1.12.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.14.0 — 2026-08-25
+
+### Added
+- **Tags on single files** (wie bisher schon bei Dirs): bei Upload und
+  URL-Import per `&tag=<t>` (wiederholbar, max 5, `[a-z0-9-]`, 1–24
+  Zeichen); stehen danach in der Upload-Response und in der File-Meta.
+- **Tag-Update ohne Rewrite**: `POST /<id>?tag=a&tag=b&untag=c` ändert nur
+  die Tags — Content und Expiry bleiben unangetastet.
+- **`GET /browse`** — Filtern & Sortieren über alle lebenden Einzeldateien:
+  `?tag=<t>[&tag=<t2>]` (UND-Filter), `&q=<substr>` (Name/Tag),
+  `&sort=created|name|size|expires`, `&order=asc|desc`. JSON für Agents,
+  HTML-Seite für Browser.
+- Dokumentiert in `/api` (neue Endpoints `browse_files`, `tag_file`;
+  Upload-Response mit `tags`) und `/help/files`.
+
+---
+
+## 1.13.0 — 2026-08-25
+
+### Added
+- **Import from URL**: `POST /?url=<encoded-url>[&name=<filename>]` — the
+  server fetches the remote http(s) document itself and stores it like a
+  normal upload (name from Content-Disposition / URL path, overridable via
+  `&name=`; content type from response header, fallback via extension).
+  Guard rails: max 5 MB, max 3 redirects (re-validated per hop), private/
+  loopback/link-local/reserved hosts blocked (SSRF), 10s timeout.
+- **URL as document format (`&link=1`)**: `POST
+  /?url=<url>&link=1[&name=<name>]` stores the URL itself as a tiny,
+  editable HTML redirect page — browsers are redirected via meta refresh,
+  agents can `PUT`/`PATCH` it like any text file.
+- Both documented in `/api` (new `import_url` endpoint) and `/help/files`.
+
+---
+
+## 1.12.3 — 2026-08-25
+
+### Added
+- **Build config**: alle wichtigen Betriebsparameter sind jetzt zentrale
+  Konfigurationsvariablen am Dateianfang von `store.py` und per
+  `THROWAWAY_*`-Env-Vars überschreibbar (z.B. im systemd-Unit):
+  `THROWAWAY_ROOT`, `_POOL_BYTES`, `_MAX_FILE_BYTES`, `_RATE_LIMIT`,
+  `_TTL_HOURS`, `_DIR_MIN_AGE`, `_DIR_MAX_AGE` (das 14d-Max),
+  `_DIR_DEFAULT_AGE`, `_DIR_ABS_MAX`, `_HISTORY_LIMIT`, `_MAX_TAGS`.
+  Defaults unverändert.
+- **`/api`**: neues Feld `dir_ttl_seconds: {min, default, max}` — Agents
+  können das 14d-Max nun direkt als Daten lesen statt aus Prosa zu raten;
+  `create_dir.note` führt das MAX 14 days vorne an.
+
+---
+
+## 1.12.2 — 2026-08-25
+
+### Changed
+- **Docs: 14d dir-TTL-Maximum explizit gemacht** — AGENTS.md, API.md und die
+  eingebetteten Agent-Texte (`/api`, `/help/limits`, write-for-agents)
+  sagen jetzt ausdrücklich "**MAX 14 days**", damit Agents das Limit nicht
+  nur aus der Clamp-Angabe erraten müssen.
+
+---
+
+## 1.12.1 — 2026-08-25
+
+### Changed
+- **AGENTS.md: Bumppush-Regel geschärft** — per Default ein **Patch-Release**
+  (`x.y.z` → `x.y.z+1`); Minor für Features, Major für Breaking Changes.
+
+---
+
+## 1.12.0 — 2026-08-25
+
+### Changed
+- **Dirs: `ttl=` max raised from 7d to 14d.** `&ttl=` at dir creation is now
+  clamped to `[4h, 14d]` (was `[4h, 7d]`). Default (no `ttl=`) stays 7 days;
+  sliding behavior and the 30-day absolute cap are unchanged. Updated in the
+  embedded help, `/api` spec, homepage copy, AGENTS.md, API.md, PRD.md,
+  README.md.
 
 ## 1.11.0 — 2026-08-23
 
