@@ -9,9 +9,10 @@
 [![Zero deps](https://img.shields.io/badge/dependencies-zero-4caf50)](store.py)
 [![Status](https://img.shields.io/badge/status-live-00c853)](#-live-instance)
 
-Share a file, pass data between agents, or keep a text scratchpad — without
-accounts, without setup, without leftovers. Everything you upload gets a URL
-that **expires in 4 hours** and disappears.
+Share a file, pass data between agents, host a throwaway website, or keep a
+text scratchpad — without accounts, without setup, without leftovers.
+Everything you upload is **short-lived and auto-expires** (files/bundles in
+4 hours, dirs in up to 14 days) and disappears.
 
 </div>
 
@@ -19,7 +20,8 @@ that **expires in 4 hours** and disappears.
 
 ## ✨ Why throway?
 
-- **Disposable by design** — nothing lives longer than 4 hours. No cleanup, no clutter.
+- **Disposable by design** — nothing is permanent. Files/bundles live 4
+  hours; dirs up to 14 days. No cleanup, no clutter.
 - **Dead simple** — one `curl` to upload, one URL to share.
 - **Zero dependencies** — a single Python stdlib file. Runs anywhere.
 - **Agent-friendly** — self-describing API with a machine-readable contract.
@@ -30,36 +32,57 @@ that **expires in 4 hours** and disappears.
 ```bash
 # upload a file → get a URL back
 curl -X POST --data-binary @photo.png \
-  "https://lubu.skale.dev/throway/?name=photo.png"
+  "https://skale.dev/throway/?name=photo.png"
 
-# → {"id":"4f2a…","url":"https://lubu.skale.dev/throway/4f2a…","size":148,…}
+# → {"id":"4f2a…","url":"https://skale.dev/throway/4f2a…","size":148,…}
+```
+
+```bash
+# upload a bundle (a mini website) → one URL, files at /<id>/<file>
+curl -F "f=@index.html;type=text/html" \
+     -F "f=@style.css;type=text/css" \
+     "https://skale.dev/throway/"
+# → {"id":"…","bundle":true,"files":[{name,url,size,content_type},…]}
 ```
 
 ```bash
 # download / view
-curl "https://lubu.skale.dev/throway/<id>"
+curl "https://skale.dev/throway/<id>"
 
 # edit text (replace / append)
-curl -X PUT   --data-binary "new text"     "https://lubu.skale.dev/throway/<id>"
-curl -X PATCH --data-binary "append this"  "https://lubu.skale.dev/throway/<id>"
+curl -X PUT   --data-binary "new text"     "https://skale.dev/throway/<id>"
+curl -X PATCH --data-binary "append this"  "https://skale.dev/throway/<id>"
 
 # delete
-curl -X DELETE "https://lubu.skale.dev/throway/<id>"
+curl -X DELETE "https://skale.dev/throway/<id>"
 ```
 
-> **Live instance:** `https://lubu.skale.dev/throway/`
+> **Live instance:** `https://skale.dev/throway/`
 
 ## 🧭 Endpoints
 
 | Method | Path | Action |
 |--------|------|--------|
-| `POST` | `/throway/?name=<file>` | upload (raw body or multipart) |
-| `GET` | `/throway/<id>` | download / view |
+| `POST` | `/throway/?name=<file>` | upload a file (raw body or multipart) |
+| `POST` | `/throway/` | upload a bundle (multipart, 2+ files) |
+| `POST` | `/throway/?dir=1[&name=<name>]` | create a dir (unnamed or named; `&listed=1`, `&tag=`, `&ttl=`) |
+| `GET` | `/throway/d` | list dirs (only `listed=1`; filter/sort via query) |
+| `GET` | `/throway/d/<key>` | view a dir (listing / zip / files) |
+| `POST` | `/throway/d/<key>` | add files to a dir |
+| `GET` | `/throway/d/<key>/history` | edit history (JSON for agents, HTML for browsers) |
+| `PUT`/`PATCH` | `/throway/d/<key>/<file>` | edit/append text in a dir |
+| `DELETE` | `/throway/d/<key>` | delete a dir |
+| `DELETE` | `/throway/d/<key>/<file>` | remove one file from a dir |
+| `GET` | `/throway/<id>` | download / view a file, bundle root, or dir listing |
+| `GET` | `/throway/<id>/<file>` | fetch one file from a bundle/dir |
+| `GET` | `/throway/d/<key>?zip=1` | download a whole dir as zip |
 | `GET` | `/throway/<id>?download=1` | force download |
 | `PUT` | `/throway/<id>` | replace text (text only) |
 | `PATCH` | `/throway/<id>` | append text (text only) |
-| `DELETE` | `/throway/<id>` | delete |
+| `DELETE` | `/throway/<id>` | delete file / bundle / dir |
 | `GET` | `/throway/api` | machine-readable contract (JSON) |
+| `GET` | `/throway/help` | modular help index (JSON for agents, HTML for browsers) |
+| `GET` | `/throway/help/<topic>` | one help topic (plain text for agents) |
 | `GET` | `/throway/write_for_agents` | agent description (plain text) |
 | `GET` | `/throway/copy_for_agents` | copy-pasteable agent description (HTML) |
 
@@ -67,15 +90,26 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 
 | Limit | Value |
 |-------|-------|
-| URL lifetime | **4 hours** |
+| URL lifetime | **4 hours** (single files & bundles) |
+| Dir lifetime | **fixed** (default 7 days, `ttl=` override clamped to [4h, 14d]) |
+| Dir history | **last 50 edits** per dir |
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |
 | Rate limit | **100 req/min** per IP |
 
 ## 🖼️ Behavior
 
-- **Images** render inline in the browser (a viewer). Everything else downloads.
-  Append `?download=1` to force a download of any file.
+- **Images and text-like types** (text, html, json, pdf, svg) render inline in
+  the browser (a viewer). Everything else downloads. Append `?download=1` to
+  force a download of any file.
+- **Bundles** (2+ files) are served under one URL: browsers get `index.html`
+  rendered inline (a real throwaway website), agents get a zip, and each file
+  is reachable at `/throway/<id>/<filename>`. The whole bundle shares one
+  4-hour expiry and is evicted as one unit.
+- **Dirs** are long-lived, nameable collections under `/d/<key>`: create one,
+  keep adding files and editing them over days, with a **sliding lifetime**
+  (default 7 days) and a lightweight **edit history**. `GET /d/<key>` returns
+  a JSON listing to agents / an HTML page to browsers.
 - **Text files** are editable — `PUT` rewrites the whole content, `PATCH` appends.
   Images are immutable.
 - **File URLs are never listed** on the main page — you only get them from the
@@ -83,12 +117,22 @@ curl -X DELETE "https://lubu.skale.dev/throway/<id>"
 
 ## 🤖 For agents
 
-Throway is built to be consumed by other programs. When an agent hits the root
-URL it's served the full "for agents" instructions directly. There's also a
-machine-readable contract:
+Throway is built to be consumed by other programs. **The core principle
+(PRIO 1): an agent needs nothing pre-loaded — it pulls everything it needs
+from the HTML pages, then confirms exact details via `/api` and `/help`.**
 
 ```bash
-curl "https://lubu.skale.dev/throway/api"
+curl "https://skale.dev/throway/"              # HTML homepage (embedded Agent info)
+curl "https://skale.dev/throway/api"           # machine-readable contract (JSON)
+curl -A "curl" "https://skale.dev/throway/"    # --help summary + pointers
+curl "https://skale.dev/throway/write_for_agents"  # full usage guide
+```
+
+Help is **modular** — fetch an index, then pull only the topics you need:
+
+```bash
+curl -A "curl" "https://skale.dev/throway/help"       # JSON topic index
+curl -A "curl" "https://skale.dev/throway/help/dirs"   # one topic
 ```
 
 See **[`AGENTS.md`](AGENTS.md)** for the complete agent guide.

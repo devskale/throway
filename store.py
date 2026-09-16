@@ -2,39 +2,115 @@
 """Disposable throwaway store — upload, get a 4-hour URL back.
 
 - Upload a thing -> stored under a random ID -> returns a URL
+- Upload 2+ files (multipart) -> a BUNDLE under one URL, files served
+  at /<id>/<filename>; index.html renders inline for browsers (a mini
+  throwaway website), whole bundle is a zip for agents
 - URL valid for TTL_HOURS (default 4) — files expire & auto-delete
-- Images render inline in browser (viewer); non-images download
+- Images + text-like types render inline in browser; others download
   ?download=1 forces a download for any file
 - Rolling THROW_POOL_SIZE pool (oldest evicted first)
 - Max file MAX_FILE, no auth, RATE_LIMIT req/min per IP
 """
 import os
 import re
+import io
 import json
 import time
+import shutil
 import secrets
+import socket
+import zipfile
+import ipaddress
 import mimetypes
+import urllib.error
+import urllib.request
 import html as _html
+from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def _html_escape(s):
     return _html.escape(s)
 
-ROOT = "/srv/storage2/throway"
-THROW_POOL_SIZE = 100 * 1024 * 1024   # 100MB rolling pool
-MAX_FILE = 5 * 1024 * 1024            # 5MB
-RATE_LIMIT = 100                      # req/min per IP
-TTL_HOURS = 4                         # default URL lifetime
-PUBLIC_BASE = "https://lubu.skale.dev/throway"
+# ---------------------------------------------------------------------------
+# Build config — every important operational parameter lives here and can be
+# overridden via THROWAWAY_* env vars (e.g. in the systemd unit). Defaults
+# below are the shipped configuration.
+# ---------------------------------------------------------------------------
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+ROOT = os.environ.get("THROWAWAY_ROOT", "/srv/storage2/throway")
+THROW_POOL_SIZE = _env_int("THROWAWAY_POOL_BYTES", 100 * 1024 * 1024)   # 100MB rolling pool
+MAX_FILE = _env_int("THROWAWAY_MAX_FILE_BYTES", 5 * 1024 * 1024)        # 5MB
+RATE_LIMIT = _env_int("THROWAWAY_RATE_LIMIT", 100)                      # req/min per IP
+TTL_HOURS = _env_int("THROWAWAY_TTL_HOURS", 4)                          # default URL lifetime
+
+# Dirs — one unified concept under /d/<key>. A dir is addressable by an
+# opaque hex id (unnamed) or a memorable name (named). Sliding lifetime,
+# optional tags/listed, and a lightweight edit history.
+DIR_NS = "d"                          # namespace prefix for all dirs
+DIR_MIN_AGE = _env_int("THROWAWAY_DIR_MIN_AGE", 4 * 3600)             # min sliding lifetime (4h)
+DIR_MAX_AGE = _env_int("THROWAWAY_DIR_MAX_AGE", 14 * 24 * 3600)       # max sliding lifetime (14 days)
+DIR_DEFAULT_AGE = _env_int("THROWAWAY_DIR_DEFAULT_AGE", 7 * 24 * 3600)  # default when &ttl= not given
+DIR_ABS_MAX = _env_int("THROWAWAY_DIR_ABS_MAX", 30 * 24 * 3600)       # absolute ceiling on total lifetime (30d)
+HISTORY_LIMIT = _env_int("THROWAWAY_HISTORY_LIMIT", 50)                 # max history entries kept per dir
+MAX_TAGS = _env_int("THROWAWAY_MAX_TAGS", 5)
+MAX_TAG_LEN = 24
+RESERVED_NAMES = {
+    "api", "index", "d", "releases", "llms", "llms-full", "llms_full",
+    "write_for_agents", "copy_for_agents", "store", "static", "favicon",
+    "robots", "sitemap", "assets", "health", "browse", "list",
+}
+
+PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway")
 PREFIX = "/throway"
+
+# semantic version + single source of truth for release notes
+VERSION = "1.14.0"
+RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
+
+# content types browsers render inline (not download)
+INLINE_TYPES = (
+    "image/",
+    "text/",
+    "application/pdf",
+    "application/json",
+    "application/javascript",
+    "application/xml",
+    "application/svg+xml",
+)
 PORT = int(os.environ.get("STORE_PORT", "8111"))
 
 os.makedirs(ROOT, exist_ok=True)
 _hits = {}
 STATS_FILE = os.path.join(os.path.dirname(__file__), "stats.json")
 
+# Since-start counters (RAM-only): reset to zero on every process start.
+# Unlike stats.json (all-time, persisted across restarts), these track only
+# activity since this server instance came up.
+_since_start = {"files": 0, "bytes": 0}
 
+
+def _bump_since_start(files, bytes_):
+    """Increment the since-start counters (files count, bytes)."""
+    _since_start["files"] += files
+    _since_start["bytes"] += bytes_
+
+
+def _dir_touch(meta, now):
+    """Slide a dir's expiry forward by its TTL on activity, capped at an
+    absolute ceiling from creation. Returns the new expires timestamp."""
+    ttl = meta.get("max_age", DIR_DEFAULT_AGE)
+    created = meta.get("created", now)
+    # sliding: now + ttl, but never beyond created + DIR_ABS_MAX
+    expires = min(now + ttl, created + DIR_ABS_MAX)
+    meta["expires"] = expires
+    meta["updated"] = now
+    return expires
 def _load_stats():
     try:
         with open(STATS_FILE) as f:
@@ -71,29 +147,83 @@ def allowed(ip):
     t.append(now)
     return True
 
+def _dir_size(p):
+    """Total bytes of all files inside a bundle directory (excl. .meta)."""
+    total = 0
+    try:
+        for f in os.listdir(p):
+            fp = os.path.join(p, f)
+            if os.path.isfile(fp) and not f.endswith(".meta"):
+                total += os.path.getsize(fp)
+    except OSError:
+        pass
+    return total
+
 def total_size():
-    return sum(os.path.getsize(os.path.join(ROOT, f))
-               for f in os.listdir(ROOT)
-               if os.path.isfile(os.path.join(ROOT, f))
-               and not f.endswith(".meta"))
+    """Total bytes of all stored data (single files + bundle contents)."""
+    total = 0
+    for f in os.listdir(ROOT):
+        p = os.path.join(ROOT, f)
+        if os.path.isfile(p):
+            if not f.endswith(".meta"):
+                total += os.path.getsize(p)
+        elif os.path.isdir(p):
+            if f == DIR_NS:
+                total += _dir_ns_total()
+            else:
+                total += _dir_size(p)
+    return total
+
+
+def _dir_ns_total():
+    """Total bytes across all dirs (ROOT/d/<key>)."""
+    total = 0
+    nd = os.path.join(ROOT, DIR_NS)
+    if not os.path.isdir(nd):
+        return 0
+    for key in os.listdir(nd):
+        p = os.path.join(nd, key)
+        if os.path.isdir(p):
+            total += _dir_size(p)
+    return total
+
+
+def _units():
+    """Yield (path, is_dir, mtime) for each top-level storage unit.
+    Units are single files OR whole bundle directories — eviction/expiry
+    treats each as one atomic thing. Dirs (ROOT/d/<key>) are yielded
+    individually (one unit per dir), so eviction can target them
+    independently."""
+    for f in os.listdir(ROOT):
+        if f.endswith(".meta"):
+            continue
+        p = os.path.join(ROOT, f)
+        if os.path.isfile(p):
+            yield p, False, os.path.getmtime(p)
+        elif os.path.isdir(p):
+            if f == DIR_NS:
+                nd = p
+                for key in os.listdir(nd):
+                    np_ = os.path.join(nd, key)
+                    if os.path.isdir(np_):
+                        yield np_, True, os.path.getmtime(np_)
+            else:
+                yield p, True, os.path.getmtime(p)
 
 def evict(target):
-    """Delete oldest files (by mtime) until total data size <= target."""
+    """Delete oldest units (by mtime) until total data size <= target."""
     while total_size() > target:
-        files = [os.path.join(ROOT, f) for f in os.listdir(ROOT)
-                 if os.path.isfile(os.path.join(ROOT, f))
-                 and not f.endswith(".meta")]
-        if not files:
+        units = list(_units())
+        if not units:
             return
-        oldest = min(files, key=os.path.getmtime)
-        _remove(oldest)
+        oldest = min(units, key=lambda u: u[2])
+        _remove_unit(oldest[0], oldest[1])
 
 def _remove(fp):
     try:
         os.remove(fp)
     except OSError:
         pass
-    # remove matching .meta
     mp = fp + ".meta"
     if os.path.isfile(mp):
         try:
@@ -101,26 +231,68 @@ def _remove(fp):
         except OSError:
             pass
 
+def _remove_unit(path, is_dir):
+    if is_dir:
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        _remove(path)
+
+def _bundle_meta(dirpath, fid):
+    """Read a bundle's manifest; None if missing/unreadable."""
+    mp = os.path.join(dirpath, fid + ".meta")
+    if os.path.isfile(mp):
+        try:
+            return json.load(open(mp))
+        except Exception:
+            pass
+    return None
+
 def sweep():
-    """Delete expired files."""
+    """Delete expired files and bundles."""
     now = time.time()
     for f in os.listdir(ROOT):
         if f.endswith(".meta"):
             continue
-        fp = os.path.join(ROOT, f)
-        if not os.path.isfile(fp):
+        p = os.path.join(ROOT, f)
+        if os.path.isfile(p):
+            mp = p + ".meta"
+            expires = None
+            if os.path.isfile(mp):
+                try:
+                    expires = json.load(open(mp)).get("expires")
+                except Exception:
+                    pass
+            if expires is None:
+                expires = os.path.getmtime(p) + TTL_HOURS * 3600
+            if expires < now:
+                _remove(p)
+        elif os.path.isdir(p):
+            if f == DIR_NS:
+                _sweep_dirs(now)
+                continue
+            m = _bundle_meta(p, f)
+            expires = (m or {}).get("expires")
+            if expires is None:
+                expires = os.path.getmtime(p) + TTL_HOURS * 3600
+            if expires < now:
+                shutil.rmtree(p, ignore_errors=True)
+
+
+def _sweep_dirs(now):
+    """Delete expired dirs (sliding lifetime from manifest, absolute cap)."""
+    nd = os.path.join(ROOT, DIR_NS)
+    if not os.path.isdir(nd):
+        return
+    for key in os.listdir(nd):
+        p = os.path.join(nd, key)
+        if not os.path.isdir(p):
             continue
-        mp = fp + ".meta"
-        expires = None
-        if os.path.isfile(mp):
-            try:
-                expires = json.load(open(mp)).get("expires")
-            except Exception:
-                pass
+        m = _dir_meta(key)
+        expires = (m or {}).get("expires")
         if expires is None:
-            expires = os.path.getmtime(fp) + TTL_HOURS * 3600
+            expires = os.path.getmtime(p) + DIR_DEFAULT_AGE
         if expires < now:
-            _remove(fp)
+            shutil.rmtree(p, ignore_errors=True)
 
 def _safe_name(name):
     """Reduce a user filename to a safe basename for Content-Disposition."""
@@ -131,35 +303,445 @@ def _safe_name(name):
     name = re.sub(r'[\r\n\"\x00-\x1f]', "", name).strip()
     return name or None
 
+
+# --- URL import & link docs -------------------------------------------------
+# POST /?url=<u>            -> fetch the remote document server-side, store it
+# POST /?url=<u>&link=1     -> store the URL itself as a tiny redirect HTML doc
+
+class _FetchError(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code, self.msg = code, msg
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None  # we follow redirects manually to re-check SSRF per hop
+
+
+def _assert_public_host(host):
+    """Reject hosts that resolve to private/loopback/reserved IPs (SSRF guard)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        raise _FetchError(400, "cannot resolve host")
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise _FetchError(400, "blocked host (private/reserved IP)")
+
+
+def _fetch_remote(raw_url):
+    """Fetch an http(s) URL server-side. Returns (data, name, ctype).
+    Raises _FetchError on any problem. Size-capped at MAX_FILE."""
+    u = urlparse(raw_url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise _FetchError(400, "url must be http(s) and absolute")
+    name = os.path.basename(unquote(u.path)) or None
+    ctype = None
+    url = raw_url
+    opener = urllib.request.build_opener(_NoRedirect())
+    resp = None
+    for _hop in range(4):
+        hop = urlparse(url)
+        if hop.scheme not in ("http", "https") or not hop.hostname:
+            raise _FetchError(400, "redirect target must be http(s)")
+        _assert_public_host(hop.hostname)
+        req = urllib.request.Request(url, headers={"User-Agent": "throway-import/1.12"})
+        try:
+            resp = opener.open(req, timeout=10)
+            break
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get("Location") if 300 <= e.code < 400 else None
+            if not loc:
+                raise _FetchError(502, f"upstream HTTP {e.code}")
+            url = urljoin(url, loc)
+        except (urllib.error.URLError, OSError):
+            raise _FetchError(502, "upstream unreachable")
+    else:
+        raise _FetchError(502, "too many redirects")
+    disp = resp.headers.get("Content-Disposition", "")
+    m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^\";]+)"?', disp)
+    if m:
+        name = unquote(m.group(1))
+    ct_hdr = resp.headers.get("Content-Type", "")
+    ctype = ct_hdr.split(";")[0].strip() or None
+    data = resp.read(MAX_FILE + 1)
+    if len(data) > MAX_FILE:
+        raise _FetchError(413, "too large (max 5MB)")
+    fname = _safe_name(name) if name else None
+    if not ctype or ctype == "application/octet-stream":
+        if fname:
+            ctype = mimetypes.guess_type(fname)[0] or ctype
+    return data, fname, ctype or "application/octet-stream"
+
+
+def _link_doc(target):
+    """Tiny redirect HTML document for a stored URL (link=1 uploads)."""
+    esc = _html.escape(target, quote=True)
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<meta http-equiv=\"refresh\" content=\"0; url={esc}\">"
+        f"<title>{esc}</title></head>"
+        "<body style=\"font-family:sans-serif;padding:2em\">"
+        f"<p>Redirecting to <a href=\"{esc}\">{esc}</a>&hellip;</p>"
+        "</body></html>"
+    ).encode()
+
 def _parse_multipart(payload, content_type):
-    """Extract (filename, data, ctype) from a multipart/form-data body."""
+    """Extract a list of (filename, data, ctype) from multipart/form-data."""
     import email
     import email.parser
     try:
         msg = email.parser.BytesParser().parsebytes(payload)
     except Exception:
-        return None, None, None
+        return []
     if not msg.is_multipart():
         # fallback: manual boundary split
         m = re.search(r'boundary="?([^";]+)"?', content_type)
         if not m:
-            return None, None, None
+            return []
         boundary = m.group(1).encode()
         parts = payload.split(b"--" + boundary)
+        out = []
         for part in parts:
             if b"filename=" in part[:200]:
                 header, _, body = part.partition(b"\r\n\r\n")
                 hm = re.search(r'filename="([^"]*)"', header.decode("latin1"))
                 name = hm.group(1) if hm else None
                 ctype = re.search(r'Content-Type:\s*(\S+)', header.decode("latin1"), re.I)
-                return name, body.rstrip(b"\r\n--"), (ctype.group(1) if ctype else "application/octet-stream")
-        return None, None, None
+                out.append((name, body.rstrip(b"\r\n--"),
+                            ctype.group(1) if ctype else "application/octet-stream"))
+        return out
+    out = []
     for part in msg.get_payload():
         fn = part.get_filename()
         if fn:
             data = part.get_payload(decode=True) or b""
-            return fn, data, part.get_content_type() or "application/octet-stream"
-    return None, None, None
+            out.append((fn, data, part.get_content_type() or "application/octet-stream"))
+    return out
+
+def _dedupe_names(names):
+    """Rename collisions within a bundle: a.txt, a-1.txt, a-2.txt …"""
+    seen = {}
+    out = []
+    for n in names:
+        base = n
+        if base in seen:
+            stem, ext = os.path.splitext(base)
+            i = 1
+            while f"{stem}-{i}{ext}" in seen:
+                i += 1
+            base = f"{stem}-{i}{ext}"
+        seen[base] = True
+        out.append(base)
+    return out
+
+
+def _valid_name(name):
+    """Validate a named-dir name per the ruling. Returns (ok, reason).
+    Rules: len >4 and <=32; charset [a-z0-9-]; >=1 letter; not reserved."""
+    if not name:
+        return False, "name required"
+    if not (5 <= len(name) <= 32):
+        return False, "name must be 5-32 chars"
+    if not re.fullmatch(r"[a-z0-9-]+", name):
+        return False, "name must be lowercase letters, digits, hyphens"
+    if not re.search(r"[a-z]", name):
+        return False, "name must contain a letter"
+    if name in RESERVED_NAMES:
+        return False, "reserved name"
+    return True, None
+
+
+def _valid_tag(t):
+    return bool(t) and len(t) <= MAX_TAG_LEN and re.fullmatch(r"[a-z0-9-]+", t)
+
+
+# ---------------------------------------------------------------------------
+# Unified dir storage — one concept, addressable by id or name under /d/.
+# A dir is a directory with a <key>.meta manifest + a <key>.history log.
+# ---------------------------------------------------------------------------
+
+def _dir_path(key):
+    """On-disk path for a dir, keyed by id or name. Ids live at ROOT/<id>
+    (shared namespace with bundles/files is avoided because ids are hex and
+    names go under ROOT/d/<name>); names live under ROOT/d/<name> so they
+    never collide with hex ids."""
+    return os.path.join(ROOT, DIR_NS, os.path.basename(key))
+
+
+def _dir_meta_path(key):
+    return os.path.join(_dir_path(key), key + ".meta")
+
+
+def _dir_meta(key):
+    mp = _dir_meta_path(key)
+    if os.path.isfile(mp):
+        try:
+            return json.load(open(mp))
+        except Exception:
+            pass
+    return None
+
+
+def _dir_history_path(key):
+    return os.path.join(_dir_path(key), key + ".history")
+
+
+def _dir_history(key):
+    """Read a dir's history log (list of entries, newest last)."""
+    hp = _dir_history_path(key)
+    if os.path.isfile(hp):
+        try:
+            return json.load(open(hp))
+        except Exception:
+            pass
+    return []
+
+
+def _dir_append_history(key, entry):
+    """Append a history entry, trimmed to HISTORY_LIMIT newest."""
+    h = _dir_history(key)
+    h.append(entry)
+    if len(h) > HISTORY_LIMIT:
+        h = h[-HISTORY_LIMIT:]
+    json.dump(h, open(_dir_history_path(key), "w"))
+
+
+def _is_hex_id(s):
+    """True if the key looks like an opaque hex id (16 lowercase hex chars).
+    A dir key is either a hex id (unnamed) or a valid name."""
+    return bool(re.fullmatch(r"[0-9a-f]{16}", s))
+
+
+def _parse_ttl(s):
+    """Parse a &ttl= value into seconds, clamped to [DIR_MIN_AGE, DIR_MAX_AGE].
+    Accepts plain hours (number), 'h' suffix, or 'd' suffix. Returns None if unparseable."""
+    if not s:
+        return None
+    s = s.strip().lower()
+    m = re.fullmatch(r"(\d+)\s*(h|d)?", s)
+    if not m:
+        return None
+    n = int(m.group(1))
+    unit = m.group(2)
+    if unit == "d":
+        secs = n * 24 * 3600
+    else:
+        secs = n * 3600  # bare number or 'h' = hours
+    if secs <= 0:
+        return None
+    return max(DIR_MIN_AGE, min(secs, DIR_MAX_AGE))
+
+
+def _parse_tags(query_tags):
+    """Normalize + dedupe a list of raw tag values; cap at MAX_TAGS."""
+    out = []
+    for t in query_tags:
+        t = (t or "").strip().lower()
+        if _valid_tag(t) and t not in out:
+            out.append(t)
+        if len(out) >= MAX_TAGS:
+            break
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Modular help — served individually at /help/<topic> so agents can gather
+# only the pieces they need, and assembled into the full plain-text agent
+# description. Single source of truth: this dict.
+# Bodies use .format() placeholders ({PUBLIC_BASE}, {TTL_HOURS}, …) resolved
+# at serve time against the live values.
+# ---------------------------------------------------------------------------
+HELP_ORDER = ["overview", "files", "bundles", "dirs", "view", "edit", "delete", "limits", "contract"]
+
+HELP = {
+    "overview": {
+        "title": "Overview",
+        "summary": "What throway is and isn't",
+        "body": """WHAT IT IS FOR
+- Sharing a file (image, text, binary) by giving someone a URL.
+- Sharing a BUNDLE of files (e.g. an html/css/js website) under one URL.
+- Sharing a DIR: a long-lived, nameable collection under /d/<key> that an
+  agent can keep adding to / editing over days, with a lightweight edit
+  history. Addressable by an opaque id or a memorable name.
+- A scratchpad for text: create a note, append to it, rewrite it.
+- Passing data between agents / machines without setting up accounts.
+
+WHAT IT IS NOT
+- Not permanent storage. Files are automatically deleted after their TTL.
+- Not private. Anyone who has a URL can read, edit, or delete that file.
+- Not a database. It is a flat, throwaway store.
+
+Base URL: {PUBLIC_BASE}""",
+    },
+    "files": {
+        "title": "Upload a file",
+        "summary": "POST a file, get a URL back",
+        "body": """UPLOAD a file (raw body or multipart):
+   POST {PUBLIC_BASE}/?name=filename.ext
+   with the file bytes as the body.
+   -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.
+
+TAGS on uploads/imports (filter+sort later):
+   POST {PUBLIC_BASE}/?name=x.pdf&tag=papers&tag=2026
+   -> up to 5 tags per file ([a-z0-9-], 1-24 chars); returned in the JSON.
+   Update later:  POST {PUBLIC_BASE}/<id>?tag=a&untag=b
+   Browse/filter: GET  {PUBLIC_BASE}/browse?tag=papers&q=&sort=created&order=desc
+   (sort: created | name | size | expires)
+
+IMPORT FROM A URL (server-side fetch):
+   POST {PUBLIC_BASE}/?url=<encoded-url>[&name=<filename>]
+   -> server downloads the document and stores it like a normal upload.
+   Max 5MB; private/loopback hosts are blocked.
+
+STORE A URL AS A DOCUMENT (link doc):
+   POST {PUBLIC_BASE}/?url=<encoded-url>&link=1[&name=<name>]
+   -> stores a tiny editable HTML redirect page for that URL.""",
+    },
+    "bundles": {
+        "title": "Upload a bundle",
+        "summary": "Multiple files under one URL (a mini website)",
+        "body": """UPLOAD a BUNDLE (multiple files, e.g. a website):
+   POST {PUBLIC_BASE}/   with multipart/form-data containing 2+ file parts.
+   -> Returns JSON: id, url, bundle:true, files:[{{name,url,size,content_type}}...].
+   The bundle URL serves index.html inline (or a zip for agents).
+   Each file is reachable at {PUBLIC_BASE}/<id>/<filename>.""",
+    },
+    "dirs": {
+        "title": "Dirs",
+        "summary": "One dir concept under /d/<key>: id or name, sliding lifetime, history",
+        "body": """CREATE a DIR (one unified concept, addressable by id or name):
+   POST {PUBLIC_BASE}/?dir=1            -> unnamed dir, opaque hex id
+   POST {PUBLIC_BASE}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]
+        -> named dir (create-or-get); flags apply only on first creation
+   Naming: 5-32 chars, [a-z0-9-], must contain a letter, not a reserved word.
+   - &listed=1 -> appears in the public listing GET {PUBLIC_BASE}/d
+   - &tag=<t>  -> up to 5 discoverability tags (lowercase [a-z0-9-])
+   - &ttl=<h|d> -> SLIDING lifetime, clamped to [4h, 14d] (MAX 14 days);
+     default 7 days.
+     Each add/edit/append/delete slides expires_at forward by ttl (capped at
+     30 days total from creation). An active dir keeps living; an idle one
+     dies ttl after its last activity.
+   Reach a dir at {PUBLIC_BASE}/d/<key> (key = id or name):
+   POST {PUBLIC_BASE}/d/<key>          -> add files (multipart)
+   GET  {PUBLIC_BASE}/d/<key>          -> JSON (agents) / HTML (browsers)
+   GET  {PUBLIC_BASE}/d/<key>/<file>   -> fetch one file
+   GET  {PUBLIC_BASE}/d/<key>?zip=1    -> whole dir as zip
+   PUT  {PUBLIC_BASE}/d/<key>/<file>   -> replace text (bumps updated)
+   PATCH {PUBLIC_BASE}/d/<key>/<file>  -> append text (bumps updated)
+   DELETE {PUBLIC_BASE}/d/<key>/<file> -> remove one file
+   DELETE {PUBLIC_BASE}/d/<key>        -> delete the whole dir
+   GET  {PUBLIC_BASE}/d/<key>/history  -> edit history (JSON for agents,
+        HTML for browsers): last {HISTORY_LIMIT} entries, newest first, with
+        date, file, action (add|put|append|delete) and byte deltas.
+   updated_at = last add/edit/delete (slides expires_at forward).
+   LIST dirs: GET {PUBLIC_BASE}/d  -> only dirs created with listed=1.
+   Filters: ?q=<substring over name or tag>, ?created_after/before=<ts>,
+   ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.""",
+    },
+    "view": {
+        "title": "Download / view",
+        "summary": "Inline vs download; bundle/dir behavior",
+        "body": """DOWNLOAD / VIEW a file:
+   GET {PUBLIC_BASE}/<id>
+   Images and text-like types (text, html, json, pdf, svg) render inline
+   in a browser; other files download.
+   For a bundle, GET {PUBLIC_BASE}/<id> serves index.html inline (browser)
+   or the whole bundle as a zip (agents). GET {PUBLIC_BASE}/<id>/<file>
+   serves one file.
+   Append ?download=1 to force a download of any file or the bundle zip.""",
+    },
+    "edit": {
+        "title": "Edit / append text",
+        "summary": "PUT replaces, PATCH appends (text files only)",
+        "body": """EDIT TEXT (text files only; images are immutable):
+   PUT   {PUBLIC_BASE}/<id>   with new text body  -> replace whole content
+   PATCH {PUBLIC_BASE}/<id>   with text body      -> append to content
+
+Every upload/listing response includes an \"editable\" boolean per file, so an
+agent can tell at a glance whether PUT/PATCH will work: true for text/* and
+application/json, false for images and other binaries. A bundle or dir object
+itself is editable:false; only its text/* or application/json files are.""",
+    },
+    "delete": {
+        "title": "Delete",
+        "summary": "Remove a file, bundle, or dir",
+        "body": """DELETE a file:
+   DELETE {PUBLIC_BASE}/<id>
+   DELETE {PUBLIC_BASE}/d/<key>/<file>  -> remove one file from a dir
+   DELETE {PUBLIC_BASE}/d/<key>         -> delete a whole dir""",
+    },
+    "limits": {
+        "title": "Limits",
+        "summary": "Lifetimes, sizes, pool, rate limit",
+        "body": """LIMITS
+- URL lifetime:  {TTL_HOURS} hours
+- Dir lifetime: sliding, default 7 days, MAX 14 days via ttl= (clamped
+  [4h, 14d]);
+  each add/edit/delete slides expires_at forward, capped at 30 days total
+- Max file size: {MAX_FILE_MB} MB
+- Pool size:     {POOL_MB} MB (oldest files evicted first)
+- Rate limit:    {RATE_LIMIT} requests/min per IP
+- Dir history:   last {HISTORY_LIMIT} entries kept per dir
+
+PERSISTENCE — how long something lives, per type (also in each response's
+\"persistence\" block):
+- single file:  fixed {TTL_HOURS}h, not extendable (extendable_by:none)
+- dir:          sliding lifetime (default 7d), extendable by activity
+                (extendable_by:activity), capped at 30 days total
+- bundle:       fixed {TTL_HOURS}h snapshot, not extendable (extendable_by:none)""",
+    },
+    "contract": {
+        "title": "Machine-readable contract",
+        "summary": "Read /api for current limits + endpoints as JSON",
+        "body": """MACHINE-READABLE CONTRACT
+GET {PUBLIC_BASE}/api  -> returns the same limits + endpoints as JSON.
+An agent should read /api to discover current limits before acting.""",
+    },
+}
+
+
+def _render_help_body(key):
+    """Return a help topic's body with live values substituted."""
+    t = HELP.get(key)
+    if not t:
+        return None
+    return t["body"].format(
+        PUBLIC_BASE=PUBLIC_BASE,
+        TTL_HOURS=TTL_HOURS,
+        MAX_FILE_MB=MAX_FILE // (1024 * 1024),
+        POOL_MB=THROW_POOL_SIZE // (1024 * 1024),
+        RATE_LIMIT=RATE_LIMIT,
+        HISTORY_LIMIT=HISTORY_LIMIT,
+    )
+
+
+def _is_editable(ctype):
+    """Whether a stored file can be edited via PUT/PATCH.
+    Text and JSON are editable (JSON also renders inline, matching the
+    named-dir path). Everything else (images, binaries) is immutable."""
+    if not ctype:
+        return False
+    return ctype.startswith("text/") or ctype == "application/json"
+
+
+def _persistence_block(ptype, expires, max_age=None, extendable_by="none"):
+    """A small, machine-readable block describing how long a resource lives
+    and how an agent can keep it alive. Kept additive so old agents that only
+    read id/url/expires_at are unaffected."""
+    return {
+        "type": ptype,          # "single" | "dir" | "named"
+        "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
+        "extendable_by": extendable_by,
+        "max_age": max_age,     # seconds, or None for single (fixed 4h)
+    }
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -173,12 +755,31 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        # HEAD: send headers + Content-Length but no body
+        if self.command != "HEAD":
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                # client hung up mid-response — nothing to do
+                return
 
     def _rate(self):
-        if not allowed(self.client_address[0]):
+        if not allowed(self._client_ip()):
             self._send(429, "rate limit exceeded\n"); return False
         return True
+
+    def _client_ip(self):
+        """Real client IP. Behind nginx the socket peer is 127.0.0.1, so use
+        the forwarded headers nginx sets (X-Real-IP / X-Forwarded-For)."""
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            ip = xff.split(",")[0].strip()
+            if ip:
+                return ip
+        xri = self.headers.get("X-Real-IP")
+        if xri:
+            return xri.strip()
+        return self.client_address[0]
 
     def _is_agent(self):
         """True if the requester looks like a non-browser client (curl/wget/python/agent)."""
@@ -190,12 +791,133 @@ class Handler(BaseHTTPRequestHandler):
         return not any(b in ua for b in browsers)
 
 
+    def _serve_file(self, fp, ctype, orig, force_dl, fid):
+        """Serve a single stored file (inline or attachment)."""
+        size = os.path.getsize(fp)
+        is_inline = any(ctype.startswith(p) for p in INLINE_TYPES)
+        if force_dl or not is_inline:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            fname = _safe_name(orig) or fid
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{fname}"')
+            self.end_headers()
+        else:
+            ct = ctype
+            if ctype.startswith("text/") and "charset" not in ctype:
+                ct = ctype + "; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", "inline")
+            self.end_headers()
+        with open(fp, "rb") as f:
+            if self.command != "HEAD":
+                while c := f.read(65536):
+                    self.wfile.write(c)
+
+    def _serve_bundle_index(self, index_path, dirpath, fid):
+        """Serve a bundle's index.html to a browser, injecting a <base> tag
+        so relative sub-resource URLs resolve against /<fid>/ instead of the
+        parent path (fixes 404s for style.css/app.js/img in multi-file
+        bundles viewed at /<fid> with no trailing slash)."""
+        with open(index_path, "rb") as f:
+            html = f.read()
+        base = f'<base href="{PREFIX}/{fid}/">'
+        # inject right after <head> (case-insensitive) or before <html>/start
+        head = re.search(rb"<head[^>]*>", html, re.I)
+        if head:
+            html = html[:head.end()] + base.encode() + html[head.end():]
+        else:
+            # no <head>: prepend a minimal one with the base tag
+            html = b"<head>" + base.encode() + b"</head>" + html
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.send_header("Content-Disposition", "inline")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(html)
+
+    def _serve_bundle_zip(self, dirpath, fid):
+        """Stream the whole bundle as a zip (for agents / ?download=1).
+        Writes to a temp file so we don't hold the whole zip in RAM, then
+        streams it out in chunks."""
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(prefix="throwayzip_", suffix=".zip", delete=True)
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(os.listdir(dirpath)):
+                if f.endswith(".meta"):
+                    continue
+                z.write(os.path.join(dirpath, f), arcname=f)
+        size = tmp.tell()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{fid}.zip"')
+        self.end_headers()
+        if self.command == "HEAD":
+            tmp.close()
+            return
+        tmp.seek(0)
+        try:
+            while True:
+                chunk = tmp.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        finally:
+            tmp.close()
+
+    def _bundle_listing(self, dirpath, fid):
+        """Simple HTML file listing for a bundle with no index.html."""
+        rows = []
+        for f in sorted(os.listdir(dirpath)):
+            if f.endswith(".meta"):
+                continue
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                rows.append((f, os.path.getsize(fp)))
+        lis = "\n".join(
+            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> <span>{s} B</span></li>'
+            for f, s in rows)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<base href='{PREFIX}/{fid}/'>"
+             f"<title>throway bundle {fid}</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem;color:var(--ink)}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center}"
+             "li a{color:var(--ink);text-decoration:none}"
+             "li a:hover{color:var(--accent)}"
+             "li span{color:var(--muted);font-size:.85rem}"
+             "a.btn{display:inline-block;margin-top:1rem;background:var(--accent);color:#fff;text-decoration:none;font-size:.9rem;padding:.5rem 1rem;border-radius:8px}"
+             "a.btn:hover{background:#1d4ed8}"
+             "a.back{display:inline-block;margin-top:1rem;margin-left:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<h1>Bundle {fid}</h1><ul>{lis}</ul>"
+             f"<a class=btn href='?download=1'>download as zip</a>"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
+        self._send(200, h, "text/html")
+
+    def do_HEAD(self):
+        """HEAD = GET headers without the body. Route through do_GET."""
+        self.do_GET()
+
     def do_GET(self):
         if not self._rate(): return
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path in ("/", ""):
             if self._is_agent():
-                return self._write_for_agents()
+                return self._home_help()
             return self._index()
         if path == "/api":
             return self._api()
@@ -203,13 +925,75 @@ class Handler(BaseHTTPRequestHandler):
             return self._write_for_agents()
         if path == "/copy_for_agents":
             return self._copy_for_agents()
-        fid = path.lstrip("/").split("/")[0]
+        if path == "/releases":
+            return self._releases()
+        if path == "/help":
+            return self._help()
+        if path.startswith("/help/"):
+            key = path[len("/help/"):]
+            if key:
+                return self._help_topic(key)
+            return self._help()
+        # --- dirs: /d (listing) and /d/<key>[/<file>|/history] ---
+        if path == "/" + DIR_NS:
+            return self._dir_listing_browse()
+        # --- tagged file browser: /browse?tag=<t>&q=&sort=&order= ---
+        if path == "/browse":
+            return self._browse(self.path.split("?", 1)[1] if "?" in self.path else "")
+        parts = path.lstrip("/").split("/")
+        if parts and parts[0] == DIR_NS and len(parts) >= 2 and parts[1]:
+            return self._dir_get(parts[1], parts[1:], query=self.path.split("?", 1)[1] if "?" in self.path else "")
+        parts = path.lstrip("/").split("/")
+        fid = parts[0]
         if not fid or fid.endswith(".meta"):
             return self._send(404, "not found\n")
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        force_dl = "download=1" in query
+        now = time.time()
+
+        # --- bundle / dir directory ---
+        dirpath = os.path.join(ROOT, os.path.basename(fid))
+        if os.path.isdir(dirpath):
+            m = _bundle_meta(dirpath, fid)
+            expires = (m or {}).get("expires")
+            if expires is None:
+                expires = os.path.getmtime(dirpath) + TTL_HOURS * 3600
+            if expires < now:
+                shutil.rmtree(dirpath, ignore_errors=True)
+                return self._send(404, "expired\n")
+            is_dir = (m or {}).get("type") == "dir"
+            # /<fid>/<file>
+            if len(parts) >= 2 and parts[1]:
+                fname = os.path.basename(unquote(parts[1]))
+                if not fname or fname.endswith(".meta"):
+                    return self._send(404, "not found\n")
+                fpath = os.path.join(dirpath, fname)
+                if not os.path.isfile(fpath):
+                    return self._send(404, "not found\n")
+                ctype = (m or {}).get("files", {}).get(fname)
+                if not ctype:
+                    ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+                return self._serve_file(fpath, ctype, fname, force_dl, fname)
+            # dir root: JSON listing for agents, HTML for browsers, zip on ?zip=1
+            if is_dir:
+                if force_dl or "zip=1" in query or self._is_agent():
+                    # agents get JSON listing; ?zip=1 / ?download=1 get zip
+                    if "zip=1" in query or force_dl:
+                        return self._serve_bundle_zip(dirpath, fid)
+                    return self._dir_response(fid, dirpath, m)
+                return self._dir_listing(dirpath, fid)
+            # bundle root
+            if force_dl or self._is_agent():
+                return self._serve_bundle_zip(dirpath, fid)
+            index = os.path.join(dirpath, "index.html")
+            if os.path.isfile(index):
+                return self._serve_bundle_index(index, dirpath, fid)
+            return self._bundle_listing(dirpath, fid)
+
+        # --- single file ---
         fp = _id_path(fid)
         if not os.path.isfile(fp):
             return self._send(404, "not found\n")
-        # expiry check
         mp = fp + ".meta"
         expires = None
         if os.path.isfile(mp):
@@ -219,11 +1003,9 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         if expires is None:
             expires = os.path.getmtime(fp) + TTL_HOURS * 3600
-        if expires < time.time():
+        if expires < now:
             _remove(fp)
             return self._send(404, "expired\n")
-
-        # meta content-type / original name
         ctype = "application/octet-stream"
         orig = None
         if os.path.isfile(mp):
@@ -233,36 +1015,66 @@ class Handler(BaseHTTPRequestHandler):
                 orig = m.get("name")
             except Exception:
                 pass
-        query = self.path.split("?", 1)[1] if "?" in self.path else ""
-        force_dl = "download=1" in query
-        is_image = ctype.startswith("image/")
-        size = os.path.getsize(fp)
-        if force_dl or not is_image:
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(size))
-            fname = _safe_name(orig) or fid
-            self.send_header("Content-Disposition",
-                             f'attachment; filename="{fname}"')
-            self.end_headers()
-        else:
-            # viewer: inline image
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(size))
-            self.send_header("Content-Disposition", "inline")
-            self.end_headers()
-        with open(fp, "rb") as f:
-            while c := f.read(65536):
-                self.wfile.write(c)
+        self._serve_file(fp, ctype, orig, force_dl, fid)
 
     def do_POST(self):
         if not self._rate(): return
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
-        name_hint = None
+        qp = {}
         for kv in query.split("&"):
-            if kv.startswith("name="):
-                name_hint = _safe_name(kv[5:])[:128]
+            if not kv:
+                continue
+            k, _, v = kv.partition("=")
+            qp.setdefault(k, []).append(v)
+        name_hint = None
+        want_dir = ("dir=1" in query)
+        tags = _parse_tags(qp.get("tag", []))
+        if "name" in qp:
+            name_hint = _safe_name(qp["name"][0])[:128]
+
+        path = self.path.split("?", 1)[0].rstrip("/")
+        parts = path.lstrip("/").split("/")
+
+        # POST /<id>?tag=a&tag=b&untag=c -> update tags on an existing file
+        # (single-file ids only; dirs have their own tag handling at create)
+        if len(parts) == 1 and parts[0] and parts[0] != DIR_NS \
+                and not want_dir and "url" not in qp \
+                and ("tag" in qp or "untag" in qp):
+            return self._file_tags(parts[0], qp)
+
+        # POST /d/<key> -> add files to an existing dir (multipart)
+        if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
+            r = self._dir_add(parts[1])
+            if r is not None:
+                return r
+
+        # POST /?url=<url>[&name=<name>][&link=1] -> server-side import / link doc
+        if "url" in qp:
+            return self._url_import(qp, tags)
+
+        # POST /?dir=1[&name=<name>][&listed=1][&tag=..][&ttl=..] -> create a dir
+        if want_dir:
+            if name_hint:
+                key = name_hint
+            else:
+                key = secrets.token_hex(8)
+            ctype = self.headers.get("Content-Type", "application/octet-stream")
+            initial = None
+            if ctype.startswith("multipart/form-data"):
+                payload = self._read_body()
+                if payload is None:
+                    return
+                files = _parse_multipart(payload, ctype)
+                initial = [(n, d, c) for (n, d, c) in files if n]
+            else:
+                length = self.headers.get("Content-Length")
+                if length not in (None, "0"):
+                    length = int(length)
+                    if length > MAX_FILE:
+                        return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+                    data = self.rfile.read(length)
+                    initial = [(name_hint or "file", data, "application/octet-stream")]
+            return self._dir_create(key, qp, initial)
 
         ctype = self.headers.get("Content-Type", "application/octet-stream")
         # multipart/form-data upload (browser-friendly / -F)
@@ -270,12 +1082,15 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_body()
             if payload is None:
                 return
-            name, data, ctype = _parse_multipart(payload, ctype)
-            if data is None:
+            files = _parse_multipart(payload, ctype)
+            named = [(n, d, c) for (n, d, c) in files if n]
+            if not named:
                 return self._send(400, json.dumps({"error": "no file part in multipart body"}), "application/json")
-            if name:
-                name_hint = _safe_name(name)[:128]
-            return self._store(data, name_hint or None, ctype)
+            # multiple files -> bundle
+            if len(named) > 1:
+                return self._store_bundle(named)
+            n, d, c = named[0]
+            return self._store(d, _safe_name(n)[:128] or None, c, tags)
 
         # raw-body upload: body is the file content
         length = self.headers.get("Content-Length")
@@ -290,7 +1105,132 @@ class Handler(BaseHTTPRequestHandler):
         else:
             if ctype.startswith("multipart") or "boundary" in ctype:
                 ctype = "application/octet-stream"
-        return self._store(data, name_hint or None, ctype)
+        return self._store(data, name_hint or None, ctype, tags)
+
+    def _file_tags(self, fid, qp):
+        """POST /<id>?tag=<t>&untag=<t> — update meta tags on a stored file."""
+        fp = _id_path(fid)
+        mp = fp + ".meta"
+        if not os.path.isfile(fp) or not os.path.isfile(mp):
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        try:
+            meta = json.load(open(mp))
+        except Exception:
+            return self._send(500, json.dumps({"error": "meta unreadable"}), "application/json")
+        add = _parse_tags(qp.get("tag", []))
+        remove = _parse_tags(qp.get("untag", []))
+        cur = list(meta.get("tags", []))
+        cur = [t for t in cur if t not in remove]
+        for t in add:
+            if t not in cur:
+                cur.append(t)
+            if len(cur) >= MAX_TAGS:
+                break
+        meta["tags"] = cur
+        json.dump(meta, open(mp, "w"))
+        body = json.dumps({
+            "id": fid,
+            "url": f"{PUBLIC_BASE}/{fid}",
+            "name": meta.get("name", fid),
+            "tags": cur,
+        })
+        return self._send(200, body, "application/json")
+
+    def _url_import(self, qp, tags=None):
+        """POST /?url=<u>[&name=<name>][&link=1]
+        Default: fetch the remote document server-side and store it.
+        link=1:  store the URL itself as a tiny redirect HTML document."""
+        raw = unquote(qp["url"][0]).strip()
+        override = qp.get("name", [None])[0]
+        if override:
+            override = _safe_name(unquote(override))[:128] or None
+        if not raw.startswith(("http://", "https://")):
+            return self._send(400, json.dumps({"error": "url must start with http:// or https://"}), "application/json")
+        if "link" in qp:
+            base = (override or
+                    _safe_name(os.path.basename(unquote(urlparse(raw).path))) or
+                    urlparse(raw).hostname or "link")
+            if not base.lower().endswith((".html", ".htm")):
+                base += ".html"
+            return self._store(_link_doc(raw), base, "text/html", tags)
+        try:
+            data, fname, ctype = _fetch_remote(raw)
+        except _FetchError as e:
+            return self._send(e.code, json.dumps({"error": e.msg}), "application/json")
+        return self._store(data, override or fname, ctype, tags)
+
+    def _browse(self, query):
+        """GET /browse?tag=<t>[&tag=<t2>][&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]
+        JSON listing of live single files, filterable by tags (AND) and name
+        substring. JSON for agents, simple HTML for browsers."""
+        qp = {}
+        for kv in query.split("&"):
+            if not kv:
+                continue
+            k, _, v = kv.partition("=")
+            qp.setdefault(k, []).append(v)
+        want_tags = _parse_tags(qp.get("tag", []))
+        qtext = (unquote((qp.get("q") or [""])[0]) or "").strip().lower()
+        sort = (unquote((qp.get("sort") or [""])[0]) or "created").strip().lower()
+        order = (unquote((qp.get("order") or [""])[0]) or "desc").strip().lower()
+        if sort not in ("created", "name", "size", "expires"):
+            sort = "created"
+        if order not in ("asc", "desc"):
+            order = "desc"
+        now = time.time()
+        entries = []
+        for f in os.listdir(ROOT):
+            if f.endswith(".meta"):
+                continue
+            p = os.path.join(ROOT, f)
+            if not os.path.isfile(p):
+                continue  # bundles/dirs are listed elsewhere
+            mp = p + ".meta"
+            try:
+                meta = json.load(open(mp))
+            except Exception:
+                continue
+            expires = meta.get("expires", os.path.getmtime(p) + TTL_HOURS * 3600)
+            if expires < now:
+                continue
+            ftags = meta.get("tags", [])
+            if want_tags and not all(t in ftags for t in want_tags):
+                continue
+            name = meta.get("name", f)
+            if qtext and qtext not in name.lower() and not any(qtext in t for t in ftags):
+                continue
+            entries.append({
+                "id": f,
+                "url": f"{PUBLIC_BASE}/{f}",
+                "name": name,
+                "content_type": meta.get("ctype", "application/octet-stream"),
+                "size": os.path.getsize(p),
+                "tags": ftags,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("created", now))),
+                "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
+                "_k": {"created": meta.get("created", 0), "name": name.lower(),
+                        "size": os.path.getsize(p), "expires": expires}[sort],
+            })
+        entries.sort(key=lambda e: e["_k"], reverse=(order != "asc"))
+        total = len(entries)
+        for e in entries:
+            e.pop("_k", None)
+        if self._is_agent():
+            return self._send(200, json.dumps({"files": entries, "total": total}), "application/json")
+        rows = "".join(
+            f'<li><a href="{_html_escape(e["url"])}">{_html_escape(e["name"])}</a> '
+            f'<span class=meta>{_fmt_size(e["size"])} · {e["content_type"]} · exp {e["expires_at"]}</span>'
+            + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
+            + '</li>'
+            for e in entries)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             "<title>throway — files</title><style>"
+             "body{font-family:sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}"
+             "h1 small{color:#6b7280;font-weight:normal}li{margin:.5rem 0}"
+             ".meta{color:#6b7280;font-size:.75rem;display:block}"
+             ".tags{color:#2563eb;font-size:.75rem}</style></head><body>"
+             f"<h1>throway files <small>{total}</small></h1><ul>{rows}</ul></body></html>")
+        return self._send(200, h, "text/html")
 
     def _read_body(self):
         length = self.headers.get("Content-Length")
@@ -298,7 +1238,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(int(length))
 
-    def _store(self, data, name_hint, ctype):
+    def _store(self, data, name_hint, ctype, tags=None):
         if len(data) > MAX_FILE:
             return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
         fid = secrets.token_hex(8)
@@ -311,12 +1251,15 @@ class Handler(BaseHTTPRequestHandler):
             "name": name_hint or fid,
             "created": time.time(),
         }
+        if tags:
+            meta["tags"] = tags
         json.dump(meta, open(fp + ".meta", "w"))
         evict(THROW_POOL_SIZE)
         s = _load_stats()
         s["files"] += 1
         s["bytes"] += len(data)
         _save_stats(s)
+        _bump_since_start(1, len(data))
         url = f"{PUBLIC_BASE}/{fid}"
         body = json.dumps({
             "id": fid,
@@ -324,14 +1267,546 @@ class Handler(BaseHTTPRequestHandler):
             "size": len(data),
             "name": meta["name"],
             "content_type": meta["ctype"],
+            "editable": _is_editable(meta["ctype"]),
+            **({"tags": meta["tags"]} if meta.get("tags") else {}),
+            "persistence": _persistence_block("single", meta["expires"]),
             "expires_in": TTL_HOURS * 3600,
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"])),
         })
         self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
 
+    def _store_bundle(self, files):
+        """Store multiple files as a bundle directory; return JSON response."""
+        clean = []
+        total = 0
+        for n, d, c in files:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            if len(d) > MAX_FILE:
+                return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+            total += len(d)
+            if total > THROW_POOL_SIZE:
+                return self._send(413, json.dumps({"error": "bundle too large (pool max 100MB)"}), "application/json")
+            clean.append((safe, d, c))
+        if not clean:
+            return self._send(400, json.dumps({"error": "no valid file parts"}), "application/json")
+        names = _dedupe_names([n for n, _, _ in clean])
+        fid = secrets.token_hex(8)
+        dirpath = os.path.join(ROOT, fid)
+        os.makedirs(dirpath, exist_ok=True)
+        files_map = {}
+        for (_, d, c), name in zip(clean, names):
+            with open(os.path.join(dirpath, name), "wb") as f:
+                f.write(d)
+            # sniff from extension first (like the single-file path), then
+            # fall back to the multipart-provided type, then octet-stream
+            files_map[name] = mimetypes.guess_type(name)[0] or c or "application/octet-stream"
+        meta = {
+            "bundle": True,
+            "expires": time.time() + TTL_HOURS * 3600,
+            "created": time.time(),
+            "files": files_map,
+        }
+        json.dump(meta, open(os.path.join(dirpath, fid + ".meta"), "w"))
+        evict(THROW_POOL_SIZE)
+        s = _load_stats()
+        s["files"] += len(clean)
+        s["bytes"] += sum(len(d) for _, d, _ in clean)
+        _save_stats(s)
+        _bump_since_start(len(clean), sum(len(d) for _, d, _ in clean))
+        expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"]))
+        body = json.dumps({
+            "id": fid,
+            "url": f"{PUBLIC_BASE}/{fid}",
+            "bundle": True,
+            "editable": False,
+            "persistence": _persistence_block("bundle", meta["expires"]),
+            "files": [
+                {"name": n,
+                 "url": f"{PUBLIC_BASE}/{fid}/{quote(n)}",
+                 "size": os.path.getsize(os.path.join(dirpath, n)),
+                 "content_type": files_map[n]}
+                for n in names
+            ],
+            "size": sum(os.path.getsize(os.path.join(dirpath, n)) for n in names),
+            "expires_in": TTL_HOURS * 3600,
+            "expires_at": expires_at,
+        })
+        self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
+
+    # ------------------------------------------------------------------
+    # Unified dir module — one concept, addressable by id or name under /d/.
+    # A dir is a directory with a <key>.meta manifest + <key>.history log.
+    # ------------------------------------------------------------------
+
+    def _dir_create(self, key, qp, initial_files=None):
+        """Create (or get, if named & exists) a dir. key is a hex id (unnamed)
+        or a name. initial_files is a list of (name, data, ctype) or None."""
+        now = time.time()
+        dirpath = _dir_path(key)
+        # named create-or-get
+        if not _is_hex_id(key):
+            existing = _dir_meta(key)
+            if existing is not None:
+                if existing.get("expires", 0) < now:
+                    shutil.rmtree(dirpath, ignore_errors=True)
+                    existing = None
+                else:
+                    return self._dir_response(key, dirpath, existing)
+        os.makedirs(dirpath, exist_ok=True)
+        ttl = _parse_ttl((qp.get("ttl") or [""])[0]) or DIR_DEFAULT_AGE
+        listed = "listed=1" in (self.path.split("?", 1)[1] if "?" in self.path else "")
+        tags = _parse_tags(qp.get("tag", []))
+        meta = {
+            "type": "dir",
+            "created": now,
+            "updated": now,
+            "expires": now + ttl,
+            "max_age": ttl,
+            "listed": listed,
+            "tags": tags,
+            "files": {},
+        }
+        if _is_hex_id(key):
+            meta["id"] = key
+        else:
+            meta["name"] = key
+        json.dump(meta, open(_dir_meta_path(key), "w"))
+        # write initial files
+        if initial_files:
+            self._dir_write_files(key, dirpath, meta, initial_files, create=True)
+        evict(THROW_POOL_SIZE)
+        return self._dir_response(key, dirpath, meta)
+
+    def _dir_write_files(self, key, dirpath, meta, files, create=False):
+        """Write new files into a dir, update meta + stats + history.
+        Returns (files_map, added_bytes, added_count)."""
+        clean = []
+        total = 0
+        for n, d, c in files:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            if len(d) > MAX_FILE:
+                return None
+            total += len(d)
+            if total > THROW_POOL_SIZE:
+                return None
+            clean.append((safe, d, c))
+        if not clean:
+            return None
+        files_map = meta.get("files", {})
+        existing = set(os.listdir(dirpath))
+        meta_name = key + ".meta"
+        existing.discard(meta_name)
+        existing.discard(key + ".history")
+        added = 0
+        added_bytes = 0
+        for n, d, c in clean:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            name = _dedupe_names([safe] + [x for x in existing if x != safe])[0]
+            with open(os.path.join(dirpath, name), "wb") as f:
+                f.write(d)
+            files_map[name] = mimetypes.guess_type(name)[0] or c or "application/octet-stream"
+            existing.add(name)
+            added += 1
+            added_bytes += len(d)
+        meta["files"] = files_map
+        _dir_touch(meta, time.time())
+        json.dump(meta, open(_dir_meta_path(key), "w"))
+        s = _load_stats()
+        s["files"] += added
+        s["bytes"] += added_bytes
+        _save_stats(s)
+        _bump_since_start(added, added_bytes)
+        return (files_map, added_bytes, added)
+
+    def _dir_add(self, key):
+        """POST /d/<key> — add multipart files to an existing dir."""
+        dirpath = _dir_path(key)
+        if not os.path.isdir(dirpath):
+            return None
+        m = _dir_meta(key)
+        if not m or m.get("type") != "dir":
+            return None
+        now = time.time()
+        if m.get("expires", 0) < now:
+            shutil.rmtree(dirpath, ignore_errors=True)
+            return self._send(404, json.dumps({"error": "expired"}), "application/json")
+        ctype = self.headers.get("Content-Type", "application/octet-stream")
+        if not ctype.startswith("multipart/form-data"):
+            return self._send(400, json.dumps({"error": "dir add requires multipart"}), "application/json")
+        payload = self._read_body()
+        if payload is None:
+            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+        files = _parse_multipart(payload, ctype)
+        named = [(n, d, c) for (n, d, c) in files if n]
+        if not named:
+            return self._send(400, json.dumps({"error": "no file parts"}), "application/json")
+        # size checks
+        cur = _dir_size(dirpath)
+        for n, d, c in named:
+            safe = _safe_name(n)
+            if not safe:
+                continue
+            if len(d) > MAX_FILE:
+                return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+            cur += len(d)
+            if cur > THROW_POOL_SIZE:
+                return self._send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
+        files_map, _, _ = self._dir_write_files(key, dirpath, m, named)
+        if files_map is None:
+            return self._send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
+        for n, _, _ in named:
+            safe = _safe_name(n)
+            if safe:
+                _dir_append_history(key, {"ts": now, "action": "add", "file": safe})
+        evict(THROW_POOL_SIZE)
+        return self._dir_response(key, dirpath, m)
+
+    def _dir_get(self, key, parts, query):
+        """GET /d/<key>[/<file>] — listing, a file, zip, or history."""
+        dirpath = _dir_path(key)
+        m = _dir_meta(key)
+        now = time.time()
+        if not m or m.get("type") != "dir":
+            return self._send(404, "not found\n")
+        if m.get("expires", 0) < now:
+            shutil.rmtree(dirpath, ignore_errors=True)
+            return self._send(404, "expired\n")
+        force_dl = "download=1" in query
+        # /d/<key>/history
+        if len(parts) >= 2 and parts[1] == "history" and len(parts) == 2:
+            return self._dir_history_view(key, dirpath, m)
+        # /d/<key>/<file>
+        if len(parts) >= 2 and parts[1]:
+            fname = os.path.basename(unquote(parts[1]))
+            if not fname or fname.endswith(".meta") or fname.endswith(".history"):
+                return self._send(404, "not found\n")
+            fpath = os.path.join(dirpath, fname)
+            if not os.path.isfile(fpath):
+                return self._send(404, "not found\n")
+            ctype = m.get("files", {}).get(fname) or mimetypes.guess_type(fname)[0] or "application/octet-stream"
+            return self._serve_file(fpath, ctype, fname, force_dl, f"{DIR_NS}/{key}/{fname}")
+        # root: zip on ?zip=1 / ?download=1
+        if "zip=1" in query or force_dl:
+            return self._serve_bundle_zip(dirpath, key)
+        # JSON for agents, HTML for browsers
+        if self._is_agent():
+            return self._dir_response(key, dirpath, m)
+        return self._dir_listing(key, dirpath, m)
+
+    def _dir_response(self, key, dirpath, meta):
+        """JSON response for a dir (agents)."""
+        files = []
+        total = 0
+        for f in sorted(os.listdir(dirpath)):
+            if f.endswith(".meta") or f.endswith(".history"):
+                continue
+            fp = os.path.join(dirpath, f)
+            if not os.path.isfile(fp):
+                continue
+            sz = os.path.getsize(fp)
+            total += sz
+            ctype = meta.get("files", {}).get(f, "application/octet-stream")
+            files.append({"name": f, "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}/{quote(f)}", "size": sz,
+                          "content_type": ctype, "editable": _is_editable(ctype)})
+        expires = meta.get("expires", 0)
+        resp = {
+            "id": key,
+            "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}",
+            "dir": True,
+            "editable": False,
+            "persistence": _persistence_block("dir", expires,
+                                              max_age=meta.get("max_age", DIR_DEFAULT_AGE),
+                                              extendable_by="activity"),
+            "files": files,
+            "size": total,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("created", 0))),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("updated", meta.get("created", 0)))),
+            "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
+            "max_age": meta.get("max_age", DIR_DEFAULT_AGE),
+        }
+        if meta.get("name"):
+            resp["name"] = meta["name"]
+        if meta.get("listed"):
+            resp["listed"] = True
+        if meta.get("tags"):
+            resp["tags"] = meta["tags"]
+        return self._send(200, json.dumps(resp), "application/json", {"X-Expires": str(expires)})
+
+    def _dir_listing(self, key, dirpath, meta):
+        """HTML page for a dir viewed in a browser."""
+        rows = []
+        for f in sorted(os.listdir(dirpath)):
+            if f.endswith(".meta") or f.endswith(".history"):
+                continue
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                rows.append((f, os.path.getsize(fp)))
+        lis = "\n".join(
+            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> ({s} B)</li>'
+            for f, s in rows)
+        tags = "".join(f'<span class=tag>{_html_escape(t)}</span>' for t in meta.get("tags", []))
+        title = meta.get("name") or key
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<base href='{PREFIX}/{DIR_NS}/{key}/'>"
+             f"<title>throway dir {title}</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem}"
+             ".tag{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted);margin-right:.3rem}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center}"
+             "li a{color:var(--ink);text-decoration:none}"
+             "li a:hover{color:var(--accent)}"
+             "li span{color:var(--muted);font-size:.85rem}"
+             "a.btn{display:inline-block;margin-top:1rem;background:var(--accent);color:#fff;text-decoration:none;font-size:.9rem;padding:.5rem 1rem;border-radius:8px}"
+             "a.btn:hover{background:#1d4ed8}"
+             "a.back{display:inline-block;margin-top:1rem;margin-left:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<h1>Dir {title}</h1><div>{tags}</div><ul>{lis}</ul>"
+             f"<a class=btn href='?zip=1'>download as zip</a>"
+             f"<a class=btn href='history'>history</a>"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
+        self._send(200, h, "text/html")
+
+    def _dir_edit(self, key, parts, append):
+        """PUT/PATCH /d/<key>/<file> — replace or append text in a dir."""
+        if len(parts) < 2 or not parts[1]:
+            return self._send(400, json.dumps({"error": "file required"}), "application/json")
+        fname = os.path.basename(unquote(parts[1]))
+        dirpath = _dir_path(key)
+        m = _dir_meta(key)
+        now = time.time()
+        if not m or m.get("type") != "dir":
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        if m.get("expires", 0) < now:
+            shutil.rmtree(dirpath, ignore_errors=True)
+            return self._send(404, json.dumps({"error": "expired"}), "application/json")
+        fpath = os.path.join(dirpath, fname)
+        if fname.endswith(".meta") or fname.endswith(".history") or not os.path.isfile(fpath):
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        ctype = m.get("files", {}).get(fname) or ""
+        if not _is_editable(ctype):
+            return self._send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
+        data = self._read_body()
+        if data is None:
+            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+        old_size = os.path.getsize(fpath)
+        if append:
+            if old_size + len(data) > MAX_FILE:
+                return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            with open(fpath, "ab") as f:
+                f.write(data)
+        else:
+            if len(data) > MAX_FILE:
+                return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            with open(fpath, "wb") as f:
+                f.write(data)
+        _dir_touch(m, now)
+        json.dump(m, open(_dir_meta_path(key), "w"))
+        # history entry: action, file, delta
+        entry = {"ts": now, "file": fname, "action": "append" if append else "put"}
+        if append:
+            entry["added_bytes"] = len(data)
+        else:
+            entry["old_bytes"] = old_size
+            entry["new_bytes"] = len(data)
+        _dir_append_history(key, entry)
+        evict(THROW_POOL_SIZE)
+        return self._dir_response(key, dirpath, m)
+
+    def _dir_delete(self, parts):
+        """DELETE /d/<key> or /d/<key>/<file>."""
+        key = parts[0]
+        dirpath = _dir_path(key)
+        m = _dir_meta(key)
+        if not m or m.get("type") != "dir":
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        now = time.time()
+        if len(parts) >= 2 and parts[1]:
+            fname = os.path.basename(unquote(parts[1]))
+            fpath = os.path.join(dirpath, fname)
+            if fname.endswith(".meta") or fname.endswith(".history") or not os.path.isfile(fpath):
+                return self._send(404, "not found\n")
+            os.remove(fpath)
+            m["files"].pop(fname, None)
+            _dir_touch(m, now)
+            json.dump(m, open(_dir_meta_path(key), "w"))
+            _dir_append_history(key, {"ts": now, "action": "delete", "file": fname})
+            return self._send(200, "deleted\n")
+        shutil.rmtree(dirpath, ignore_errors=True)
+        return self._send(200, "deleted\n")
+
+    def _dir_history_view(self, key, dirpath, meta):
+        """GET /d/<key>/history — JSON for agents, HTML for browsers."""
+        h = _dir_history(key)
+        # newest first
+        h = list(reversed(h))
+        if self._is_agent():
+            return self._send(200, json.dumps({"dir": key, "history": h, "total": len(h)}), "application/json")
+        rows = "".join(
+            f'<li><span class=ts>{time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(e.get("ts", 0)))}</span> '
+            f'<span class=act>{_html_escape(e.get("action", ""))}</span> '
+            f'<span class=file>{_html_escape(e.get("file", ""))}</span>'
+            + self._history_detail_html(e)
+            + '</li>'
+            for e in h)
+        title = meta.get("name") or key
+        htm = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+               f"<title>throway dir history — {title}</title>"
+               "<style>"
+               ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+               "*{box-sizing:border-box}"
+               "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+               "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+               "h1{font-size:1.4rem}"
+               "ul{list-style:none;padding:0}"
+               "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0}"
+               "li .ts{color:var(--muted);font-size:.8rem;margin-right:.6rem}"
+               "li .act{font-weight:600;color:var(--accent);margin-right:.6rem}"
+               "li .file{font-family:ui-monospace,monospace}"
+               "li .det{color:var(--muted);font-size:.8rem;margin-top:.2rem}"
+               "a.back{display:inline-block;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+               "a.back:hover{color:var(--accent)}"
+               "</style></head><body><main>"
+               f"<h1>History — {title}</h1>"
+               f"{'<p style=color:var(--muted);font-size:.85rem>No edits yet.</p>' if not h else ''}"
+               f"<ul>{rows}</ul>"
+               f"<a class=back href='{PREFIX}/{DIR_NS}/{key}'>← dir</a>"
+               "</main></body></html>")
+        self._send(200, htm, "text/html")
+
+    def _history_detail_html(self, e):
+        """Small detail fragment for a history entry in HTML."""
+        a = e.get("action")
+        if a in ("add",):
+            return f'<div class=det>added {e.get("added_bytes", "?")} bytes</div>'
+        if a == "append":
+            return f'<div class=det>appended {e.get("added_bytes", "?")} bytes</div>'
+        if a == "put":
+            return f'<div class=det>{e.get("old_bytes", "?")} → {e.get("new_bytes", "?")} bytes</div>'
+        if a == "delete":
+            return '<div class=det>file removed</div>'
+        return ""
+
+    def _dir_listing_browse(self):
+        """GET /d — list dirs created with &listed=1 (agents JSON, browsers HTML)."""
+        q = self.path.split("?", 1)[1] if "?" in self.path else ""
+        qp = {}
+        for kv in q.split("&"):
+            if not kv:
+                continue
+            k, _, v = kv.partition("=")
+            qp.setdefault(k, []).append(v)
+        def _ts(k):
+            try:
+                return float((qp.get(k) or [""])[0])
+            except Exception:
+                return None
+        created_after = _ts("created_after"); created_before = _ts("created_before")
+        updated_after = _ts("updated_after"); updated_before = _ts("updated_before")
+        qtext = (qp.get("q") or [""])[0].strip().lower()
+        sort = (qp.get("sort") or ["created"])[0]
+        order = (qp.get("order") or ["desc"])[0]
+        nd = os.path.join(ROOT, DIR_NS)
+        now = time.time()
+        entries = []
+        if os.path.isdir(nd):
+            for key in os.listdir(nd):
+                p = os.path.join(nd, key)
+                if not os.path.isdir(p):
+                    continue
+                m = _dir_meta(key)
+                if not m or not m.get("listed"):
+                    continue
+                if m.get("expires", 0) < now:
+                    continue
+                created = m.get("created", 0); updated = m.get("updated", created)
+                tags = m.get("tags", [])
+                name = m.get("name") or key
+                if created_after is not None and created <= created_after:
+                    continue
+                if created_before is not None and created >= created_before:
+                    continue
+                if updated_after is not None and updated <= updated_after:
+                    continue
+                if updated_before is not None and updated >= updated_before:
+                    continue
+                if qtext and qtext not in name and not any(qtext in t for t in tags):
+                    continue
+                files = [f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))
+                         and not f.endswith(".meta") and not f.endswith(".history")]
+                size = _dir_size(p)
+                entries.append({
+                    "name": name,
+                    "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}",
+                    "tags": tags,
+                    "files": len(files),
+                    "size": size,
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created)),
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(updated)),
+                    "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(m.get("expires", 0))),
+                    "max_age": m.get("max_age", DIR_DEFAULT_AGE),
+                    "_c": created, "_u": updated,
+                })
+        def _key(e):
+            if sort == "name":
+                return e["name"]
+            if sort == "updated":
+                return e["_u"]
+            return e["_c"]
+        entries.sort(key=_key, reverse=(order != "asc"))
+        for e in entries:
+            e.pop("_c", None); e.pop("_u", None)
+        if self._is_agent():
+            return self._send(200, json.dumps({"dirs": entries, "total": len(entries)}), "application/json")
+        cards = "".join(
+            f'<li><a href="{_html_escape(e["url"])}">{_html_escape(e["name"])}</a> '
+            f'<span class=meta>{e["files"]} files · {_fmt_size(e["size"])} · updated {e["updated_at"]}</span>'
+            + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
+            + '</li>'
+            for e in entries)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<title>throway — dirs</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}"
+             "li a{color:var(--ink);text-decoration:none;font-weight:600}"
+             "li a:hover{color:var(--accent)}"
+             "li .meta{color:var(--muted);font-size:.8rem}"
+             "li .tags{color:var(--accent);font-size:.75rem;width:100%}"
+             "a.back{display:inline-block;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<h1>Dirs</h1>{'<p style=color:var(--muted);font-size:.85rem>No listed dirs yet.</p>' if not entries else ''}"
+             f"<ul>{cards}</ul>"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
+        self._send(200, h, "text/html")
+
     def do_DELETE(self):
         if not self._rate(): return
-        fid = self.path.lstrip("/").split("/")[0]
+        path = self.path.lstrip("/").rstrip("/")
+        parts = path.split("/")
+        # DELETE /d/<key>[/<file>]
+        if parts and parts[0] == DIR_NS and len(parts) >= 2 and parts[1]:
+            return self._dir_delete(parts[1:])
+        fid = parts[0]
         fp = _id_path(fid)
         if os.path.isfile(fp):
             _remove(fp); self._send(200, "deleted\n")
@@ -349,7 +1824,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _is_text(self, fid):
         m = self._meta_of(fid)
-        return bool(m and (m.get("ctype") or "").startswith("text/"))
+        return _is_editable((m or {}).get("ctype", ""))
 
     def _text_result(self, fid):
         fp = _id_path(fid)
@@ -361,13 +1836,20 @@ class Handler(BaseHTTPRequestHandler):
             "size": size,
             "name": meta.get("name", fid),
             "content_type": meta.get("ctype", "text/plain"),
+            "editable": _is_editable(meta.get("ctype", "text/plain")),
+            "persistence": _persistence_block("single", meta.get("expires", time.time())),
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("expires", time.time()))),
         })
 
     def do_PUT(self):
         """Replace text content (edit)."""
         if not self._rate(): return
-        fid = self.path.lstrip("/").split("/")[0]
+        p = self.path.lstrip("/")
+        parts = p.split("/")
+        # PUT /d/<key>/<file> -> edit a file inside a dir
+        if parts and parts[0] == DIR_NS and len(parts) >= 3:
+            return self._dir_edit(parts[1], parts[1:], append=False)
+        fid = parts[0]
         if not fid or fid.endswith(".meta"):
             return self._send(404, json.dumps({"error": "not found"}), "application/json")
         fp = _id_path(fid)
@@ -388,7 +1870,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         """Append text to existing content."""
         if not self._rate(): return
-        fid = self.path.lstrip("/").split("/")[0]
+        p = self.path.lstrip("/")
+        parts = p.split("/")
+        # PATCH /d/<key>/<file> -> append to a file inside a dir
+        if parts and parts[0] == DIR_NS and len(parts) >= 3:
+            return self._dir_edit(parts[1], parts[1:], append=True)
+        fid = parts[0]
         if not fid or fid.endswith(".meta"):
             return self._send(404, json.dumps({"error": "not found"}), "application/json")
         fp = _id_path(fid)
@@ -407,57 +1894,156 @@ class Handler(BaseHTTPRequestHandler):
         evict(THROW_POOL_SIZE)
         self._send(200, self._text_result(fid), "application/json")
 
-    def _agent_description(self):
-        return f"""THROWAWAY STORE — FOR AGENTS
+    def _home_help(self):
+        """GET / (agent curl). A structured --help style summary: a compact
+        usage overview plus pointers telling the agent where to get the full
+        help and the machine-readable API index. Plain text, no markdown."""
+        topics = ", ".join(HELP_ORDER)
+        body = f"""throway — disposable file store
 
-You are talking to a disposable file store. It lets you upload a file and
-share a short-lived URL. Everything is open (no auth) and everything
-expires after {TTL_HOURS} hours.
+A no-auth, ephemeral file store for agents and programs. Upload a file, a
+bundle of files (a mini website), or a dir; get a short-lived
+URL. Everything auto-expires after {TTL_HOURS} hours.
 
-WHAT IT IS FOR
-- Sharing a file (image, text, binary) by giving someone a URL.
-- A scratchpad for text: create a note, append to it, rewrite it.
-- Passing data between agents / machines without setting up accounts.
+USAGE
+  POST {PUBLIC_BASE}/?name=file.txt   upload a file (body = file bytes)
+  POST {PUBLIC_BASE}/                 upload a bundle (multipart, 2+ files)
+  POST {PUBLIC_BASE}/?dir=1           create a dir (under /d/<key>)
+  GET  {PUBLIC_BASE}/d/<key>          view a dir (listing / files / zip)
+  GET  {PUBLIC_BASE}/d/<key>/history  edit history of a dir
+  GET  {PUBLIC_BASE}/<id>             download / view
+  PUT/PATCH {PUBLIC_BASE}/<id>        edit / append text
+  DELETE {PUBLIC_BASE}/<id>           delete
 
-WHAT IT IS NOT
-- Not permanent storage. Files are automatically deleted after {TTL_HOURS} hours.
-- Not private. Anyone who has a URL can read, edit, or delete that file.
-- Not a database. It is a flat, throwaway store.
-
-HOW TO USE IT
-Base URL: {PUBLIC_BASE}
-
-1) UPLOAD a file (raw body or multipart):
-   POST {PUBLIC_BASE}/?name=filename.ext
-   with the file bytes as the body.
-   -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.
-
-2) DOWNLOAD / VIEW a file:
-   GET {PUBLIC_BASE}/<id>
-   Images render inline in a browser; other files download.
-   Append ?download=1 to force a download of any file.
-
-3) EDIT TEXT (text files only; images are immutable):
-   PUT   {PUBLIC_BASE}/<id>   with new text body  -> replace whole content
-   PATCH {PUBLIC_BASE}/<id>   with text body      -> append to content
-
-4) DELETE a file:
-   DELETE {PUBLIC_BASE}/<id>
-
-LIMITS
-- URL lifetime:  {TTL_HOURS} hours
-- Max file size: {MAX_FILE // (1024*1024)} MB
-- Pool size:     {THROW_POOL_SIZE // (1024*1024)} MB (oldest files evicted first)
-- Rate limit:    {RATE_LIMIT} requests/min per IP
-
-MACHINE-READABLE CONTRACT
-GET {PUBLIC_BASE}/api  -> returns the same limits + endpoints as JSON.
-An agent should read /api to discover current limits before acting.
+WHERE TO GET MORE
+  Full usage guide : GET {PUBLIC_BASE}/write_for_agents
+  API index (JSON) : GET {PUBLIC_BASE}/api
+  Help by topic    : GET {PUBLIC_BASE}/help  (then /help/<topic>)
+  Topics available : {topics}
+  Release notes    : GET {PUBLIC_BASE}/releases
 """
+        self._send(200, body, "text/plain; charset=utf-8")
+
+    def _agent_description(self):
+        """Full plain-text description, assembled from the same topics served
+        individually at /help/<topic>. Single source of truth: the HELP dict."""
+        parts = [
+            "THROWAWAY STORE — FOR AGENTS\n",
+            "You are talking to a disposable file store. It lets you upload a\n"
+            "file and share a short-lived URL. Everything is open (no auth) and\n"
+            f"everything expires after {TTL_HOURS} hours.\n",
+        ]
+        for key in HELP_ORDER:
+            parts.append(_render_help_body(key))
+        return "\n".join(parts)
+
+    def _help(self):
+        """GET /help — modular, API-gatherable help. Agents get a JSON index of
+        topics; browsers get an HTML list. Each topic is fetched separately at
+        /help/<topic>, so an agent pulls only the pieces it needs instead of
+        one giant copy-paste blob."""
+        if self._is_agent():
+            topics = [{"id": k, "title": HELP[k]["title"], "summary": HELP[k]["summary"]}
+                      for k in HELP_ORDER]
+            return self._send(200, json.dumps({
+                "service": "throwaway-store",
+                "version": VERSION,
+                "help": topics,
+                "fetch": PUBLIC_BASE + "/help/<topic>",
+            }, indent=2), "application/json")
+        rows = "".join(
+            f'<li><a href="{PREFIX}/help/{_html_escape(k)}">{_html_escape(HELP[k]["title"])}</a>'
+            f'<span class=m>{_html_escape(HELP[k]["summary"])}</span></li>'
+            for k in HELP_ORDER)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<title>throway — help</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
+             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+             "h1{font-size:1.4rem}"
+             "ul{list-style:none;padding:0}"
+             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}"
+             "li a{color:var(--ink);text-decoration:none;font-weight:600}"
+             "li a:hover{color:var(--accent)}"
+             "li .m{color:var(--muted);font-size:.8rem;width:100%}"
+             "a.back{display:inline-block;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<h1>throway help</h1><ul>{rows}</ul>"
+             f"<a class=back href='{PREFIX}/'>← throway</a>"
+             "</main></body></html>")
+        self._send(200, h, "text/html")
+
+    def _help_topic(self, key):
+        """GET /help/<topic> — one help topic. Agents get plain text; browsers
+        get a simple HTML page. 404 for unknown topics."""
+        t = HELP.get(key)
+        if not t:
+            return self._send(404, json.dumps({"error": "unknown help topic"}), "application/json")
+        body = _render_help_body(key)
+        if self._is_agent():
+            return self._send(200, body, "text/plain; charset=utf-8")
+        esc = _html_escape(body)
+        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"<title>throway help — {_html_escape(t['title'])}</title>"
+             "<style>"
+             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+             "*{box-sizing:border-box}"
+             "body{margin:0;font-family:ui-monospace,monospace;background:var(--bg);color:var(--ink);line-height:1.6;min-height:100vh}"
+             "main{max-width:820px;margin:0 auto;padding:3rem 1.5rem}"
+             "pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem}"
+             "a.back{display:inline-block;margin-bottom:1rem;color:var(--muted);text-decoration:none;font-size:.85rem}"
+             "a.back:hover{color:var(--accent)}"
+             "</style></head><body><main>"
+             f"<a class=back href='{PREFIX}/help'>← all help</a>"
+             f"<pre>{esc}</pre>"
+             "</main></body></html>")
+        self._send(200, h, "text/html; charset=utf-8")
 
     def _write_for_agents(self):
         """A description of this service written for agents."""
         self._send(200, self._agent_description(), "text/plain")
+
+    def _releases(self):
+        """Serve the release notes. Single source: RELEASES.md.
+        Agents get the raw markdown; browsers get a rendered HTML page.
+        Both come from the same file — nothing duplicated."""
+        try:
+            with open(RELEASES_FILE) as f:
+                md = f.read()
+        except OSError:
+            return self._send(404, "release notes unavailable\n")
+        # Single source of truth for the version: VERSION. Rewrite the
+        # "Current version" line in RELEASES.md so it can never drift.
+        md = re.sub(r'(?m)^\*\*Current version:\*\*.*$', f'**Current version:** `{VERSION}`', md, count=1)
+        if self._is_agent():
+            return self._send(200, md, "text/markdown; charset=utf-8")
+        # browsers: render as an HTML page (escape + minimal md-ish styling)
+        esc = _html_escape(md)
+        h = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content='width=device-width,initial-scale=1'>
+<title>throway — releases v{VERSION}</title>
+<style>
+  :root{{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}}
+  *{{box-sizing:border-box}}
+  body{{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;min-height:100vh}}
+  main{{max-width:820px;margin:0 auto;padding:3rem 1.5rem 5rem}}
+  h1{{font-size:1.6rem;border-bottom:2px solid var(--accent);padding-bottom:.3rem}}
+  h2{{font-size:1.2rem;margin-top:1.8rem;color:var(--accent)}}
+  pre{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem;overflow-x:auto;font-family:ui-monospace,monospace;font-size:13px}}
+  code{{background:var(--card);padding:.1rem .3rem;border-radius:4px;font-size:.9em;color:var(--accent)}}
+  a{{color:var(--accent)}}
+  .back{{display:inline-block;margin-bottom:1rem;color:var(--muted);text-decoration:none;font-size:.85rem}}
+  .back:hover{{color:var(--accent)}}
+  .raw{{color:var(--muted);font-size:.85rem}}
+</style></head><body><main>
+<a class=back href="{PREFIX}/">← throway</a>
+<pre>{esc}</pre>
+<p class=raw>raw: <a href="{PREFIX}/releases?raw=1">markdown</a></p>
+</main></body></html>"""
+        self._send(200, h, "text/html; charset=utf-8")
 
     def _copy_for_agents(self):
         """HTML page with a copy-pasteable agent description."""
@@ -494,9 +2080,10 @@ function copyDesc() {{
         """Machine-readable contract for agents."""
         spec = {
             "service": "throwaway-store",
-            "version": 1,
+            "version": VERSION,
             "base_url": PUBLIC_BASE,
             "ttl_seconds": TTL_HOURS * 3600,
+            "dir_ttl_seconds": {"min": DIR_MIN_AGE, "default": DIR_DEFAULT_AGE, "max": DIR_MAX_AGE},
             "max_file_bytes": MAX_FILE,
             "pool_bytes": THROW_POOL_SIZE,
             "rate_limit_per_min": RATE_LIMIT,
@@ -505,15 +2092,39 @@ function copyDesc() {{
                     "method": "POST",
                     "url": PUBLIC_BASE + "/?name=<filename>",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
-                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "expires_in": "int", "expires_at": "str"},
+                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
                 },
-                "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images render inline; append ?download=1 to force download"},
+                "upload_bundle": {
+                    "method": "POST",
+                    "url": PUBLIC_BASE + "/",
+                    "body": "multipart/form-data with 2+ file parts",
+                    "note": "creates a bundle: one URL, files served at /<id>/<filename>, index.html inline for browsers; bundles are immutable snapshots (editable:false)",
+                    "response": {"id": "str", "url": "str", "bundle": True, "editable": False, "persistence": {"type": "bundle", "expires_at": "str", "extendable_by": "none", "max_age": None}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str"}], "expires_at": "str"},
+                },
+                "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
+                "import_url": {"method": "POST", "url": PUBLIC_BASE + "/?url=<url>[&name=<name>][&link=1][&tag=<t>]", "note": "MAX 5MB. Two modes: (1) default — fetch the remote http(s) document SERVER-SIDE and store it as a normal file (name from Content-Disposition/URL path, overridable via &name=); (2) &link=1 — store the URL itself as a tiny redirect HTML document (browsers get redirected, agents can PUT/PATCH it). Private/loopback hosts are blocked. Optional &tag=<t> (repeatable, up to 5) attaches tags.", "response": "same JSON as upload"},
+                "browse_files": {"method": "GET", "url": PUBLIC_BASE + "/browse?tag=<t>[&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]", "note": "JSON listing of live single files for agents (HTML page for browsers). Filter by one or more &tag= values (AND), by name/tag substring &q=; sort with &sort= (default created) and &order= (default desc). Each entry: id, url, name, content_type, size, tags, created_at, expires_at."},
+                "tag_file": {"method": "POST", "url": PUBLIC_BASE + "/<id>?tag=<t>[&tag=<t2>][&untag=<t3>]", "note": "update tags on an existing single file without touching its content or expiry. Tags: lowercase [a-z0-9-], 1-24 chars, max 5 per file."},
+                "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
+                "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl"},
+                "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
+                "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir"},
+                "dir_zip": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>?zip=1", "note": "download the whole dir as a zip"},
+                "get_dir_history": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/history", "note": "edit history: list of {ts,file,action,bytes} entries, newest first, capped at HISTORY_LIMIT"},
+                "edit_dir_file": {"method": "PUT", "url": PUBLIC_BASE + "/d/<key>/<file>", "body": "new text (text files only)", "note": "replace a file in a dir, bumps updated_at"},
+                "append_dir_file": {"method": "PATCH", "url": PUBLIC_BASE + "/d/<key>/<file>", "body": "text to append (text files only)", "note": "append to a file in a dir, bumps updated_at"},
+                "delete_dir_file": {"method": "DELETE", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "remove one file from a dir, bumps updated_at"},
+                "delete_dir": {"method": "DELETE", "url": PUBLIC_BASE + "/d/<key>", "note": "delete a whole dir"},
+                "list_dirs": {"method": "GET", "url": PUBLIC_BASE + "/d", "note": "list dirs created with listed=1; filters ?q=<sub> (name or tag), ?created_after/before=<ts>, ?updated_after/before=<ts>; sort ?sort=created|updated|name&order=asc|desc (default created desc)"},
                 "delete": {"method": "DELETE", "url": PUBLIC_BASE + "/<id>"},
                 "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content"},
                 "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)"},
                 "contract": {"method": "GET", "url": PUBLIC_BASE + "/api"},
                 "write_for_agents": {"method": "GET", "url": PUBLIC_BASE + "/write_for_agents", "note": "human-readable description of this service for agents"},
                 "copy_for_agents": {"method": "GET", "url": PUBLIC_BASE + "/copy_for_agents", "note": "HTML page with a copy-pasteable agent description"},
+                "help": {"method": "GET", "url": PUBLIC_BASE + "/help", "note": "modular help index (JSON for agents, HTML for browsers); each topic fetched separately at /help/<topic> so agents gather only what they need"},
+                "releases": {"method": "GET", "url": PUBLIC_BASE + "/releases", "note": "release notes; raw markdown for agents, rendered HTML for browsers"},
             },
         }
         self._send(200, json.dumps(spec, indent=2), "application/json")
@@ -531,6 +2142,151 @@ def _fmt_size(n):
 class _IndexMixin:
     pass
 
+
+# ---------------------------------------------------------------- homepage UI
+# Upload UI is Dropzone.js from a CDN: battle-tested click-to-browse +
+# drag-and-drop file handling. We only queue files, compose the POST
+# (one multipart request for the whole queue -> file | bundle | dir) and
+# render the result box.
+DROPZONE_VERSION = "5.9.3"
+DROPZONE_CSS = f"https://cdn.jsdelivr.net/npm/dropzone@{DROPZONE_VERSION}/dist/min/dropzone.min.css"
+DROPZONE_JS = f"https://cdn.jsdelivr.net/npm/dropzone@{DROPZONE_VERSION}/dist/min/dropzone.min.js"
+
+_INDEX_JS = r"""(function () {
+  'use strict';
+
+  /* Works under any mount point: '' at root, '/throway' behind the proxy. */
+  var PREFIX = location.pathname.replace(/\/+$/, '');
+  var MAX_MB = __MAX_MB__;
+
+  function $(id) { return document.getElementById(id); }
+  var statusEl = $('status'), resultEl = $('result'), upBtn = $('up'), dirMode = $('dirMode');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function setStatus(msg, isErr) {
+    statusEl.textContent = msg || '';
+    statusEl.className = isErr ? 'err' : '';
+  }
+  function asObj(r) {
+    if (r && typeof r === 'object') return r;
+    try { return JSON.parse(r); } catch (e) { return { error: String(r) }; }
+  }
+
+  /* --- result box --- */
+  function row(label, html) {
+    return '<div class=row><span class=lbl>' + esc(label) + '</span>' + html + '</div>';
+  }
+  function filesBlock(files) {
+    return '<div class=files>' + files.map(function (f) {
+      return '<div>\u2022 <a href="' + esc(f.url) + '" target=_blank>' + esc(f.name) + '</a> (' + f.size + ' B)</div>';
+    }).join('') + '</div>';
+  }
+  function showResult(d) {
+    var html = '<h3>Done \u2713</h3>' + row('URL',
+      '<div class=urlbox><input readonly value="' + esc(d.url) + '"><button class=btn data-copy>copy</button></div>');
+    if (d.dir) {
+      html += row('Dir', d.files.length + ' files \u00b7 expires ' + esc(d.expires_at)) + filesBlock(d.files);
+    } else if (d.bundle) {
+      html += row('Bundle', d.files.length + ' files \u00b7 expires ' + esc(d.expires_at)) + filesBlock(d.files);
+    } else {
+      html += row('Name', esc(d.name)) + row('Size', d.size + ' B') +
+              row('Type', esc(d.content_type)) + row('Expires', esc(d.expires_at));
+    }
+    resultEl.innerHTML = html;
+    resultEl.style.display = 'block';
+    resultEl.querySelector('[data-copy]').addEventListener('click', function () {
+      navigator.clipboard.writeText(this.previousElementSibling.value);
+    });
+  }
+
+  /* --- dropzone --- */
+  Dropzone.autoDiscover = false;
+  var dz = new Dropzone('#drop', {
+    url: PREFIX + '/',
+    autoProcessQueue: false,
+    uploadMultiple: true,      /* one POST for the whole queue -> file | bundle | dir */
+    parallelUploads: 100,
+    paramName: 'f',
+    maxFilesize: MAX_MB,
+    createImageThumbnails: false,
+    clickable: true,
+    previewTemplate: [
+      '<div class="dz-preview dz-file-preview">',
+      '  <span class="dz-filename" data-dz-name></span>',
+      '  <span class="dz-size" data-dz-size></span>',
+      '  <span class="dz-progress"><i data-dz-uploadprogress></i></span>',
+      '  <span class="dz-error-msg" data-dz-errormessage></span>',
+      '  <a class="dz-remove" href="javascript:undefined" data-dz-remove>remove</a>',
+      '</div>'
+    ].join('')
+  });
+
+  upBtn.addEventListener('click', function () {
+    if (!dz.files.length) { setStatus('Choose at least one file', true); return; }
+    dz.options.url = PREFIX + '/' + (dirMode.checked ? '?dir=1' : '');
+    resultEl.style.display = 'none';
+    dz.processQueue();
+  });
+
+  dz.on('sendingmultiple', function () {
+    upBtn.disabled = true;
+    setStatus('Uploading\u2026');
+  });
+  dz.on('successmultiple', function (files, resp) {
+    upBtn.disabled = false;
+    var d = asObj(resp);
+    if (d && d.url) { setStatus(''); showResult(d); dz.removeAllFiles(true); }
+    else { setStatus('Error: ' + ((d && d.error) || 'upload failed'), true); }
+  });
+  dz.on('errormultiple', function (files, resp) {
+    upBtn.disabled = false;
+    var d = asObj(resp);
+    setStatus('Error: ' + ((d && d.error) || 'upload failed'), true);
+  });
+  dz.on('error', function (file, msg) {
+    upBtn.disabled = false;
+    setStatus('Error: ' + (file.status === Dropzone.CANCELED ? 'canceled' : msg), true);
+  });
+
+  /* --- paste-to-upload (Ctrl+V images) --- */
+  /* Listen on the whole page so a paste anywhere (not just the dropzone)
+     grabs an image from the clipboard and queues it for upload. */
+  function handlePaste(e) {
+    var items = (e.clipboardData || window.clipboardData);
+    if (!items || !items.items) return;
+    var added = 0;
+    for (var i = 0; i < items.items.length; i++) {
+      var it = items.items[i];
+      if (it.kind !== 'file') continue;
+      var f = it.getAsFile();
+      if (!f) continue;
+      if (f.type && f.type.indexOf('image/') !== 0) continue;  /* only images */
+      var base = (f.name || 'pasted').replace(/\.[^.]+$/, '');
+      var ext = (f.type || 'image/png').split('/')[1] || 'png';
+      var name = base + '-' + Date.now() + '.' + ext;
+      var blob = new Blob([f], { type: f.type });
+      blob.name = name;
+      blob.lastModified = Date.now();
+      /* Dropzone expects a File; wrap the blob with a name so it's accepted. */
+      try {
+        blob = new File([f], name, { type: f.type, lastModified: Date.now() });
+      } catch (err) { /* older browsers: keep the named blob */ }
+      dz.addFile(blob);
+      added++;
+    }
+    if (added) {
+      e.preventDefault();
+      setStatus('Pasted ' + added + ' image' + (added > 1 ? 's' : '') + ' — click Upload');
+    }
+  }
+  document.addEventListener('paste', handlePaste);
+})();
+"""
+
 def _index(self):
     sweep()
     rows = []
@@ -541,86 +2297,129 @@ def _index(self):
         s = os.path.getsize(os.path.join(ROOT, f))
         rows.append((f, s))
         actual += s
-    cum = _cumulative()
-    tot_files = cum["files"]
-    tot_bytes = cum["bytes"]
     pct = 100.0 * actual / THROW_POOL_SIZE
-    h = ("<!doctype html><html><head><meta charset=utf-8><title>throway</title>"
+    h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+         "<meta name=viewport content='width=device-width,initial-scale=1'>"
+         "<title>throway — share files, gone in 4 hours | skale.dev</title>"
+         "<meta name=description content='Disposable file sharing: upload a file or bundle, "
+         "get a short URL, everything auto-expires after 4 hours. No signup, no tracking. "
+         "With a plain API for agents.'>"
+         "<link rel=canonical href='https://skale.dev/throway/'>"
+         "<meta property=og:type content=website>"
+         "<meta property=og:site_name content='skale.dev Apps'>"
+         "<meta property=og:title content='throway — share files, gone in 4 hours'>"
+         "<meta property=og:description content='No signup, no tracking — files and bundles "
+         "auto-expire after 4 hours. Plain API for agents.'>"
+         "<meta property=og:url content='https://skale.dev/throway/'>"
+         "<meta property=og:image content='https://skale.dev/og-throway.png'>"
+         "<meta name=twitter:card content=summary_large_image>"
+         f"<link rel=stylesheet href='{DROPZONE_CSS}'>"
          "<style>"
-         "body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#222;line-height:1.5}"
-         "h1{font-size:1.6rem;margin-bottom:.2rem}"
-         ".stats{background:#f4f4f5;border:1px solid #e4e4e7;border-radius:8px;padding:.8rem 1rem;margin:.5rem 0 1rem}"
-         ".stats div{padding:.15rem 0}"
-         ".stats b{color:#111}"
-         ".stats .pct{color:#2563eb;font-weight:600}"
-         "form{display:flex;gap:.5rem;align-items:center;margin:1rem 0;padding:1rem;background:#fafafa;border:1px solid #e4e4e7;border-radius:8px}"
-         "input[type=file]{font-size:.9rem}"
-         "button,input[type=submit]{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:.45rem .9rem;font-size:.9rem;cursor:pointer}"
-         "button:hover,input[type=submit]:hover{background:#1d4ed8}"
-         "a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}"
-         ".hint{color:#666;font-size:.9rem;display:flex;align-items:center;gap:.4rem}"
-         ".cp{display:inline-flex;align-items:center;gap:.3rem;cursor:pointer;color:#2563eb;background:none;border:0;font-size:.9rem;padding:.2rem .4rem;border-radius:6px}"
-         ".cp:hover{background:#eff6ff}"
-         ".cp svg{width:16px;height:16px}"
-         "details.agents{margin:1rem 0;background:#fafafa;border:1px solid #e4e4e7;border-radius:8px;padding:.5rem .9rem}"
-         "details.agents summary{cursor:pointer;font-weight:600;color:#333}"
-         "details.agents pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;color:#444;margin:.5rem 0 0;padding-top:.5rem;border-top:1px solid #eee}"
-         "#result{margin:1rem 0;padding:1rem;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;display:none}"
-         "#result a{word-break:break-all}"
-         "#result .row{padding:.15rem 0}"
-         "#result .lbl{color:#555;font-size:.75rem;text-transform:uppercase;letter-spacing:.02em}"
-         "#status{color:#666;font-size:.9rem}"
-         "</style></head><body>"
-         f"<h1>throway</h1>"
-         f"<div class='stats'>"
-         f"<div><b>actual:</b> {len(rows)} files, {_fmt_size(actual)} · <span class='pct'>{pct:.0f}%</span> of max</div>"
-         f"<div><b>total:</b> {tot_files} files, {_fmt_size(tot_bytes)} ever</div>"
-         f"</div>"
-         f"<form id='upload' method='post' action='{PREFIX}/' enctype='multipart/form-data'>"
-         "<input type='file' name='f' required><input type='submit' value='Upload'></form>"
+         ":root{--bg:#ffffff;--card:#fafafa;--card2:#f4f4f5;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+         "*{box-sizing:border-box}"
+         "body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.55;min-height:100vh}"
+         "main{max-width:840px;margin:0 auto;padding:3rem 1.5rem 5rem}"
+         "header{display:flex;align-items:baseline;gap:.75rem;margin-bottom:.25rem}"
+         "h1{font-size:2rem;margin:0;letter-spacing:-.02em}"
+         "h1 .dot{color:var(--accent)}"
+         ".version{font-size:.8rem;color:var(--muted);background:var(--card2);border:1px solid var(--line);padding:.15rem .5rem;border-radius:999px}"
+         "p.lede{color:var(--muted);max-width:60ch;margin:.5rem 0 1.5rem}"
+         "ul.feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem;list-style:none;padding:0;margin:0 0 1.5rem}"
+         "ul.feats li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem;font-size:.9rem}"
+         "ul.feats li b{color:var(--accent)}"
+         "ul.feats li small{display:block;color:var(--muted);margin-top:.15rem}"
+                  "#drop{border:2px dashed #d1d5db;border-radius:14px;padding:2rem 1.5rem;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;background:var(--card);margin-bottom:.8rem}"
+         "#drop:hover,#drop.dz-drag-hover{border-color:var(--accent);background:#eff6ff}"
+         "#drop .big{font-size:1.05rem;font-weight:600}"
+         "#drop .sub{color:var(--muted);font-size:.85rem;margin-top:.2rem}"
+         ".dz-preview{display:flex;align-items:center;gap:.6rem;text-align:left;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:.35rem .6rem;margin:.35rem .2rem 0;font-size:.85rem}"
+         ".dz-preview .dz-filename{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}"
+         ".dz-preview .dz-size{color:var(--muted);font-size:.75rem;white-space:nowrap}"
+         ".dz-preview .dz-progress{position:relative;height:3px;width:90px;background:#e5e7eb;border-radius:999px;overflow:hidden}"
+         ".dz-preview .dz-progress i{display:block;height:100%;width:0;background:var(--accent);border-radius:999px}"
+         ".dz-preview .dz-error-msg{color:#dc2626;font-size:.75rem;display:none}"
+         ".dz-preview.dz-error{border-color:#fecaca;background:#fef2f2}"
+         ".dz-preview.dz-error .dz-error-msg{display:block}"
+         ".dz-preview .dz-remove{color:var(--muted);font-size:.75rem;text-decoration:none;white-space:nowrap}"
+         ".dz-preview .dz-remove:hover{color:#dc2626}"
+         ".controls{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
+         "label.mode{display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted);cursor:pointer}"
+         "label.mode input{margin:0}"
+         "button,.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:.6rem 1.2rem;font-size:.95rem;font-weight:600;cursor:pointer;transition:background .15s}"
+         "button:hover,.btn:hover{background:#1d4ed8}"
+         "button:active{transform:translateY(1px)}"
+         "button:disabled{opacity:.5;cursor:not-allowed}"
+         "#status{margin:.8rem 0;font-size:.9rem}"
+         "#status.err{color:#dc2626}"
+         "#result{margin:1rem 0;padding:1rem 1.2rem;border-radius:12px;background:#eff6ff;border:1px solid #bfdbfe;display:none}"
+         "#result h3{margin:.2rem 0 .6rem;font-size:1.05rem}"
+         "#result .row{padding:.25rem 0;font-size:.9rem}"
+         "#result .lbl{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin-right:.5rem}"
+         "#result a{color:var(--accent);word-break:break-all}"
+         "#result .urlbox{display:flex;gap:.4rem;align-items:center;background:#fff;border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;margin:.3rem 0}"
+         "#result .urlbox input{flex:1;background:none;border:0;color:var(--ink);font-size:.85rem;font-family:ui-monospace,monospace;outline:none}"
+         "#result .files{font-size:.85rem;color:var(--muted)}"
+         "#result .files div{padding:.15rem 0}"
+         "#result .files a{color:var(--ink)}"
+         "#result .files a:hover{color:var(--accent)}"
+         ".stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.6rem;margin:1.4rem 0}"
+         ".stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem}"
+         ".stat b{font-size:1.15rem;display:block}"
+         ".stat span{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}"
+         ".stat .sub{font-size:.9rem;color:var(--ink);margin:.15rem 0}"
+         ".stat .when{font-size:.7rem;color:var(--accent);margin-top:.2rem;text-transform:uppercase;letter-spacing:.04em}"
+         ".meter{height:6px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:.4rem}"
+         ".meter i{display:block;height:100%;background:var(--accent);border-radius:999px}"
+         "nav.links{display:flex;gap:1.2rem;margin-top:2rem;font-size:.88rem;flex-wrap:wrap}"
+         "nav.links a{color:var(--muted);text-decoration:none}"
+         "nav.links a:hover{color:var(--accent)}"
+         "details.agents{margin-top:1.5rem;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem 1rem}"
+         "details.agents summary{cursor:pointer;font-weight:600;color:var(--accent)}"
+         "details.agents pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;color:var(--muted);margin:.6rem 0 0;padding-top:.6rem;border-top:1px solid var(--line)}"
+         "@media(max-width:560px){main{padding:2rem 1rem 4rem}}"
+         "</style></head><body><main>"
+         f"<header><h1>throway<span class='dot'>.</span></h1>"
+         f"<span class='version'>v{VERSION}</span></header>"
+         "<p class='lede'>A disposable file store for agents and humans. Upload a file, a"
+         " bundle, or a dir — share a short-lived URL. No accounts, no setup,"
+         " nothing permanent.</p>"
+         "<ul class='feats'>"
+         "<li><b>Files</b> — one URL per upload<small>inline for images &amp; text, download otherwise</small></li>"
+         "<li><b>Bundles</b> — a whole mini-website<small>index.html renders inline; zip for agents</small></li>"
+         "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (ttl= up to 14d, default 7d); edit history</small></li>"
+         "</ul>"
+         "<div id='drop' class='dropzone'>"
+         "<div class='dz-message'>"
+         "<div class='big'>Drop files here, or click to choose</div>"
+         "<div class='sub'>Select one or many files</div>"
+         "</div></div>"
+         "<div class='controls'>"
+         "<button id='up'>Upload</button>"
+         "<label class='mode'><input type='checkbox' id='dirMode'>create a <b>dir</b></label>"
+         "<span style='flex:1'></span>"
+         "<span style='color:var(--muted);font-size:.8rem'>files live ~" + str(TTL_HOURS) + "h</span>"
+         "</div>"
          "<div id='status'></div>"
          "<div id='result'></div>"
-         f"<p class='hint'>Files live ~{TTL_HOURS}h. "
-         f"<a href='{PREFIX}/api'>API</a> · <a href='{PREFIX}/write_for_agents'>description</a> · "
-         "<button class='cp' id='cpBtn' title='Copy agent description'>"
-         "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='14' height='14' x='8' y='8' rx='2' ry='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/></svg>"
-         "copy for agents</button></p>"
-         "<details class='agents'><summary>Agent info</summary><pre>" + _html_escape(self._agent_description()) + "</pre></details>"
-         "<script>"
-         "var form=document.getElementById('upload');"
-         "form.addEventListener('submit',function(e){"
-         "e.preventDefault();"
-         "var fd=new FormData(form);"
-         "var st=document.getElementById('status');var r=document.getElementById('result');"
-         "st.textContent='Uploading…';r.style.display='none';"
-         "fetch(form.action,{method:'POST',body:fd})"
-         ".then(function(res){return res.json().then(function(d){return {ok:res.ok,data:d};});})"
-         ".then(function(o){"
-         "if(!o.ok){st.textContent='Error: '+(o.data.error||'upload failed');return;}"
-         "var d=o.data;"
-         "r.style.display='block';"
-         "r.innerHTML='<div class=\"row\"><span class=\"lbl\">URL</span><br><a href=\"'+d.url+'\" target=\"_blank\">'+d.url+'</a></div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Name</span> '+d.name+'</div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Size</span> '+d.size+' B</div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Type</span> '+d.content_type+'</div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Expires</span> '+d.expires_at+'</div>'"
-         "+'<div class=\"row\"><span class=\"lbl\">Download</span> <a href=\"'+d.url+'?download=1\">force download</a></div>';"
-         "st.textContent='';"
-         "form.reset();"
-         "})"
-         ".catch(function(err){st.textContent='Error: '+err;});"
-         "});"
-         "document.getElementById('cpBtn').addEventListener('click',function(){"
-         "fetch('" + PREFIX + "/write_for_agents').then(function(res){return res.text();}).then(function(t){"
-         "navigator.clipboard.writeText(t).then(function(){"
-         "var b=document.getElementById('cpBtn');var old=b.innerHTML;"
-         "b.innerHTML='<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 6 9 17l-5-5\"/></svg> copied';"
-         "setTimeout(function(){b.innerHTML=old;},1500);"
-         "});"
-         "});"
-         "});"
-         "</script>"
-         "</body></html>")
+         "<div class='stats'>"
+         f"<div class='stat'><b>{len(rows)}</b><span>files</span>"
+         f"<div class='sub'>{_fmt_size(actual)}</div>"
+         f"<div class='meter'><i style='width:{min(100,pct):.0f}%'></i></div>"
+         f"<div class='when'>now</div></div>"
+         f"<div class='stat'><b>{_since_start['files']}</b><span>files</span>"
+         f"<div class='sub'>{_fmt_size(_since_start['bytes'])}</div>"
+         f"<div class='when'>since start</div></div>"
+         "</div>"
+         "<nav class='links'>"
+         f"<a href='{PREFIX}/api'>API</a>"
+         f"<a href='{PREFIX}/help'>help</a>"
+         f"<a href='{PREFIX}/write_for_agents'>for agents</a>"
+         f"<a href='{PREFIX}/releases'>releases</a>"
+         "</nav>"
+         "<details class='agents' open><summary>Agent info</summary><pre>" + _html_escape(self._agent_description()) + "</pre></details>"
+         f"<script src='{DROPZONE_JS}'></script>"
+         f"<script>{_INDEX_JS.replace('__MAX_MB__', str(MAX_FILE // (1024 * 1024)))}</script>"
+         "</main></body></html>")
     self._send(200, h, "text/html")
 
 
