@@ -1,12 +1,19 @@
 # throway — Releases
 
-**Current version:** `1.11.0`
-**Current version:** `1.12.0`
+**Current version:** `1.15.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.15.0 — 2026-09-17
+
+- Repo-Versöhnung: die am Live-Dir entwickelten Features (Bundles/Zip/Minisites,
+  Tags+browse, Agent-Endpoints, UA-Negotiation) zurück im main-Branch gemergt —
+  Live-Stand == Git wieder.
+- SEO: HTML-Head für Browser/Googlebot (Title, Description, Canonical, OpenGraph
+  + og-image); Agenten erhalten weiter text/plain (UA-Negotiation).
 
 ## 1.14.0 — 2026-08-25
 
