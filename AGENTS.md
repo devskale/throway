@@ -44,9 +44,12 @@ never hardcode endpoints. Instead:
 1. **`curl` the HTML pages** — the human-facing pages (homepage, dir
    listing, help) are the primary source of what throway can do. They carry
    the full usage guide, so pulling them gives you everything needed to use
-   the service. Dir pages additionally carry a collapsed **“agent hint”**
-   block with ready-to-run curl lines (JSON listing, single file, zip,
-   PUT/PATCH edit, history).
+   the service. Browser pages carry a collapsed **“agent hint”** block with
+   ready-to-run curl lines (dir listing: JSON listing, single file, zip,
+   PUT/PATCH edit, history; bundle listing: files + zip; browse: filters +
+   upload; help: topic index; history page: JSON). Every JSON response and
+   every agent file download also carries a `Link: <…/api>; rel="help"`
+   header pointing at the machine-readable contract.
 2. **Then confirm / go deeper via the machine-readable contract:**
    - `GET /api` — the authoritative JSON spec: current limits + every
      endpoint (method, URL, body, response shape).

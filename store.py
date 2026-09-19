@@ -70,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.17.0"
+VERSION = "1.18.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -830,8 +830,24 @@ _BASE_CSS = (
     "a.btn:hover{background:#1d4ed8}"
     "a.back{display:inline-flex;align-items:center;min-height:44px;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
     "a.back:hover{color:var(--accent)}"
+    ".agenthint{margin-top:1.2rem}"
+    ".agenthint summary{cursor:pointer;color:var(--muted);font-size:.8rem;user-select:none}"
+    ".agenthint pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;font:75%/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-x:auto;color:var(--ink)}"
     "@media(max-width:560px){main{padding:1.5rem 1rem 3rem}h1{font-size:1.25rem}}"
 )
+
+
+def _agent_hint(*lines):
+    """Collapsed 'agent hint' block for browser HTML pages: copy-pasteable
+    curl lines with absolute URLs. Collapsed for humans, fully present in
+    source/a11y tree for agents that land on the page with a browser UA.
+    Lines are HTML-escaped here — pass them raw (&, <, > are fine)."""
+    if not lines:
+        return ""
+    body = "\n".join(_html_escape(l) for l in lines)
+    return ("<details class=agenthint>"
+            "<summary>agent hint — this page is machine-readable</summary>"
+            f"<pre>{body}</pre></details>")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -843,7 +859,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         if isinstance(body, str): body = body.encode()
         self.send_header("Content-Length", str(len(body)))
-        for k, v in (extra or {}).items():
+        headers = dict(extra or {})
+        # agent hint (RFC 8288): every JSON response points at the
+        # machine-readable contract, so any client that received JSON —
+        # listing, upload result, even an error — learns where /api lives
+        if ctype == "application/json" and "Link" not in headers:
+            headers["Link"] = f'<{PUBLIC_BASE}/api>; rel="help"'
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         # HEAD: send headers + Content-Length but no body
@@ -883,9 +905,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def _serve_file(self, fp, ctype, orig, force_dl, fid):
-        """Serve a single stored file (inline or attachment)."""
+        """Serve a single stored file (inline or attachment). Agents also get
+        a Link hint pointing at the machine-readable contract."""
         size = os.path.getsize(fp)
         is_inline = any(ctype.startswith(p) for p in INLINE_TYPES)
+        hint = {'Link': f'<{PUBLIC_BASE}/api>; rel="help"'} if self._is_agent() else None
         if force_dl or not is_inline:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
@@ -893,6 +917,8 @@ class Handler(BaseHTTPRequestHandler):
             fname = _safe_name(orig) or fid
             self.send_header("Content-Disposition",
                              f'attachment; filename="{fname}"')
+            for k, v in (hint or {}).items():
+                self.send_header(k, v)
             self.end_headers()
         else:
             ct = ctype
@@ -902,6 +928,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ct)
             self.send_header("Content-Length", str(size))
             self.send_header("Content-Disposition", "inline")
+            for k, v in (hint or {}).items():
+                self.send_header(k, v)
             self.end_headers()
         with open(fp, "rb") as f:
             if self.command != "HEAD":
@@ -1015,6 +1043,12 @@ class Handler(BaseHTTPRequestHandler):
             + f'<a href="{_html_escape(quote(f))}">{_html_escape(f)}</a>'
             + f'<span class=sz>{_fmt_size(s)}</span></li>'
             for f, s, ct in rows)
+        hint = _agent_hint(
+            f"curl -A curl {PUBLIC_BASE}/{fid}                   # bundle root: whole bundle as zip for agents",
+            f"curl {PUBLIC_BASE}/{fid}/<file>                # fetch one file",
+            f"curl -OJ '{PUBLIC_BASE}/{fid}?download=1'      # force the zip download",
+            f"curl {PUBLIC_BASE}/api                         # full machine-readable API",
+        )
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"{_META_MOBILE}"
              f"<base href='{PREFIX}/{fid}/'>"
@@ -1027,6 +1061,7 @@ class Handler(BaseHTTPRequestHandler):
              "<div class=btnrow>"
              f"<a class=btn href='?download=1'>download as zip</a>"
              "</div>"
+             f"{hint}"
              f"<a class=back href='{PREFIX}/'>← throway</a>"
              "</main></body></html>")
         self._send(200, h, "text/html")
@@ -1355,6 +1390,11 @@ class Handler(BaseHTTPRequestHandler):
             + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
             + '</li>'
             for e in entries)
+        ahint = _agent_hint(
+            f"curl -A curl '{PUBLIC_BASE}/browse?tag=<t>&q=<substr>'  # same list as JSON (filter+sort)",
+            f"curl -X POST --data-binary @local '{PUBLIC_BASE}/?name=<file>'  # upload a file",
+            f"curl {PUBLIC_BASE}/api                        # full machine-readable API",
+        )
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"{_META_MOBILE}"
              f"<title>throway — files</title><style>{_BASE_CSS}"
@@ -1364,6 +1404,7 @@ class Handler(BaseHTTPRequestHandler):
              "h1 small{color:var(--muted);font-weight:normal}"
              "</style></head><body><main>"
              f"<h1>throway files <small>{total}</small></h1><ul>{rows}</ul>"
+             f"{ahint}"
              f"<a class=back href='{PREFIX}/'>← throway</a></main></body></html>")
         return self._send(200, h, "text/html")
 
@@ -1701,16 +1742,12 @@ class Handler(BaseHTTPRequestHandler):
         # that land on the HTML page with a browser UA. Absolute URLs so every
         # line is copy-paste runnable from anywhere.
         durl = f"{PUBLIC_BASE}/{DIR_NS}/{key}"
-        hint = (
-            "<details class=agenthint>"
-            "<summary>agent hint — this dir is machine-readable</summary>"
-            "<pre>"
-            f"curl -A curl {durl}                          # JSON listing: files[] with url, size, editable\n"
-            f"curl {durl}/&lt;file&gt;                       # fetch a single file\n"
-            f"curl -OJ '{durl}?zip=1'                      # whole dir as one zip\n"
-            f"curl -X PUT --data-binary @local {durl}/&lt;file&gt;  # replace a text file (PATCH appends)\n"
-            f"curl -A curl {durl}/history                  # edit history (JSON)\n"
-            "</pre></details>"
+        hint = _agent_hint(
+            f"curl -A curl {durl}                          # JSON listing: files[] with url, size, editable",
+            f"curl {durl}/<file>                       # fetch a single file",
+            f"curl -OJ '{durl}?zip=1'                      # whole dir as one zip",
+            f"curl -X PUT --data-binary @local {durl}/<file>  # replace a text file (PATCH appends)",
+            f"curl -A curl {durl}/history                  # edit history (JSON)",
         )
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"{_META_MOBILE}"
@@ -1720,9 +1757,6 @@ class Handler(BaseHTTPRequestHandler):
              ".tag{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted);margin-right:.3rem}"
              ".btnrow{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1rem}"
              "@media(max-width:560px){.btnrow{flex-direction:column}.btnrow a.btn{text-align:center}}"
-             ".agenthint{margin-top:1.2rem}"
-             ".agenthint summary{cursor:pointer;color:var(--muted);font-size:.8rem;user-select:none}"
-             ".agenthint pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;font:75%/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-x:auto;color:var(--ink)}"
              "</style></head><body><main>"
              f"<h1>Dir {title}</h1><div>{tags}</div><ul>{lis}</ul>"
              f"{hint}"
@@ -1817,6 +1851,10 @@ class Handler(BaseHTTPRequestHandler):
             + '</li>'
             for e in h)
         title = meta.get("name") or key
+        hurl = f"{PUBLIC_BASE}/{DIR_NS}/{key}/history"
+        ahint = _agent_hint(
+            f"curl -A curl {hurl}        # this history as JSON",
+        )
         htm = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
                f"{_META_MOBILE}"
                f"<title>throway dir history — {title}</title>"
@@ -1830,6 +1868,7 @@ class Handler(BaseHTTPRequestHandler):
                f"<h1>History — {title}</h1>"
                f"{'<p style=color:var(--muted);font-size:.85rem>No edits yet.</p>' if not h else ''}"
                f"<ul>{rows}</ul>"
+               f"{ahint}"
                f"<a class=back href='{PREFIX}/{DIR_NS}/{key}'>← dir</a>"
                "</main></body></html>")
         self._send(200, htm, "text/html")
@@ -1925,6 +1964,12 @@ class Handler(BaseHTTPRequestHandler):
             + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
             + '</li>'
             for e in entries)
+        ahint = _agent_hint(
+            f"curl -A curl {PUBLIC_BASE}/d                         # JSON: all listed dirs (?q= filter, ?sort=created|updated|name)",
+            f"curl -A curl {PUBLIC_BASE}/d/<key>                # one dir as JSON listing",
+            f"curl -X POST '{PUBLIC_BASE}/?dir=1&name=<name>&listed=1'  # create a dir",
+            f"curl {PUBLIC_BASE}/api                            # full machine-readable API",
+        )
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"{_META_MOBILE}"
              f"<title>throway — dirs</title>"
@@ -1933,6 +1978,7 @@ class Handler(BaseHTTPRequestHandler):
              "</style></head><body><main>"
              f"<h1>Dirs</h1>{'<p style=color:var(--muted);font-size:.85rem>No listed dirs yet.</p>' if not entries else ''}"
              f"<ul>{cards}</ul>"
+             f"{ahint}"
              f"<a class=back href='{PREFIX}/'>← throway</a>"
              "</main></body></html>")
         self._send(200, h, "text/html")
@@ -2093,6 +2139,10 @@ WHERE TO GET MORE
             f'<li><a href="{PREFIX}/help/{_html_escape(k)}">{_html_escape(HELP[k]["title"])}</a>'
             f'<span class=m>{_html_escape(HELP[k]["summary"])}</span></li>'
             for k in HELP_ORDER)
+        ahint = _agent_hint(
+            f"curl -A curl {PUBLIC_BASE}/help                   # this index as JSON",
+            f"curl -A curl {PUBLIC_BASE}/help/<topic>           # one topic as plain text",
+        )
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"{_META_MOBILE}"
              f"<title>throway — help</title>"
@@ -2101,6 +2151,7 @@ WHERE TO GET MORE
              "li .m{color:var(--muted);font-size:.8rem;width:100%}"
              "</style></head><body><main>"
              f"<h1>throway help</h1><ul>{rows}</ul>"
+             f"{ahint}"
              f"<a class=back href='{PREFIX}/'>← throway</a>"
              "</main></body></html>")
         self._send(200, h, "text/html")
@@ -2115,6 +2166,9 @@ WHERE TO GET MORE
         if self._is_agent():
             return self._send(200, body, "text/plain; charset=utf-8")
         esc = _html_escape(body)
+        ahint = _agent_hint(
+            f"curl -A curl {PUBLIC_BASE}/help/{key}             # this topic as plain text",
+        )
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"{_META_MOBILE}"
              f"<title>throway help — {_html_escape(t['title'])}</title>"
@@ -2123,9 +2177,11 @@ WHERE TO GET MORE
              "main{max-width:820px}"
              "pre{white-space:pre-wrap;overflow-x:auto;font-family:ui-monospace,monospace;font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem}"
              "a.back{margin-top:0;margin-bottom:1rem}"
+             ".agenthint{margin-top:.8rem}"
              "</style></head><body><main>"
              f"<a class=back href='{PREFIX}/help'>← all help</a>"
              f"<pre>{esc}</pre>"
+             f"{ahint}"
              "</main></body></html>")
         self._send(200, h, "text/html; charset=utf-8")
 

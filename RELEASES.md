@@ -1,11 +1,26 @@
 # throway — Releases
 
-**Current version:** `1.17.0`
+**Current version:** `1.18.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.18.0 — 2026-09-19
+
+### Agent-Hints überall (Konsistenz-Durchlauf)
+- **Hint-Block auf allen Browser-Seiten** (bisher nur Dir-Listing):
+  Bundle-Listing, `/d`-Browse, `/browse`-Files, Help-Index, Help-Topic und
+  Dir-History bekommen denselben einklappbaren `<details class=agenthint>`-
+  Block mit lauffähigen, absoluten curl-Zeilen. Neu als `_agent_hint()`-
+  Helper (escaped selbst), CSS wanderte in `_BASE_CSS` (keine Duplikate).
+- **`Link: <…/api>; rel="help"` Header** (RFC 8288) auf **allen JSON-
+  Responses** (Listings, Upload-Result, Errors — via `_send`) und auf
+  Datei-Downloads für Agent-UA (`_serve_file`): jede maschinenlesbare
+  Antwort verrät nun, wo der Vertrag liegt.
+- AGENTS.md: Selbst-Discovery-Absatz beschreibt die Hint-Blöcke jetzt
+  seitenübergreifend inkl. Link-Header.
 
 ## 1.17.0 — 2026-09-19
 
