@@ -1,9 +1,55 @@
 # throway — Releases
 
-**Current version:** `1.15.0`
+**Current version:** `1.16.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.16.0 — 2026-09-19
+
+### Smartphone-UX (Mobile-First-Nachschlag für Browser-Seiten)
+- **Viewport + theme-color überall**: alle HTML-Seiten (Dir-Listing, Bundle-Listing,
+  Browse, Help, Help-Topic, History, Copy-for-Agents) hatten teils keinen
+  Viewport-Meta → auf Smartphones zoome-out-Desktop-Layout. Jetzt durchgängig
+  `<meta name=viewport>` + `theme-color` (einheitliche `_META_MOBILE`-Konstante).
+- **Shared Base-CSS (`_BASE_CSS`)** für alle Sekundärseiten: Touch-Ziele ≥ 44px
+  (Zeilen, Buttons, Back-Links), Dateinamen mit Overflow-Wrap/Ellipsis statt
+  Überlauf, responsive Padding via `@media(max-width:560px)`.
+- **Homepage mobil**: Upload-Button + Dir-Checkbox stapeln sich untereinander
+  (voll breit, 46px), URL-Eingabefeld in der Result-Box mit 16px Font (verhindert
+  iOS Auto-Zoom), kompaktere Dropzone, `touch-action:manipulation` auf Buttons.
+- **Native Share-Sheet**: nach Upload erscheint auf Smartphones ein
+  „⇗ share link"-Button (`navigator.share`) — Link direkt per WhatsApp/Mail teilen.
+
+### Bild-Vorschauen (Thumbnails)
+- **`?thumb=1`** auf Datei-URLs (Einzeldatei, Bundle-Datei, Dir-Datei): liefert eine
+  kleine WebP-Vorschau (96px, quality 70, konfigurierbar via
+  `THROWAWAY_THUMB_PX` / `THROWAWAY_THUMB_QUALITY`).
+- **Hardware-schonend**: Thumbnail entsteht lazy beim ersten Request (Pillow,
+  EXIF-Rotation beachtet — Handyfotos stehen richtig herum), wird als
+  `<file>.thumb` next to the original gecacht (einmal CPU-Kosten, dann nur
+  Lesezugriff), atomarer Replace gegen Races; Fallback auf Original-Bytes bei
+  SVG/Nicht-Bild/Fehler. `loading=lazy` + `decoding=async`: Phones laden
+  Thumbnails erst beim Scrollen und dann KBs statt MBs (1MB-JPEG → ~72B WebP).
+- **Listings mit Vorschau**: Dir-, Bundle- und Browse-Listing zeigen für Bilder
+  44px-Vorschaukästchen; menschenlesbare Größen (`1.0 MB` statt Bytes).
+- **Aufräumen**: `.thumb`-Dateien zählen nie als Dateien in Listings/JSON/Zips,
+  werden zusammen mit dem Original gelöscht (`_remove`, Sweep), Uploads mit
+  reservierten Suffixen (`.meta/.history/.thumb/.thumbtmp`) neutralisiert
+  (`_safe_name` hängt `_` an), direkter Zugriff auf Bookkeeping-Dateien → 404.
+
+### Fixed
+- **Zip sauber**: Dir-/Bundle-Zips enthielten bisher `<key>.history` (und hätten
+  künftig auch `.thumb`-Caches mitgeliefert) — Zips enthalten jetzt nur die
+  echten Nutzerdateien.
+- **500er auf Legacy-Dir-Pfad behoben**: `GET /<dir-id>` (Bundle-Namespace, alte
+  Dirs) crashte für Browser mit TypeError (`_dir_listing` bekam falsche Argumente).
+
+### API-Notes
+- `/api`: `download`, `download_bundle_file` und `get_dir_file` dokumentieren
+  jetzt `?thumb=1`. Agents/JSON unverändert (keine Thumb-Einträge).
 
 ---
 

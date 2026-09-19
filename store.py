@@ -70,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.15.0"
+VERSION = "1.16.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -84,6 +84,12 @@ INLINE_TYPES = (
     "application/svg+xml",
 )
 PORT = int(os.environ.get("STORE_PORT", "8111"))
+
+# image thumbnails for the HTML listings (smartphone UX): generated lazily
+# on the first ?thumb=1 request, cached on disk next to the original, served
+# as a tiny WebP so phones fetch KBs instead of MBs when scrolling a dir.
+THUMB_PX = _env_int("THROWAWAY_THUMB_PX", 96)            # longest edge in px
+THUMB_QUALITY = _env_int("THROWAWAY_THUMB_QUALITY", 70)  # WebP quality
 
 os.makedirs(ROOT, exist_ok=True)
 _hits = {}
@@ -224,12 +230,13 @@ def _remove(fp):
         os.remove(fp)
     except OSError:
         pass
-    mp = fp + ".meta"
-    if os.path.isfile(mp):
-        try:
-            os.remove(mp)
-        except OSError:
-            pass
+    for suffix in (".meta", ".thumb"):
+        xp = fp + suffix
+        if os.path.isfile(xp):
+            try:
+                os.remove(xp)
+            except OSError:
+                pass
 
 def _remove_unit(path, is_dir):
     if is_dir:
@@ -252,6 +259,17 @@ def sweep():
     now = time.time()
     for f in os.listdir(ROOT):
         if f.endswith(".meta"):
+            continue
+        if f.endswith(".thumb"):
+            continue  # dies together with its original via _remove
+        if f.endswith(".thumbtmp"):
+            # orphaned temp file from a crashed thumbnail generation
+            p = os.path.join(ROOT, f)
+            try:
+                if os.path.getmtime(p) < now - 3600:
+                    os.remove(p)
+            except OSError:
+                pass
             continue
         p = os.path.join(ROOT, f)
         if os.path.isfile(p):
@@ -295,12 +313,18 @@ def _sweep_dirs(now):
             shutil.rmtree(p, ignore_errors=True)
 
 def _safe_name(name):
-    """Reduce a user filename to a safe basename for Content-Disposition."""
+    """Reduce a user filename to a safe basename for Content-Disposition.
+    Also neutralizes reserved suffixes (.meta/.history/.thumb/.thumbtmp) so an
+    upload can never masquerade as server bookkeeping — such names get a
+    trailing underscore."""
     if not name:
         return None
     name = os.path.basename(name.replace("\\", "/"))
     # strip control chars and quotes that could break the header
     name = re.sub(r'[\r\n\"\x00-\x1f]', "", name).strip()
+    lower = name.lower()
+    if any(lower.endswith(s) for s in (".meta", ".history", ".thumb", ".thumbtmp")):
+        name += "_"
     return name or None
 
 
@@ -743,6 +767,73 @@ def _persistence_block(ptype, expires, max_age=None, extendable_by="none"):
     }
 
 
+def _is_thumbable(ctype):
+    """True for raster image types we make thumbnails for. SVG is excluded:
+    it is already tiny and scales losslessly in the browser."""
+    return bool(ctype) and ctype.startswith("image/") and ctype != "image/svg+xml"
+
+
+def _make_thumb(fpath, tpath):
+    """Create a small WebP thumbnail for the image at fpath (Pillow).
+    Respects EXIF rotation (phone photos), flattens transparency onto white,
+    and writes to a temp file + atomic replace so a concurrent request never
+    sees a half-written thumb. Raises on failure — callers fall back to
+    serving the original bytes."""
+    import tempfile
+    from PIL import Image, ImageOps
+    fd, tmp = tempfile.mkstemp(suffix=".thumbtmp", dir=os.path.dirname(tpath))
+    os.close(fd)
+    try:
+        with Image.open(fpath) as im:
+            im = ImageOps.exif_transpose(im)
+            if im.mode in ("RGBA", "LA", "P"):
+                im = im.convert("RGBA")
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                bg.paste(im, mask=im.split()[-1])
+                im = bg
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            im.thumbnail((THUMB_PX, THUMB_PX))
+            im.save(tmp, "WEBP", quality=THUMB_QUALITY, method=4)
+        os.replace(tmp, tpath)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# shared head metas for every browser page: mobile viewport + UI tint.
+# Several pages used to ship without a viewport tag and were unreadable
+# on smartphones (zoomed-out desktop layout).
+_META_MOBILE = ("<meta name=viewport content='width=device-width,initial-scale=1'>"
+                "<meta name=theme-color content='#2563eb'>")
+
+# shared stylesheet for the secondary pages (listings, help, history, …).
+# Mobile-first rules live here once: touch-friendly rows (44px tap targets),
+# truncating filenames, thumb boxes, responsive padding.
+_BASE_CSS = (
+    ":root{--bg:#fff;--card:#fafafa;--card2:#f4f4f5;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
+    "*{box-sizing:border-box}"
+    "body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.55;min-height:100vh;-webkit-text-size-adjust:100%}"
+    "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
+    "h1{font-size:1.4rem;letter-spacing:-.01em}"
+    "ul{list-style:none;padding:0;margin:0}"
+    "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.5rem .8rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center;gap:.6rem}"
+    "li a{color:var(--ink);text-decoration:none;font-weight:500;min-height:44px;display:flex;align-items:center;flex:1;overflow:hidden;overflow-wrap:anywhere}"
+    "li a:hover{color:var(--accent)}"
+    "li .sz,li .meta{color:var(--muted);font-size:.8rem;white-space:nowrap}"
+    "li .tags{color:var(--accent);font-size:.75rem;width:100%}"
+    "img.thumb{width:44px;height:44px;object-fit:cover;border-radius:6px;flex:none;background:var(--card2)}"
+    "a.btn{display:inline-block;min-height:44px;background:var(--accent);color:#fff;text-decoration:none;font-size:.95rem;font-weight:600;padding:.6rem 1.2rem;border-radius:8px}"
+    "a.btn:hover{background:#1d4ed8}"
+    "a.back{display:inline-flex;align-items:center;min-height:44px;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
+    "a.back:hover{color:var(--accent)}"
+    "@media(max-width:560px){main{padding:1.5rem 1rem 3rem}h1{font-size:1.25rem}}"
+)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
@@ -817,6 +908,40 @@ class Handler(BaseHTTPRequestHandler):
                 while c := f.read(65536):
                     self.wfile.write(c)
 
+    def _serve_thumb(self, fpath, ctype):
+        """Serve ?thumb=1: a small cached WebP preview for images.
+        Generated lazily on first request, cached on disk as <file>.thumb so
+        the CPU cost is paid once per file, not per view. Falls back to the
+        original bytes if the type isn't thumbable (SVG) or generation fails,
+        so <img src='…?thumb=1'> always shows something."""
+        tp = fpath + ".thumb"
+        usable = _is_thumbable(ctype) and os.path.isfile(tp)
+        if _is_thumbable(ctype) and not usable:
+            try:
+                _make_thumb(fpath, tp)
+                usable = True
+            except Exception:
+                usable = False
+                try:
+                    os.remove(tp)
+                except OSError:
+                    pass
+        path, ct = (tp, "image/webp") if usable else (fpath, ctype or "application/octet-stream")
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return self._send(404, "not found\n")
+        self.send_response(200)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "max-age=3600")
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        with open(path, "rb") as f:
+            while c := f.read(65536):
+                self.wfile.write(c)
+
     def _serve_bundle_index(self, index_path, dirpath, fid):
         """Serve a bundle's index.html to a browser, injecting a <base> tag
         so relative sub-resource URLs resolve against /<fid>/ instead of the
@@ -848,7 +973,7 @@ class Handler(BaseHTTPRequestHandler):
         tmp = tempfile.NamedTemporaryFile(prefix="throwayzip_", suffix=".zip", delete=True)
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
             for f in sorted(os.listdir(dirpath)):
-                if f.endswith(".meta"):
+                if f.endswith((".meta", ".history", ".thumb", ".thumbtmp")):
                     continue
                 z.write(os.path.join(dirpath, f), arcname=f)
         size = tmp.tell()
@@ -872,38 +997,36 @@ class Handler(BaseHTTPRequestHandler):
             tmp.close()
 
     def _bundle_listing(self, dirpath, fid):
-        """Simple HTML file listing for a bundle with no index.html."""
+        """Simple HTML file listing for a bundle with no index.html
+        (mobile-friendly, with lazy image thumbnails)."""
+        m = _bundle_meta(dirpath, fid) or {}
         rows = []
         for f in sorted(os.listdir(dirpath)):
-            if f.endswith(".meta"):
+            if f.endswith(".meta") or f.endswith(".thumb") or f.endswith(".thumbtmp"):
                 continue
             fp = os.path.join(dirpath, f)
             if os.path.isfile(fp):
-                rows.append((f, os.path.getsize(fp)))
+                ct = m.get("files", {}).get(f) or mimetypes.guess_type(f)[0] or "application/octet-stream"
+                rows.append((f, os.path.getsize(fp), ct))
         lis = "\n".join(
-            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> <span>{s} B</span></li>'
-            for f, s in rows)
+            "<li>"
+            + (f'<img class=thumb src="{_html_escape(quote(f))}?thumb=1" alt="" loading=lazy decoding=async width=44 height=44>'
+               if ct.startswith("image/") else "")
+            + f'<a href="{_html_escape(quote(f))}">{_html_escape(f)}</a>'
+            + f'<span class=sz>{_fmt_size(s)}</span></li>'
+            for f, s, ct in rows)
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"{_META_MOBILE}"
              f"<base href='{PREFIX}/{fid}/'>"
              f"<title>throway bundle {fid}</title>"
-             "<style>"
-             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
-             "*{box-sizing:border-box}"
-             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
-             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
-             "h1{font-size:1.4rem;color:var(--ink)}"
-             "ul{list-style:none;padding:0}"
-             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center}"
-             "li a{color:var(--ink);text-decoration:none}"
-             "li a:hover{color:var(--accent)}"
-             "li span{color:var(--muted);font-size:.85rem}"
-             "a.btn{display:inline-block;margin-top:1rem;background:var(--accent);color:#fff;text-decoration:none;font-size:.9rem;padding:.5rem 1rem;border-radius:8px}"
-             "a.btn:hover{background:#1d4ed8}"
-             "a.back{display:inline-block;margin-top:1rem;margin-left:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
-             "a.back:hover{color:var(--accent)}"
+             f"<style>{_BASE_CSS}"
+             ".btnrow{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1rem}"
+             "@media(max-width:560px){.btnrow{flex-direction:column}.btnrow a.btn{text-align:center}}"
              "</style></head><body><main>"
              f"<h1>Bundle {fid}</h1><ul>{lis}</ul>"
+             "<div class=btnrow>"
              f"<a class=btn href='?download=1'>download as zip</a>"
+             "</div>"
              f"<a class=back href='{PREFIX}/'>← throway</a>"
              "</main></body></html>")
         self._send(200, h, "text/html")
@@ -945,7 +1068,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._dir_get(parts[1], parts[1:], query=self.path.split("?", 1)[1] if "?" in self.path else "")
         parts = path.lstrip("/").split("/")
         fid = parts[0]
-        if not fid or fid.endswith(".meta"):
+        if not fid or fid.endswith(".meta") or fid.endswith(".thumb") or fid.endswith(".thumbtmp"):
             return self._send(404, "not found\n")
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         force_dl = "download=1" in query
@@ -965,7 +1088,7 @@ class Handler(BaseHTTPRequestHandler):
             # /<fid>/<file>
             if len(parts) >= 2 and parts[1]:
                 fname = os.path.basename(unquote(parts[1]))
-                if not fname or fname.endswith(".meta"):
+                if not fname or fname.endswith(".meta") or fname.endswith(".thumb") or fname.endswith(".thumbtmp"):
                     return self._send(404, "not found\n")
                 fpath = os.path.join(dirpath, fname)
                 if not os.path.isfile(fpath):
@@ -973,6 +1096,8 @@ class Handler(BaseHTTPRequestHandler):
                 ctype = (m or {}).get("files", {}).get(fname)
                 if not ctype:
                     ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+                if "thumb=1" in query:
+                    return self._serve_thumb(fpath, ctype)
                 return self._serve_file(fpath, ctype, fname, force_dl, fname)
             # dir root: JSON listing for agents, HTML for browsers, zip on ?zip=1
             if is_dir:
@@ -981,7 +1106,9 @@ class Handler(BaseHTTPRequestHandler):
                     if "zip=1" in query or force_dl:
                         return self._serve_bundle_zip(dirpath, fid)
                     return self._dir_response(fid, dirpath, m)
-                return self._dir_listing(dirpath, fid)
+                # BUGFIX: was _dir_listing(dirpath, fid) — wrong arity, crashed
+                # for browsers with a 500 on the legacy /<dir-id> path
+                return self._dir_listing(fid, dirpath, m)
             # bundle root
             if force_dl or self._is_agent():
                 return self._serve_bundle_zip(dirpath, fid)
@@ -1015,6 +1142,8 @@ class Handler(BaseHTTPRequestHandler):
                 orig = m.get("name")
             except Exception:
                 pass
+        if "thumb=1" in query:
+            return self._serve_thumb(fp, ctype)
         self._serve_file(fp, ctype, orig, force_dl, fid)
 
     def do_POST(self):
@@ -1218,18 +1347,24 @@ class Handler(BaseHTTPRequestHandler):
         if self._is_agent():
             return self._send(200, json.dumps({"files": entries, "total": total}), "application/json")
         rows = "".join(
-            f'<li><a href="{_html_escape(e["url"])}">{_html_escape(e["name"])}</a> '
-            f'<span class=meta>{_fmt_size(e["size"])} · {e["content_type"]} · exp {e["expires_at"]}</span>'
+            '<li>'
+            + (f'<img class=thumb src="{_html_escape(e["url"])}?thumb=1" alt="" loading=lazy decoding=async width=44 height=44>'
+               if e["content_type"].startswith("image/") else "")
+            + f'<a href="{_html_escape(e["url"])}">{_html_escape(e["name"])}</a> '
+            + f'<span class=meta>{_fmt_size(e["size"])} · {e["content_type"]} · exp {e["expires_at"]}</span>'
             + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
             + '</li>'
             for e in entries)
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
-             "<title>throway — files</title><style>"
-             "body{font-family:sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}"
-             "h1 small{color:#6b7280;font-weight:normal}li{margin:.5rem 0}"
-             ".meta{color:#6b7280;font-size:.75rem;display:block}"
-             ".tags{color:#2563eb;font-size:.75rem}</style></head><body>"
-             f"<h1>throway files <small>{total}</small></h1><ul>{rows}</ul></body></html>")
+             f"{_META_MOBILE}"
+             f"<title>throway — files</title><style>{_BASE_CSS}"
+             "li{flex-wrap:wrap}"
+             "li .meta{display:block;width:100%;font-size:.75rem}"
+             "li .tags{display:block;font-size:.75rem}"
+             "h1 small{color:var(--muted);font-weight:normal}"
+             "</style></head><body><main>"
+             f"<h1>throway files <small>{total}</small></h1><ul>{rows}</ul>"
+             f"<a class=back href='{PREFIX}/'>← throway</a></main></body></html>")
         return self._send(200, h, "text/html")
 
     def _read_body(self):
@@ -1484,12 +1619,14 @@ class Handler(BaseHTTPRequestHandler):
         # /d/<key>/<file>
         if len(parts) >= 2 and parts[1]:
             fname = os.path.basename(unquote(parts[1]))
-            if not fname or fname.endswith(".meta") or fname.endswith(".history"):
+            if not fname or fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp"):
                 return self._send(404, "not found\n")
             fpath = os.path.join(dirpath, fname)
             if not os.path.isfile(fpath):
                 return self._send(404, "not found\n")
             ctype = m.get("files", {}).get(fname) or mimetypes.guess_type(fname)[0] or "application/octet-stream"
+            if "thumb=1" in query:
+                return self._serve_thumb(fpath, ctype)
             return self._serve_file(fpath, ctype, fname, force_dl, f"{DIR_NS}/{key}/{fname}")
         # root: zip on ?zip=1 / ?download=1
         if "zip=1" in query or force_dl:
@@ -1504,7 +1641,7 @@ class Handler(BaseHTTPRequestHandler):
         files = []
         total = 0
         for f in sorted(os.listdir(dirpath)):
-            if f.endswith(".meta") or f.endswith(".history"):
+            if f.endswith(".meta") or f.endswith(".history") or f.endswith(".thumb") or f.endswith(".thumbtmp"):
                 continue
             fp = os.path.join(dirpath, f)
             if not os.path.isfile(fp):
@@ -1539,42 +1676,41 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, json.dumps(resp), "application/json", {"X-Expires": str(expires)})
 
     def _dir_listing(self, key, dirpath, meta):
-        """HTML page for a dir viewed in a browser."""
+        """HTML page for a dir viewed in a browser — mobile-friendly, with
+        lazy image thumbnails (tiny WebP via ?thumb=1, loaded on scroll)."""
+        files = meta.get("files", {})
         rows = []
         for f in sorted(os.listdir(dirpath)):
-            if f.endswith(".meta") or f.endswith(".history"):
+            if (f.endswith(".meta") or f.endswith(".history")
+                    or f.endswith(".thumb") or f.endswith(".thumbtmp")):
                 continue
             fp = os.path.join(dirpath, f)
             if os.path.isfile(fp):
-                rows.append((f, os.path.getsize(fp)))
+                ct = files.get(f) or mimetypes.guess_type(f)[0] or "application/octet-stream"
+                rows.append((f, os.path.getsize(fp), ct))
         lis = "\n".join(
-            f'<li><a href="{_html_escape(f)}">{_html_escape(f)}</a> ({s} B)</li>'
-            for f, s in rows)
+            "<li>"
+            + (f'<img class=thumb src="{_html_escape(quote(f))}?thumb=1" alt="" loading=lazy decoding=async width=44 height=44>'
+               if ct.startswith("image/") else "")
+            + f'<a href="{_html_escape(quote(f))}">{_html_escape(f)}</a>'
+            + f'<span class=sz>{_fmt_size(s)}</span></li>'
+            for f, s, ct in rows)
         tags = "".join(f'<span class=tag>{_html_escape(t)}</span>' for t in meta.get("tags", []))
         title = meta.get("name") or key
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"{_META_MOBILE}"
              f"<base href='{PREFIX}/{DIR_NS}/{key}/'>"
              f"<title>throway dir {title}</title>"
-             "<style>"
-             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
-             "*{box-sizing:border-box}"
-             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
-             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
-             "h1{font-size:1.4rem}"
+             f"<style>{_BASE_CSS}"
              ".tag{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted);margin-right:.3rem}"
-             "ul{list-style:none;padding:0}"
-             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center}"
-             "li a{color:var(--ink);text-decoration:none}"
-             "li a:hover{color:var(--accent)}"
-             "li span{color:var(--muted);font-size:.85rem}"
-             "a.btn{display:inline-block;margin-top:1rem;background:var(--accent);color:#fff;text-decoration:none;font-size:.9rem;padding:.5rem 1rem;border-radius:8px}"
-             "a.btn:hover{background:#1d4ed8}"
-             "a.back{display:inline-block;margin-top:1rem;margin-left:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
-             "a.back:hover{color:var(--accent)}"
+             ".btnrow{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1rem}"
+             "@media(max-width:560px){.btnrow{flex-direction:column}.btnrow a.btn{text-align:center}}"
              "</style></head><body><main>"
              f"<h1>Dir {title}</h1><div>{tags}</div><ul>{lis}</ul>"
+             "<div class=btnrow>"
              f"<a class=btn href='?zip=1'>download as zip</a>"
              f"<a class=btn href='history'>history</a>"
+             "</div>"
              f"<a class=back href='{PREFIX}/'>← throway</a>"
              "</main></body></html>")
         self._send(200, h, "text/html")
@@ -1593,7 +1729,7 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(dirpath, ignore_errors=True)
             return self._send(404, json.dumps({"error": "expired"}), "application/json")
         fpath = os.path.join(dirpath, fname)
-        if fname.endswith(".meta") or fname.endswith(".history") or not os.path.isfile(fpath):
+        if fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp") or not os.path.isfile(fpath):
             return self._send(404, json.dumps({"error": "not found"}), "application/json")
         ctype = m.get("files", {}).get(fname) or ""
         if not _is_editable(ctype):
@@ -1636,7 +1772,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) >= 2 and parts[1]:
             fname = os.path.basename(unquote(parts[1]))
             fpath = os.path.join(dirpath, fname)
-            if fname.endswith(".meta") or fname.endswith(".history") or not os.path.isfile(fpath):
+            if fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp") or not os.path.isfile(fpath):
                 return self._send(404, "not found\n")
             os.remove(fpath)
             m["files"].pop(fname, None)
@@ -1663,21 +1799,14 @@ class Handler(BaseHTTPRequestHandler):
             for e in h)
         title = meta.get("name") or key
         htm = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+               f"{_META_MOBILE}"
                f"<title>throway dir history — {title}</title>"
-               "<style>"
-               ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
-               "*{box-sizing:border-box}"
-               "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
-               "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
-               "h1{font-size:1.4rem}"
-               "ul{list-style:none;padding:0}"
-               "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0}"
+               f"<style>{_BASE_CSS}"
+               "li{flex-wrap:wrap}"
                "li .ts{color:var(--muted);font-size:.8rem;margin-right:.6rem}"
                "li .act{font-weight:600;color:var(--accent);margin-right:.6rem}"
-               "li .file{font-family:ui-monospace,monospace}"
-               "li .det{color:var(--muted);font-size:.8rem;margin-top:.2rem}"
-               "a.back{display:inline-block;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
-               "a.back:hover{color:var(--accent)}"
+               "li .file{font-family:ui-monospace,monospace;overflow-wrap:anywhere}"
+               "li .det{color:var(--muted);font-size:.8rem;width:100%}"
                "</style></head><body><main>"
                f"<h1>History — {title}</h1>"
                f"{'<p style=color:var(--muted);font-size:.85rem>No edits yet.</p>' if not h else ''}"
@@ -1745,7 +1874,8 @@ class Handler(BaseHTTPRequestHandler):
                 if qtext and qtext not in name and not any(qtext in t for t in tags):
                     continue
                 files = [f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))
-                         and not f.endswith(".meta") and not f.endswith(".history")]
+                         and not f.endswith(".meta") and not f.endswith(".history")
+                         and not f.endswith(".thumb") and not f.endswith(".thumbtmp")]
                 size = _dir_size(p)
                 entries.append({
                     "name": name,
@@ -1777,21 +1907,10 @@ class Handler(BaseHTTPRequestHandler):
             + '</li>'
             for e in entries)
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"{_META_MOBILE}"
              f"<title>throway — dirs</title>"
-             "<style>"
-             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
-             "*{box-sizing:border-box}"
-             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
-             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
-             "h1{font-size:1.4rem}"
-             "ul{list-style:none;padding:0}"
-             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}"
-             "li a{color:var(--ink);text-decoration:none;font-weight:600}"
-             "li a:hover{color:var(--accent)}"
-             "li .meta{color:var(--muted);font-size:.8rem}"
-             "li .tags{color:var(--accent);font-size:.75rem;width:100%}"
-             "a.back{display:inline-block;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
-             "a.back:hover{color:var(--accent)}"
+             f"<style>{_BASE_CSS}"
+             "li{flex-wrap:wrap}"
              "</style></head><body><main>"
              f"<h1>Dirs</h1>{'<p style=color:var(--muted);font-size:.85rem>No listed dirs yet.</p>' if not entries else ''}"
              f"<ul>{cards}</ul>"
@@ -1956,20 +2075,11 @@ WHERE TO GET MORE
             f'<span class=m>{_html_escape(HELP[k]["summary"])}</span></li>'
             for k in HELP_ORDER)
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"{_META_MOBILE}"
              f"<title>throway — help</title>"
-             "<style>"
-             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
-             "*{box-sizing:border-box}"
-             "body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}"
-             "main{max-width:720px;margin:0 auto;padding:3rem 1.5rem}"
-             "h1{font-size:1.4rem}"
-             "ul{list-style:none;padding:0}"
-             "li{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap}"
-             "li a{color:var(--ink);text-decoration:none;font-weight:600}"
-             "li a:hover{color:var(--accent)}"
+             f"<style>{_BASE_CSS}"
+             "li{flex-wrap:wrap}"
              "li .m{color:var(--muted);font-size:.8rem;width:100%}"
-             "a.back{display:inline-block;margin-top:1rem;color:var(--muted);text-decoration:none;font-size:.9rem}"
-             "a.back:hover{color:var(--accent)}"
              "</style></head><body><main>"
              f"<h1>throway help</h1><ul>{rows}</ul>"
              f"<a class=back href='{PREFIX}/'>← throway</a>"
@@ -1987,15 +2097,13 @@ WHERE TO GET MORE
             return self._send(200, body, "text/plain; charset=utf-8")
         esc = _html_escape(body)
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+             f"{_META_MOBILE}"
              f"<title>throway help — {_html_escape(t['title'])}</title>"
-             "<style>"
-             ":root{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}"
-             "*{box-sizing:border-box}"
-             "body{margin:0;font-family:ui-monospace,monospace;background:var(--bg);color:var(--ink);line-height:1.6;min-height:100vh}"
-             "main{max-width:820px;margin:0 auto;padding:3rem 1.5rem}"
-             "pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem}"
-             "a.back{display:inline-block;margin-bottom:1rem;color:var(--muted);text-decoration:none;font-size:.85rem}"
-             "a.back:hover{color:var(--accent)}"
+             f"<style>{_BASE_CSS}"
+             "body{font-family:ui-monospace,monospace;line-height:1.6}"
+             "main{max-width:820px}"
+             "pre{white-space:pre-wrap;overflow-x:auto;font-family:ui-monospace,monospace;font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem}"
+             "a.back{margin-top:0;margin-bottom:1rem}"
              "</style></head><body><main>"
              f"<a class=back href='{PREFIX}/help'>← all help</a>"
              f"<pre>{esc}</pre>"
@@ -2023,7 +2131,7 @@ WHERE TO GET MORE
         # browsers: render as an HTML page (escape + minimal md-ish styling)
         esc = _html_escape(md)
         h = f"""<!doctype html><html lang=en><head><meta charset=utf-8>
-<meta name=viewport content='width=device-width,initial-scale=1'>
+{_META_MOBILE}
 <title>throway — releases v{VERSION}</title>
 <style>
   :root{{--bg:#fff;--card:#fafafa;--ink:#111827;--muted:#6b7280;--line:#e5e7eb;--accent:#2563eb}}
@@ -2051,6 +2159,7 @@ WHERE TO GET MORE
         import html as _html
         esc = _html.escape(desc)
         h = f"""<!doctype html><html><head><meta charset=utf-8>
+{_META_MOBILE}
 <title>Agent description — copy me</title>
 <style>
   body {{ font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #222; }}
@@ -2101,15 +2210,15 @@ function copyDesc() {{
                     "note": "creates a bundle: one URL, files served at /<id>/<filename>, index.html inline for browsers; bundles are immutable snapshots (editable:false)",
                     "response": {"id": "str", "url": "str", "bundle": True, "editable": False, "persistence": {"type": "bundle", "expires_at": "str", "extendable_by": "none", "max_age": None}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str"}], "expires_at": "str"},
                 },
-                "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download"},
+                "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download; append ?thumb=1 for a small cached WebP preview (raster images only)"},
                 "import_url": {"method": "POST", "url": PUBLIC_BASE + "/?url=<url>[&name=<name>][&link=1][&tag=<t>]", "note": "MAX 5MB. Two modes: (1) default — fetch the remote http(s) document SERVER-SIDE and store it as a normal file (name from Content-Disposition/URL path, overridable via &name=); (2) &link=1 — store the URL itself as a tiny redirect HTML document (browsers get redirected, agents can PUT/PATCH it). Private/loopback hosts are blocked. Optional &tag=<t> (repeatable, up to 5) attaches tags.", "response": "same JSON as upload"},
                 "browse_files": {"method": "GET", "url": PUBLIC_BASE + "/browse?tag=<t>[&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]", "note": "JSON listing of live single files for agents (HTML page for browsers). Filter by one or more &tag= values (AND), by name/tag substring &q=; sort with &sort= (default created) and &order= (default desc). Each entry: id, url, name, content_type, size, tags, created_at, expires_at."},
                 "tag_file": {"method": "POST", "url": PUBLIC_BASE + "/<id>?tag=<t>[&tag=<t2>][&untag=<t3>]", "note": "update tags on an existing single file without touching its content or expiry. Tags: lowercase [a-z0-9-], 1-24 chars, max 5 per file."},
-                "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle"},
+                "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
                 "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
-                "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir"},
+                "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
                 "dir_zip": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>?zip=1", "note": "download the whole dir as a zip"},
                 "get_dir_history": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/history", "note": "edit history: list of {ts,file,action,bytes} entries, newest first, capped at HISTORY_LIMIT"},
                 "edit_dir_file": {"method": "PUT", "url": PUBLIC_BASE + "/d/<key>/<file>", "body": "new text (text files only)", "note": "replace a file in a dir, bumps updated_at"},
@@ -2196,10 +2305,18 @@ _INDEX_JS = r"""(function () {
       html += row('Name', esc(d.name)) + row('Size', d.size + ' B') +
               row('Type', esc(d.content_type)) + row('Expires', esc(d.expires_at));
     }
+    /* native share sheet on smartphones (WhatsApp, mail, …) when available */
+    if (navigator.share) {
+      html += '<div class=sharerow><button class=btn data-share>\u21d7 share link</button></div>';
+    }
     resultEl.innerHTML = html;
     resultEl.style.display = 'block';
     resultEl.querySelector('[data-copy]').addEventListener('click', function () {
       navigator.clipboard.writeText(this.previousElementSibling.value);
+    });
+    var sh = resultEl.querySelector('[data-share]');
+    if (sh) sh.addEventListener('click', function () {
+      navigator.share({ url: d.url, title: (d.name || 'throway link') }).catch(function () {});
     });
   }
 
@@ -2299,7 +2416,7 @@ def _index(self):
         actual += s
     pct = 100.0 * actual / THROW_POOL_SIZE
     h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
-         "<meta name=viewport content='width=device-width,initial-scale=1'>"
+         f"{_META_MOBILE}"
          "<title>throway — share files, gone in 4 hours | skale.dev</title>"
          "<meta name=description content='Disposable file sharing: upload a file or bundle, "
          "get a short URL, everything auto-expires after 4 hours. No signup, no tracking. "
@@ -2344,8 +2461,8 @@ def _index(self):
          ".dz-preview .dz-remove:hover{color:#dc2626}"
          ".controls{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
          "label.mode{display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted);cursor:pointer}"
-         "label.mode input{margin:0}"
-         "button,.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:.6rem 1.2rem;font-size:.95rem;font-weight:600;cursor:pointer;transition:background .15s}"
+         "label.mode input{margin:0;width:17px;height:17px}"
+         "button,.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:.6rem 1.2rem;font-size:.95rem;font-weight:600;cursor:pointer;transition:background .15s;touch-action:manipulation}"
          "button:hover,.btn:hover{background:#1d4ed8}"
          "button:active{transform:translateY(1px)}"
          "button:disabled{opacity:.5;cursor:not-allowed}"
@@ -2358,6 +2475,8 @@ def _index(self):
          "#result a{color:var(--accent);word-break:break-all}"
          "#result .urlbox{display:flex;gap:.4rem;align-items:center;background:#fff;border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;margin:.3rem 0}"
          "#result .urlbox input{flex:1;background:none;border:0;color:var(--ink);font-size:.85rem;font-family:ui-monospace,monospace;outline:none}"
+         "#result .urlbox .btn{flex:none;min-height:38px;padding:.35rem .8rem;font-size:.85rem}"
+         ".sharerow{margin-top:.4rem}"
          "#result .files{font-size:.85rem;color:var(--muted)}"
          "#result .files div{padding:.15rem 0}"
          "#result .files a{color:var(--ink)}"
@@ -2371,12 +2490,21 @@ def _index(self):
          ".meter{height:6px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:.4rem}"
          ".meter i{display:block;height:100%;background:var(--accent);border-radius:999px}"
          "nav.links{display:flex;gap:1.2rem;margin-top:2rem;font-size:.88rem;flex-wrap:wrap}"
-         "nav.links a{color:var(--muted);text-decoration:none}"
+         "nav.links a{color:var(--muted);text-decoration:none;display:inline-flex;align-items:center;min-height:44px}"
          "nav.links a:hover{color:var(--accent)}"
          "details.agents{margin-top:1.5rem;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem 1rem}"
          "details.agents summary{cursor:pointer;font-weight:600;color:var(--accent)}"
          "details.agents pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;color:var(--muted);margin:.6rem 0 0;padding-top:.6rem;border-top:1px solid var(--line)}"
-         "@media(max-width:560px){main{padding:2rem 1rem 4rem}}"
+         "@media(max-width:560px){main{padding:1.6rem 1rem 4rem}"
+         "h1{font-size:1.6rem}"
+         "#drop{padding:1.4rem 1rem}"
+         ".controls{flex-direction:column;align-items:stretch}"
+         ".controls .sp{display:none}"
+         "button#up{width:100%;min-height:46px;font-size:1rem}"
+         "label.mode{justify-content:center;padding:.45rem 0;font-size:.95rem}"
+         "#result{padding:.8rem .9rem}"
+         "#result .urlbox input{font-size:16px}"
+         ".sharerow .btn{width:100%;min-height:46px;font-size:1rem}}"
          "</style></head><body><main>"
          f"<header><h1>throway<span class='dot'>.</span></h1>"
          f"<span class='version'>v{VERSION}</span></header>"
@@ -2396,7 +2524,7 @@ def _index(self):
          "<div class='controls'>"
          "<button id='up'>Upload</button>"
          "<label class='mode'><input type='checkbox' id='dirMode'>create a <b>dir</b></label>"
-         "<span style='flex:1'></span>"
+         "<span class='sp' style='flex:1'></span>"
          "<span style='color:var(--muted);font-size:.8rem'>files live ~" + str(TTL_HOURS) + "h</span>"
          "</div>"
          "<div id='status'></div>"
