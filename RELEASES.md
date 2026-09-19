@@ -17,7 +17,8 @@ website) — and get a short-lived URL. No auth. Nothing permanent.
   Cloaking: auch für Menschen nützlich). Schließt die Lücke für Agenten,
   die mit Browser-UA auf der HTML-Seite landen; `-A curl`-Agenten bekommen
   weiterhin direkt das JSON-Listing.
-)
+
+## 1.16.0 — 2026-09-19
 
 ### Smartphone-UX (Mobile-First-Nachschlag für Browser-Seiten)
 - **Viewport + theme-color überall**: alle HTML-Seiten (Dir-Listing, Bundle-Listing,
