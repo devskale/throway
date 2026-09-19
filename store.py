@@ -70,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.16.0"
+VERSION = "1.17.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1697,6 +1697,21 @@ class Handler(BaseHTTPRequestHandler):
             for f, s, ct in rows)
         tags = "".join(f'<span class=tag>{_html_escape(t)}</span>' for t in meta.get("tags", []))
         title = meta.get("name") or key
+        # agent hint: collapsed for humans, fully in source/a11y-tree for agents
+        # that land on the HTML page with a browser UA. Absolute URLs so every
+        # line is copy-paste runnable from anywhere.
+        durl = f"{PUBLIC_BASE}/{DIR_NS}/{key}"
+        hint = (
+            "<details class=agenthint>"
+            "<summary>agent hint — this dir is machine-readable</summary>"
+            "<pre>"
+            f"curl -A curl {durl}                          # JSON listing: files[] with url, size, editable\n"
+            f"curl {durl}/&lt;file&gt;                       # fetch a single file\n"
+            f"curl -OJ '{durl}?zip=1'                      # whole dir as one zip\n"
+            f"curl -X PUT --data-binary @local {durl}/&lt;file&gt;  # replace a text file (PATCH appends)\n"
+            f"curl -A curl {durl}/history                  # edit history (JSON)\n"
+            "</pre></details>"
+        )
         h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
              f"{_META_MOBILE}"
              f"<base href='{PREFIX}/{DIR_NS}/{key}/'>"
@@ -1705,8 +1720,12 @@ class Handler(BaseHTTPRequestHandler):
              ".tag{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted);margin-right:.3rem}"
              ".btnrow{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1rem}"
              "@media(max-width:560px){.btnrow{flex-direction:column}.btnrow a.btn{text-align:center}}"
+             ".agenthint{margin-top:1.2rem}"
+             ".agenthint summary{cursor:pointer;color:var(--muted);font-size:.8rem;user-select:none}"
+             ".agenthint pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;font:75%/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-x:auto;color:var(--ink)}"
              "</style></head><body><main>"
              f"<h1>Dir {title}</h1><div>{tags}</div><ul>{lis}</ul>"
+             f"{hint}"
              "<div class=btnrow>"
              f"<a class=btn href='?zip=1'>download as zip</a>"
              f"<a class=btn href='history'>history</a>"

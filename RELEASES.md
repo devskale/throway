@@ -1,13 +1,23 @@
 # throway — Releases
 
-**Current version:** `1.16.0`
+**Current version:** `1.17.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
-## 1.16.0 — 2026-09-19
+## 1.17.0 — 2026-09-19
+
+- **Agent-Hint auf der Dir-HTML-Seite**: einklappbarer `<details>`-Block
+  unter der Dateiliste mit lauffähigen curl-Zeilen (JSON-Listing via
+  `-A curl`, Einzeldatei, `?zip=1`, PUT/PATCH-Edit, `/history`). Absolute
+  URLs — jede Zeile überall copy-paste-bar. Für Menschen dezent
+  eingeklappt, im Quelltext/Accessibility-Tree immer voll lesbar (kein
+  Cloaking: auch für Menschen nützlich). Schließt die Lücke für Agenten,
+  die mit Browser-UA auf der HTML-Seite landen; `-A curl`-Agenten bekommen
+  weiterhin direkt das JSON-Listing.
+)
 
 ### Smartphone-UX (Mobile-First-Nachschlag für Browser-Seiten)
 - **Viewport + theme-color überall**: alle HTML-Seiten (Dir-Listing, Bundle-Listing,
