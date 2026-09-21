@@ -1,11 +1,25 @@
 # throway — Releases
 
-**Current version:** `1.18.2`
+**Current version:** `1.18.3`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.18.3 — 2026-09-21
+
+### Share-Name wählbar (Upload & Create)
+- **Share-Name-Feld** in der Web-UI — für Upload und Create. Optional einen
+  einprägsamen Namen (z.B. `my-note`) wählen; der Inhalt landet dann unter
+  `/d/<name>` (create-or-get, wie ein benannter Dir) statt unter einer
+  zufälligen Hex-ID.
+- **Backend**: `&share=<name>` für Einzeldatei-Uploads (roh-body und
+  multipart). Nutzt die Dir-Mechanik: Sliding-Lifetime (default 7d, `&ttl=`
+  clamped [4h,14d]), validiert wie benannte Dirs (5-32 Zeichen `[a-z0-9-]`,
+  >=1 Buchstabe, nicht reserviert).
+- Docs: `/api`-Spez, `/help/files`, `/help/limits`, `_home_help`, `API.md`,
+  `AGENTS.md`, `README.md` um `&share=` ergänzt.
 
 ## 1.18.2 — 2026-09-21
 

@@ -70,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.18.2"
+VERSION = "1.18.3"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -617,6 +617,13 @@ LIFETIME (optional):
    -> default is {TTL_HOURS}h; &ttl=<h|d> extends a single file, clamped to
       [4h, 14d] (MAX 14 days).
 
+SHARE NAME (optional):
+   POST {PUBLIC_BASE}/?share=my-note
+   -> store the upload under a chosen, memorable name (create-or-get, like a
+      named dir) at /d/my-note, instead of a random hex id. Rules: 5-32 chars
+      [a-z0-9-], >=1 letter, not a reserved word. Sliding lifetime (default
+      7d, &ttl= clamped [4h,14d]).
+
 TAGS on uploads/imports (filter+sort later):
    POST {PUBLIC_BASE}/?name=x.pdf&tag=papers&tag=2026
    -> up to 5 tags per file ([a-z0-9-], 1-24 chars); returned in the JSON.
@@ -723,7 +730,8 @@ itself is editable:false; only its text/* or application/json files are.""",
 PERSISTENCE — how long something lives, per type (also in each response's
 \"persistence\" block):
 - single file:  {TTL_HOURS}h by default (extendable_by:none; &ttl= up to 14d
-                set at upload time)
+                set at upload time; &share= stores it under a chosen name
+                with a sliding 7d default lifetime instead)
 - dir:          sliding lifetime (default 7d), extendable by activity
                 (extendable_by:activity), capped at 30 days total
 - bundle:       fixed {TTL_HOURS}h snapshot, not extendable (extendable_by:none)""",
@@ -1199,6 +1207,7 @@ class Handler(BaseHTTPRequestHandler):
             qp.setdefault(k, []).append(v)
         name_hint = None
         want_dir = ("dir=1" in query)
+        share = (qp.get("share") or [""])[0].strip()
         tags = _parse_tags(qp.get("tag", []))
         if "name" in qp:
             name_hint = _safe_name(qp["name"][0])[:128]
@@ -1209,7 +1218,7 @@ class Handler(BaseHTTPRequestHandler):
         # POST /<id>?tag=a&tag=b&untag=c -> update tags on an existing file
         # (single-file ids only; dirs have their own tag handling at create)
         if len(parts) == 1 and parts[0] and parts[0] != DIR_NS \
-                and not want_dir and "url" not in qp \
+                and not want_dir and "url" not in qp and not share \
                 and ("tag" in qp or "untag" in qp):
             return self._file_tags(parts[0], qp)
 
@@ -1262,6 +1271,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._store_bundle(named)
             n, d, c = named[0]
             ttl = _parse_ttl((qp.get("ttl") or [""])[0])
+            if share:
+                return self._share_store(d, _safe_name(n)[:128] or None, c, share, ttl)
             return self._store(d, _safe_name(n)[:128] or None, c, tags, ttl_seconds=ttl)
 
         # raw-body upload: body is the file content
@@ -1278,6 +1289,8 @@ class Handler(BaseHTTPRequestHandler):
             if ctype.startswith("multipart") or "boundary" in ctype:
                 ctype = "application/octet-stream"
         ttl = _parse_ttl((qp.get("ttl") or [""])[0])
+        if share:
+            return self._share_store(data, name_hint or None, ctype, share, ttl)
         return self._store(data, name_hint or None, ctype, tags, ttl_seconds=ttl)
 
     def _file_tags(self, fid, qp):
@@ -1460,6 +1473,44 @@ class Handler(BaseHTTPRequestHandler):
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"])),
         })
         self._send(200, body, "application/json", {"X-Expires": str(lifetime)})
+
+    def _share_store(self, data, name_hint, ctype, share, ttl_seconds=None):
+        """POST /?share=<name> — store a single file under a chosen, memorable
+        name (create-or-get, like a named dir) at /d/<name>. Reuses the dir
+        machinery: sliding lifetime (default 7d, ttl= clamped [4h,14d])."""
+        ok, reason = _valid_name(share)
+        if not ok:
+            return self._send(400, json.dumps({"error": f"invalid share name: {reason}"}), "application/json")
+        if len(data) > MAX_FILE:
+            return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+        key = share
+        dirpath = _dir_path(key)
+        now = time.time()
+        meta = _dir_meta(key)
+        if meta is not None and meta.get("expires", 0) < now:
+            shutil.rmtree(dirpath, ignore_errors=True)
+            meta = None
+        if meta is None:
+            os.makedirs(dirpath, exist_ok=True)
+            ttl = ttl_seconds or DIR_DEFAULT_AGE
+            meta = {
+                "type": "dir",
+                "created": now,
+                "updated": now,
+                "expires": now + ttl,
+                "max_age": ttl,
+                "listed": False,
+                "tags": [],
+                "files": {},
+                "name": key,
+            }
+            json.dump(meta, open(_dir_meta_path(key), "w"))
+        fname = name_hint or "file"
+        r = self._dir_write_files(key, dirpath, meta, [(fname, data, ctype)], create=True)
+        if r is None:
+            return self._send(413, json.dumps({"error": "store failed (too large?)"}), "application/json")
+        evict(THROW_POOL_SIZE)
+        return self._dir_response(key, dirpath, meta)
 
     def _store_bundle(self, files):
         """Store multiple files as a bundle directory; return JSON response."""
@@ -2102,6 +2153,7 @@ URL. Everything auto-expires after {TTL_HOURS} hours.
 USAGE
   POST {PUBLIC_BASE}/?name=file.txt   upload a file (body = file bytes)
   POST {PUBLIC_BASE}/?name=x&ttl=24h  upload with longer lifetime (max 14d)
+  POST {PUBLIC_BASE}/?share=my-note   upload under a chosen name -> /d/my-note
   POST {PUBLIC_BASE}/                 upload a bundle (multipart, 2+ files)
   POST {PUBLIC_BASE}/?dir=1           create a dir (under /d/<key>)
   GET  {PUBLIC_BASE}/d/<key>          view a dir (listing / files / zip)
@@ -2285,9 +2337,9 @@ function copyDesc() {{
             "endpoints": {
                 "upload": {
                     "method": "POST",
-                    "url": PUBLIC_BASE + "/?name=<filename>[&ttl=<h|d>]",
+                    "url": PUBLIC_BASE + "/?name=<filename>[&ttl=<h|d>][&share=<name>]",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
-                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, 14d] (max 14 days)",
+                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, 14d] (max 14 days); optional &share=<name> stores it under a chosen memorable name (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved) at /d/<name> with sliding lifetime (default 7d, ttl= clamped [4h,14d])", 
                     "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
                 },
                 "upload_bundle": {
@@ -2358,7 +2410,8 @@ _INDEX_JS = r"""(function () {
   function $(id) { return document.getElementById(id); }
   var statusEl = $('status'), resultEl = $('result'), upBtn = $('up'), dirMode = $('dirMode'),
       ttlSel = $('ttlSel'), createBtn = $('create'), createText = $('createText'),
-      createName = $('createName'), createTtl = $('createTtl'), createBox = $('createBox'), plus = $('plus');
+      createName = $('createName'), createTtl = $('createTtl'), createShare = $('createShare'),
+      shareSel = $('shareSel'), createBox = $('createBox'), plus = $('plus');
 
   /* --- "+" toggles the create-text box --- */
   plus.addEventListener('click', function () {
@@ -2450,6 +2503,7 @@ _INDEX_JS = r"""(function () {
     if (!dz.files.length) { setStatus('Choose at least one file', true); return; }
     var q = {};
     if (dirMode.checked) q.dir = 1;
+    if (shareSel.value.trim()) q.share = shareSel.value.trim();
     if (ttlSel.value) q.ttl = ttlSel.value;
     dz.options.url = PREFIX + '/' + qs(q);
     resultEl.style.display = 'none';
@@ -2461,6 +2515,7 @@ _INDEX_JS = r"""(function () {
     if (!text.trim()) { setStatus('Enter some text first', true); return; }
     var q = {};
     if (createName.value.trim()) q.name = createName.value.trim();
+    if (createShare.value.trim()) q.share = createShare.value.trim();
     if (createTtl.value) q.ttl = createTtl.value;
     resultEl.style.display = 'none';
     setStatus('Creating…');
@@ -2589,6 +2644,9 @@ def _index(self):
          "label.mode{display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted);cursor:pointer}"
          "label.mode input{margin:0;width:17px;height:17px}"
          "label.mode select{background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:.2rem .4rem;font-size:.85rem;color:var(--ink)}"
+         ".shareline{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.6rem}"
+         ".shareline input{flex:1;min-width:160px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:.5rem .6rem;font-size:.85rem;color:var(--ink)}"
+         ".shareline .hint{font-size:.75rem;color:var(--muted)}"
          "button.plus{width:42px;height:42px;padding:0;font-size:1.4rem;line-height:1;border-radius:8px;background:var(--card2);color:var(--accent);border:1px solid var(--line);font-weight:600}"
          "button.plus:hover{background:var(--accent);color:#fff;border-color:var(--accent)}"
          "#createBox{margin-top:.8rem;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:.8rem .9rem}"
@@ -2668,10 +2726,14 @@ def _index(self):
          "<option value='14d'>14d (max)</option>"
          "</select></label>"
          "</div>"
+         "<div class='shareline'><label class='mode'>share name</label>"
+         "<input id='shareSel' placeholder='optional, e.g. my-note' maxlength=32>"
+         "<span class='hint'>a chosen, memorable URL (5-32 chars: a-z, 0-9, -)</span>"
+         "</div>"
          "<div id='createBox' style='display:none'>"
          "<textarea id='createText' placeholder='Paste or type text to share…' rows=8></textarea>"
          "<div class='createbar'>"
-         "<input id='createName' placeholder='name (optional, e.g. note.txt)' style='flex:1;min-width:180px'>"
+         "<input id='createName' placeholder='filename (optional, e.g. note.txt)' style='flex:1;min-width:180px'>"
          "<label class='mode'>live <select id='createTtl'>"
          "<option value=''>" + str(TTL_HOURS) + "h (default)</option>"
          "<option value='24h'>24h</option>"
@@ -2679,6 +2741,10 @@ def _index(self):
          "<option value='14d'>14d (max)</option>"
          "</select></label>"
          "<button id='create'>Create</button>"
+         "</div>"
+         "<div class='shareline'><label class='mode'>share name</label>"
+         "<input id='createShare' placeholder='optional, e.g. my-note' maxlength=32>"
+         "<span class='hint'>a chosen, memorable URL (5-32 chars: a-z, 0-9, -)</span>"
          "</div>"
          "</div>"
          "<div id='status'></div>"

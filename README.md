@@ -39,6 +39,10 @@ curl -X POST --data-binary @photo.png \
 # longer lifetime (max 14 days, default 4h)
 curl -X POST --data-binary @note.txt \
   "https://skale.dev/throway/?name=note.txt&ttl=24h"
+
+# chosen, memorable share name instead of a random id -> /d/my-note
+curl -X POST --data-binary @note.txt \
+  "https://skale.dev/throway/?share=my-note"
 ```
 
 ```bash

@@ -153,6 +153,16 @@ curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&t
 curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=14d"   # max
 ```
 
+### Share name (optional)
+Pass `&share=<name>` to store the upload under a **chosen, memorable name**
+(create-or-get, like a named dir) at `/d/<name>` instead of a random hex id:
+```bash
+curl -X POST --data-binary @note.txt "https://skale.dev/throway/?share=my-note"
+# -> {"id":"my-note","url":"https://skale.dev/throway/d/my-note","dir":true,"files":[...],...}
+```
+Rules: 5-32 chars `[a-z0-9-]`, at least one letter, not a reserved word.
+Uses the sliding dir lifetime (default 7 days, `&ttl=` clamped to `[4h, 14d]`).
+
 ### Response (JSON)
 ```json
 {
