@@ -1,11 +1,29 @@
 # throway — Releases
 
-**Current version:** `1.18.0`
+**Current version:** `1.18.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.18.1 — 2026-09-21
+
+### Create-Text + einstellbare Lebensdauer in der Web-UI
+- **„Create“-Tab neben „Upload“**: In der Web-UI gibt es jetzt zwei Tabs —
+  **Upload** (bisherige Dropzone) und **Create** (neuer). Im Create-Tab lässt
+  sich Text direkt eintragen/pasten und per Klick als Datei hochladen
+  (optional mit Name, z.B. `note.txt`). Der erzeugte Link ist sofort
+  teilbar.
+- **Lebensdauer setzbar**: Standard 4h, aber per Dropdown auf bis zu **14
+  Tage (max)** verlängerbar — getrennt für Upload und Create. Der Wert wird
+  als `&ttl=<h|d>` mitgeschickt.
+- **Backend**: `&ttl=<h|d>` funktioniert jetzt auch für **Einzeldatei-**
+  Uploads (roh-body und multipart), nicht nur für Dirs. Clamped auf
+  `[4h, 14d]` (max 14 Tage), Default 4h. `expires_in`/`persistence`/`X-Expires`
+  spiegeln die gewählte Lebensdauer.
+- Docs: `/api`-Spez, `/help/files`, `/help/limits`, `_home_help`,
+  `API.md` um `ttl=` für Einzeldateien ergänzt.
 
 ## 1.18.0 — 2026-09-19
 

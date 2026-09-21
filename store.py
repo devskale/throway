@@ -70,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.18.0"
+VERSION = "1.18.1"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -612,6 +612,11 @@ Base URL: {PUBLIC_BASE}""",
    with the file bytes as the body.
    -> Returns JSON: id, url, size, name, content_type, expires_in, expires_at.
 
+LIFETIME (optional):
+   POST {PUBLIC_BASE}/?name=x.txt&ttl=24h
+   -> default is {TTL_HOURS}h; &ttl=<h|d> extends a single file, clamped to
+      [4h, 14d] (MAX 14 days).
+
 TAGS on uploads/imports (filter+sort later):
    POST {PUBLIC_BASE}/?name=x.pdf&tag=papers&tag=2026
    -> up to 5 tags per file ([a-z0-9-], 1-24 chars); returned in the JSON.
@@ -705,7 +710,8 @@ itself is editable:false; only its text/* or application/json files are.""",
         "title": "Limits",
         "summary": "Lifetimes, sizes, pool, rate limit",
         "body": """LIMITS
-- URL lifetime:  {TTL_HOURS} hours
+- URL lifetime:  {TTL_HOURS} hours by default; single files can be extended
+  via &ttl=<h|d> when uploading, clamped to [4h, 14d] (MAX 14 days)
 - Dir lifetime: sliding, default 7 days, MAX 14 days via ttl= (clamped
   [4h, 14d]);
   each add/edit/delete slides expires_at forward, capped at 30 days total
@@ -716,7 +722,8 @@ itself is editable:false; only its text/* or application/json files are.""",
 
 PERSISTENCE — how long something lives, per type (also in each response's
 \"persistence\" block):
-- single file:  fixed {TTL_HOURS}h, not extendable (extendable_by:none)
+- single file:  {TTL_HOURS}h by default (extendable_by:none; &ttl= up to 14d
+                set at upload time)
 - dir:          sliding lifetime (default 7d), extendable by activity
                 (extendable_by:activity), capped at 30 days total
 - bundle:       fixed {TTL_HOURS}h snapshot, not extendable (extendable_by:none)""",
@@ -1254,7 +1261,8 @@ class Handler(BaseHTTPRequestHandler):
             if len(named) > 1:
                 return self._store_bundle(named)
             n, d, c = named[0]
-            return self._store(d, _safe_name(n)[:128] or None, c, tags)
+            ttl = _parse_ttl((qp.get("ttl") or [""])[0])
+            return self._store(d, _safe_name(n)[:128] or None, c, tags, ttl_seconds=ttl)
 
         # raw-body upload: body is the file content
         length = self.headers.get("Content-Length")
@@ -1269,7 +1277,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             if ctype.startswith("multipart") or "boundary" in ctype:
                 ctype = "application/octet-stream"
-        return self._store(data, name_hint or None, ctype, tags)
+        ttl = _parse_ttl((qp.get("ttl") or [""])[0])
+        return self._store(data, name_hint or None, ctype, tags, ttl_seconds=ttl)
 
     def _file_tags(self, fid, qp):
         """POST /<id>?tag=<t>&untag=<t> — update meta tags on a stored file."""
@@ -1414,15 +1423,16 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(int(length))
 
-    def _store(self, data, name_hint, ctype, tags=None):
+    def _store(self, data, name_hint, ctype, tags=None, ttl_seconds=None):
         if len(data) > MAX_FILE:
             return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
         fid = secrets.token_hex(8)
         fp = _id_path(fid)
         with open(fp, "wb") as f:
             f.write(data)
+        lifetime = ttl_seconds or TTL_HOURS * 3600  # default 4h; ttl= override (clamped 4h..14d)
         meta = {
-            "expires": time.time() + TTL_HOURS * 3600,
+            "expires": time.time() + lifetime,
             "ctype": ctype or "application/octet-stream",
             "name": name_hint or fid,
             "created": time.time(),
@@ -1446,10 +1456,10 @@ class Handler(BaseHTTPRequestHandler):
             "editable": _is_editable(meta["ctype"]),
             **({"tags": meta["tags"]} if meta.get("tags") else {}),
             "persistence": _persistence_block("single", meta["expires"]),
-            "expires_in": TTL_HOURS * 3600,
+            "expires_in": lifetime,
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"])),
         })
-        self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
+        self._send(200, body, "application/json", {"X-Expires": str(lifetime)})
 
     def _store_bundle(self, files):
         """Store multiple files as a bundle directory; return JSON response."""
@@ -2091,6 +2101,7 @@ URL. Everything auto-expires after {TTL_HOURS} hours.
 
 USAGE
   POST {PUBLIC_BASE}/?name=file.txt   upload a file (body = file bytes)
+  POST {PUBLIC_BASE}/?name=x&ttl=24h  upload with longer lifetime (max 14d)
   POST {PUBLIC_BASE}/                 upload a bundle (multipart, 2+ files)
   POST {PUBLIC_BASE}/?dir=1           create a dir (under /d/<key>)
   GET  {PUBLIC_BASE}/d/<key>          view a dir (listing / files / zip)
@@ -2274,8 +2285,9 @@ function copyDesc() {{
             "endpoints": {
                 "upload": {
                     "method": "POST",
-                    "url": PUBLIC_BASE + "/?name=<filename>",
+                    "url": PUBLIC_BASE + "/?name=<filename>[&ttl=<h|d>]",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
+                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, 14d] (max 14 days)",
                     "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
                 },
                 "upload_bundle": {
@@ -2344,7 +2356,19 @@ _INDEX_JS = r"""(function () {
   var MAX_MB = __MAX_MB__;
 
   function $(id) { return document.getElementById(id); }
-  var statusEl = $('status'), resultEl = $('result'), upBtn = $('up'), dirMode = $('dirMode');
+  var statusEl = $('status'), resultEl = $('result'), upBtn = $('up'), dirMode = $('dirMode'),
+      ttlSel = $('ttlSel'), createBtn = $('create'), createText = $('createText'),
+      createName = $('createName'), createTtl = $('createTtl');
+
+  /* --- Upload / Create tabs --- */
+  function showTab(name) {
+    $('panelUpload').style.display = name === 'upload' ? 'block' : 'none';
+    $('panelCreate').style.display = name === 'create' ? 'block' : 'none';
+    $('tabUpload').className = 'tab' + (name === 'upload' ? ' active' : '');
+    $('tabCreate').className = 'tab' + (name === 'create' ? ' active' : '');
+  }
+  $('tabUpload').addEventListener('click', function () { showTab('upload'); });
+  $('tabCreate').addEventListener('click', function () { showTab('create'); });
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -2417,11 +2441,39 @@ _INDEX_JS = r"""(function () {
     ].join('')
   });
 
+  function qs(obj) {
+    var p = [];
+    for (var k in obj) if (obj[k]) p.push(encodeURIComponent(k) + '=' + encodeURIComponent(obj[k]));
+    return p.length ? '?' + p.join('&') : '';
+  }
+
   upBtn.addEventListener('click', function () {
     if (!dz.files.length) { setStatus('Choose at least one file', true); return; }
-    dz.options.url = PREFIX + '/' + (dirMode.checked ? '?dir=1' : '');
+    var q = {};
+    if (dirMode.checked) q.dir = 1;
+    if (ttlSel.value) q.ttl = ttlSel.value;
+    dz.options.url = PREFIX + '/' + qs(q);
     resultEl.style.display = 'none';
     dz.processQueue();
+  });
+
+  createBtn.addEventListener('click', function () {
+    var text = createText.value;
+    if (!text.trim()) { setStatus('Enter some text first', true); return; }
+    var q = {};
+    if (createName.value.trim()) q.name = createName.value.trim();
+    if (createTtl.value) q.ttl = createTtl.value;
+    resultEl.style.display = 'none';
+    setStatus('Creating…');
+    createBtn.disabled = true;
+    fetch(PREFIX + '/' + qs(q), { method: 'POST', body: text })
+      .then(function (r) { return r.json().catch(function () { return { error: 'HTTP ' + r.status }; }); })
+      .then(function (d) {
+        createBtn.disabled = false;
+        if (d && d.url) { setStatus(''); showResult(d); createText.value = ''; createName.value = ''; }
+        else setStatus('Error: ' + ((d && d.error) || 'create failed'), true);
+      })
+      .catch(function (e) { createBtn.disabled = false; setStatus('Error: ' + e, true); });
   });
 
   dz.on('sendingmultiple', function () {
@@ -2537,6 +2589,13 @@ def _index(self):
          ".controls{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
          "label.mode{display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted);cursor:pointer}"
          "label.mode input{margin:0;width:17px;height:17px}"
+         "label.mode select{background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:.2rem .4rem;font-size:.85rem;color:var(--ink)}"
+         ".tabs{display:flex;gap:.4rem;margin-bottom:.8rem}"
+         ".tabs .tab{flex:1;background:var(--card2);color:var(--muted);border:1px solid var(--line);border-radius:10px;padding:.6rem;font-size:.95rem;font-weight:600;cursor:pointer;transition:background .15s,color .15s}"
+         ".tabs .tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}"
+         "#panelCreate textarea{width:100%;padding:.7rem .8rem;border:1px solid var(--line);border-radius:10px;font-family:ui-monospace,monospace;font-size:.9rem;resize:vertical;min-height:160px;color:var(--ink);background:#fff}"
+         ".createbar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.6rem}"
+         ".createbar input{background:#fff;border:1px solid var(--line);border-radius:8px;padding:.5rem .6rem;font-size:.85rem;color:var(--ink)}"
          "button,.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:.6rem 1.2rem;font-size:.95rem;font-weight:600;cursor:pointer;transition:background .15s;touch-action:manipulation}"
          "button:hover,.btn:hover{background:#1d4ed8}"
          "button:active{transform:translateY(1px)}"
@@ -2577,6 +2636,9 @@ def _index(self):
          ".controls .sp{display:none}"
          "button#up{width:100%;min-height:46px;font-size:1rem}"
          "label.mode{justify-content:center;padding:.45rem 0;font-size:.95rem}"
+         ".createbar{flex-direction:column;align-items:stretch}"
+         ".createbar input{width:100%}"
+         ".createbar button{width:100%;min-height:46px;font-size:1rem}"
          "#result{padding:.8rem .9rem}"
          "#result .urlbox input{font-size:16px}"
          ".sharerow .btn{width:100%;min-height:46px;font-size:1rem}}"
@@ -2591,6 +2653,11 @@ def _index(self):
          "<li><b>Bundles</b> — a whole mini-website<small>index.html renders inline; zip for agents</small></li>"
          "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (ttl= up to 14d, default 7d); edit history</small></li>"
          "</ul>"
+         "<div class='tabs'>"
+         "<button id='tabUpload' class='tab active'>Upload</button>"
+         "<button id='tabCreate' class='tab'>Create</button>"
+         "</div>"
+         "<div id='panelUpload'>"
          "<div id='drop' class='dropzone'>"
          "<div class='dz-message'>"
          "<div class='big'>Drop files here, or click to choose</div>"
@@ -2599,8 +2666,26 @@ def _index(self):
          "<div class='controls'>"
          "<button id='up'>Upload</button>"
          "<label class='mode'><input type='checkbox' id='dirMode'>create a <b>dir</b></label>"
-         "<span class='sp' style='flex:1'></span>"
-         "<span style='color:var(--muted);font-size:.8rem'>files live ~" + str(TTL_HOURS) + "h</span>"
+         "<label class='mode'>live <select id='ttlSel'>"
+         "<option value=''>" + str(TTL_HOURS) + "h (default)</option>"
+         "<option value='24h'>24h</option>"
+         "<option value='7d'>7d</option>"
+         "<option value='14d'>14d (max)</option>"
+         "</select></label>"
+         "</div>"
+         "</div>"
+         "<div id='panelCreate' style='display:none'>"
+         "<textarea id='createText' placeholder='Paste or type text to share…' rows=8></textarea>"
+         "<div class='createbar'>"
+         "<input id='createName' placeholder='name (optional, e.g. note.txt)' style='flex:1;min-width:180px'>"
+         "<label class='mode'>live <select id='createTtl'>"
+         "<option value=''>" + str(TTL_HOURS) + "h (default)</option>"
+         "<option value='24h'>24h</option>"
+         "<option value='7d'>7d</option>"
+         "<option value='14d'>14d (max)</option>"
+         "</select></label>"
+         "<button id='create'>Create</button>"
+         "</div>"
          "</div>"
          "<div id='status'></div>"
          "<div id='result'></div>"

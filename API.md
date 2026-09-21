@@ -12,8 +12,8 @@ are deleted. No auth required.
 ## Limits
 | Limit | Value |
 |---|---|
-| URL lifetime | 4 hours (14400s) — single files & bundles, fixed |
-| Dir lifetime | fixed, default 7 days (`ttl=` clamp [4h, 14d]) |
+| URL lifetime | 4 hours (14400s) default — single files & bundles |
+| Single-file lifetime | default 4h; `ttl=` override clamped to [4h, 14d] (max 14 days) |
 | Dir lifetime | fixed, default 7 days (**max 14 days**: `ttl=` clamp [4h, 14d]) |
 | Dir history | last 50 edits per dir |
 | Max file size | 5 MB |
@@ -31,6 +31,14 @@ curl -X POST --data-binary @photo.png \
 ### Option B — multipart form (single file)
 ```bash
 curl -F "file=@photo.png" "https://skale.dev/throway/"
+```
+
+### Lifetime override (optional)
+By default a single file lives **4 hours**. Pass `&ttl=<h|d>` to extend it
+(clamped to a **max of 14 days**):
+```bash
+curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=24h"
+curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=14d"   # max
 ```
 
 ### Success response (JSON)

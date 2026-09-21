@@ -145,6 +145,14 @@ curl -X POST --data-binary @photo.png \
 curl -F "file=@photo.png" "https://skale.dev/throway/"
 ```
 
+### Lifetime override (optional)
+Default is **4 hours**. Pass `&ttl=<h|d>` to extend a single file (clamped
+to a **max of 14 days**):
+```bash
+curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=24h"
+curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=14d"   # max
+```
+
 ### Response (JSON)
 ```json
 {

@@ -35,6 +35,10 @@ curl -X POST --data-binary @photo.png \
   "https://skale.dev/throway/?name=photo.png"
 
 # → {"id":"4f2a…","url":"https://skale.dev/throway/4f2a…","size":148,…}
+
+# longer lifetime (max 14 days, default 4h)
+curl -X POST --data-binary @note.txt \
+  "https://skale.dev/throway/?name=note.txt&ttl=24h"
 ```
 
 ```bash
@@ -90,7 +94,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 
 | Limit | Value |
 |-------|-------|
-| URL lifetime | **4 hours** (single files & bundles) |
+| URL lifetime | **4 hours** default; single files can be extended via `ttl=` (max 14 days) |
 | Dir lifetime | **fixed** (default 7 days, `ttl=` override clamped to [4h, 14d]) |
 | Dir history | **last 50 edits** per dir |
 | Max file size | **5 MB** |
