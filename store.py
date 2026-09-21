@@ -70,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.18.1"
+VERSION = "1.18.2"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -2358,17 +2358,16 @@ _INDEX_JS = r"""(function () {
   function $(id) { return document.getElementById(id); }
   var statusEl = $('status'), resultEl = $('result'), upBtn = $('up'), dirMode = $('dirMode'),
       ttlSel = $('ttlSel'), createBtn = $('create'), createText = $('createText'),
-      createName = $('createName'), createTtl = $('createTtl');
+      createName = $('createName'), createTtl = $('createTtl'), createBox = $('createBox'), plus = $('plus');
 
-  /* --- Upload / Create tabs --- */
-  function showTab(name) {
-    $('panelUpload').style.display = name === 'upload' ? 'block' : 'none';
-    $('panelCreate').style.display = name === 'create' ? 'block' : 'none';
-    $('tabUpload').className = 'tab' + (name === 'upload' ? ' active' : '');
-    $('tabCreate').className = 'tab' + (name === 'create' ? ' active' : '');
-  }
-  $('tabUpload').addEventListener('click', function () { showTab('upload'); });
-  $('tabCreate').addEventListener('click', function () { showTab('create'); });
+  /* --- "+" toggles the create-text box --- */
+  plus.addEventListener('click', function () {
+    var show = createBox.style.display === 'none';
+    createBox.style.display = show ? 'block' : 'none';
+    plus.style.background = show ? 'var(--accent)' : '';
+    plus.style.color = show ? '#fff' : '';
+    if (show) createText.focus();
+  });
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -2590,10 +2589,10 @@ def _index(self):
          "label.mode{display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted);cursor:pointer}"
          "label.mode input{margin:0;width:17px;height:17px}"
          "label.mode select{background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:.2rem .4rem;font-size:.85rem;color:var(--ink)}"
-         ".tabs{display:flex;gap:.4rem;margin-bottom:.8rem}"
-         ".tabs .tab{flex:1;background:var(--card2);color:var(--muted);border:1px solid var(--line);border-radius:10px;padding:.6rem;font-size:.95rem;font-weight:600;cursor:pointer;transition:background .15s,color .15s}"
-         ".tabs .tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}"
-         "#panelCreate textarea{width:100%;padding:.7rem .8rem;border:1px solid var(--line);border-radius:10px;font-family:ui-monospace,monospace;font-size:.9rem;resize:vertical;min-height:160px;color:var(--ink);background:#fff}"
+         "button.plus{width:42px;height:42px;padding:0;font-size:1.4rem;line-height:1;border-radius:8px;background:var(--card2);color:var(--accent);border:1px solid var(--line);font-weight:600}"
+         "button.plus:hover{background:var(--accent);color:#fff;border-color:var(--accent)}"
+         "#createBox{margin-top:.8rem;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:.8rem .9rem}"
+         "#createBox textarea{width:100%;padding:.7rem .8rem;border:1px solid var(--line);border-radius:10px;font-family:ui-monospace,monospace;font-size:.9rem;resize:vertical;min-height:160px;color:var(--ink);background:#fff}"
          ".createbar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.6rem}"
          ".createbar input{background:#fff;border:1px solid var(--line);border-radius:8px;padding:.5rem .6rem;font-size:.85rem;color:var(--ink)}"
          "button,.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:.6rem 1.2rem;font-size:.95rem;font-weight:600;cursor:pointer;transition:background .15s;touch-action:manipulation}"
@@ -2653,11 +2652,6 @@ def _index(self):
          "<li><b>Bundles</b> — a whole mini-website<small>index.html renders inline; zip for agents</small></li>"
          "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (ttl= up to 14d, default 7d); edit history</small></li>"
          "</ul>"
-         "<div class='tabs'>"
-         "<button id='tabUpload' class='tab active'>Upload</button>"
-         "<button id='tabCreate' class='tab'>Create</button>"
-         "</div>"
-         "<div id='panelUpload'>"
          "<div id='drop' class='dropzone'>"
          "<div class='dz-message'>"
          "<div class='big'>Drop files here, or click to choose</div>"
@@ -2665,6 +2659,7 @@ def _index(self):
          "</div></div>"
          "<div class='controls'>"
          "<button id='up'>Upload</button>"
+         "<button id='plus' class='plus' title='Create text' aria-label='Create text'>&#43;</button>"
          "<label class='mode'><input type='checkbox' id='dirMode'>create a <b>dir</b></label>"
          "<label class='mode'>live <select id='ttlSel'>"
          "<option value=''>" + str(TTL_HOURS) + "h (default)</option>"
@@ -2673,8 +2668,7 @@ def _index(self):
          "<option value='14d'>14d (max)</option>"
          "</select></label>"
          "</div>"
-         "</div>"
-         "<div id='panelCreate' style='display:none'>"
+         "<div id='createBox' style='display:none'>"
          "<textarea id='createText' placeholder='Paste or type text to share…' rows=8></textarea>"
          "<div class='createbar'>"
          "<input id='createName' placeholder='name (optional, e.g. note.txt)' style='flex:1;min-width:180px'>"

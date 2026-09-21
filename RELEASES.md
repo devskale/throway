@@ -1,11 +1,19 @@
 # throway — Releases
 
-**Current version:** `1.18.1`
+**Current version:** `1.18.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.18.2 — 2026-09-21
+
+### Create-Text hinter „+" neben Upload (statt Tabs)
+- Die Tabs „Upload | Create" sind wieder raus — der bisherige Upload-Bereich
+  bleibt unverändert. Stattdessen sitzt **neben dem Upload-Button ein kleines
+  „+"**, das die Create-Text-Box ein-/ausklappt (Textarea + Name + Lebensdauer
+  + Create-Button). Erneutes Klick auf „+" klappt sie wieder zu.
 
 ## 1.18.1 — 2026-09-21
 
