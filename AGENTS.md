@@ -163,6 +163,15 @@ curl -X POST --data-binary @note.txt "https://skale.dev/throway/?share=my-note"
 Rules: 5-32 chars `[a-z0-9-]`, at least one letter, not a reserved word.
 Uses the sliding dir lifetime (default 7 days, `&ttl=` clamped to `[4h, 14d]`).
 
+### Download once (burn-after-reading, optional)
+Pass `&once=1` to make a **single file** auto-delete after the first
+successful download — a second GET returns 404. Not combinable with
+`&share=` (dirs):
+```bash
+curl -X POST --data-binary @secret.txt "https://skale.dev/throway/?name=secret.txt&once=1"
+# first GET serves the bytes; the file is then removed
+```
+
 ### Response (JSON)
 ```json
 {

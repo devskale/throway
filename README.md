@@ -43,6 +43,10 @@ curl -X POST --data-binary @note.txt \
 # chosen, memorable share name instead of a random id -> /d/my-note
 curl -X POST --data-binary @note.txt \
   "https://skale.dev/throway/?share=my-note"
+
+# burn-after-reading: auto-deletes after the first download
+curl -X POST --data-binary @secret.txt \
+  "https://skale.dev/throway/?name=secret.txt&once=1"
 ```
 
 ```bash

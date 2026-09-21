@@ -1,11 +1,24 @@
 # throway — Releases
 
-**Current version:** `1.18.3`
+**Current version:** `1.18.4`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.18.4 — 2026-09-21
+
+### Download-once (Burn-after-Reading) als Option
+- **„once“-Checkbox** in der Web-UI — für Upload und Create. Aktiviert
+  löscht sich die Datei nach dem **ersten Download** selbst (zweiter GET →
+  404).
+- **Backend**: `&once=1` für Einzeldateien (roh-body + multipart). Setzt
+  `once:true` im Meta; beim GET wird die Datei vor dem Senden entfernt
+  (race-sicher, zweiter Zugriff bekommt 404). Nicht kombinierbar mit
+  `&share=` (Dirs).
+- Docs: `/api`-Spez, `/help/files`, `/help/limits`, `_home_help`, `API.md`,
+  `AGENTS.md`, `README.md` um `&once=` ergänzt.
 
 ## 1.18.3 — 2026-09-21
 

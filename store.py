@@ -70,7 +70,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.18.3"
+VERSION = "1.18.4"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -624,6 +624,11 @@ SHARE NAME (optional):
       [a-z0-9-], >=1 letter, not a reserved word. Sliding lifetime (default
       7d, &ttl= clamped [4h,14d]).
 
+DOWNLOAD ONCE (optional, single files only):
+   POST {PUBLIC_BASE}/?once=1
+   -> burn-after-reading: the file auto-deletes after the first download.
+      A second GET returns 404. Not combinable with &share= (dirs).
+
 TAGS on uploads/imports (filter+sort later):
    POST {PUBLIC_BASE}/?name=x.pdf&tag=papers&tag=2026
    -> up to 5 tags per file ([a-z0-9-], 1-24 chars); returned in the JSON.
@@ -731,7 +736,8 @@ PERSISTENCE — how long something lives, per type (also in each response's
 \"persistence\" block):
 - single file:  {TTL_HOURS}h by default (extendable_by:none; &ttl= up to 14d
                 set at upload time; &share= stores it under a chosen name
-                with a sliding 7d default lifetime instead)
+                with a sliding 7d default lifetime instead; &once=1 = burn-
+                after-reading, auto-deletes after the first download)
 - dir:          sliding lifetime (default 7d), extendable by activity
                 (extendable_by:activity), capped at 30 days total
 - bundle:       fixed {TTL_HOURS}h snapshot, not extendable (extendable_by:none)""",
@@ -1192,6 +1198,26 @@ class Handler(BaseHTTPRequestHandler):
                 orig = m.get("name")
             except Exception:
                 pass
+        # once=1 files: auto-delete after the first successful read, so the
+        # link works exactly once (burn-after-reading). The file is removed
+        # before the body is written; a concurrent second GET gets 404.
+        once = False
+        if os.path.isfile(mp):
+            try:
+                once = bool(json.load(open(mp)).get("once"))
+            except Exception:
+                once = False
+        if once:
+            if "thumb=1" in query:
+                return self._serve_thumb(fp, ctype)
+            try:
+                with open(fp, "rb") as f:
+                    data = f.read()
+            except OSError:
+                return self._send(404, "not found\n")
+            _remove(fp)
+            self._send(200, data, ctype, {"X-Once": "1", "X-Expires": "0"})
+            return
         if "thumb=1" in query:
             return self._serve_thumb(fp, ctype)
         self._serve_file(fp, ctype, orig, force_dl, fid)
@@ -1208,6 +1234,7 @@ class Handler(BaseHTTPRequestHandler):
         name_hint = None
         want_dir = ("dir=1" in query)
         share = (qp.get("share") or [""])[0].strip()
+        once = ("once=1" in query)
         tags = _parse_tags(qp.get("tag", []))
         if "name" in qp:
             name_hint = _safe_name(qp["name"][0])[:128]
@@ -1273,7 +1300,7 @@ class Handler(BaseHTTPRequestHandler):
             ttl = _parse_ttl((qp.get("ttl") or [""])[0])
             if share:
                 return self._share_store(d, _safe_name(n)[:128] or None, c, share, ttl)
-            return self._store(d, _safe_name(n)[:128] or None, c, tags, ttl_seconds=ttl)
+            return self._store(d, _safe_name(n)[:128] or None, c, tags, ttl_seconds=ttl, once=once)
 
         # raw-body upload: body is the file content
         length = self.headers.get("Content-Length")
@@ -1291,7 +1318,7 @@ class Handler(BaseHTTPRequestHandler):
         ttl = _parse_ttl((qp.get("ttl") or [""])[0])
         if share:
             return self._share_store(data, name_hint or None, ctype, share, ttl)
-        return self._store(data, name_hint or None, ctype, tags, ttl_seconds=ttl)
+        return self._store(data, name_hint or None, ctype, tags, ttl_seconds=ttl, once=once)
 
     def _file_tags(self, fid, qp):
         """POST /<id>?tag=<t>&untag=<t> — update meta tags on a stored file."""
@@ -1436,7 +1463,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(int(length))
 
-    def _store(self, data, name_hint, ctype, tags=None, ttl_seconds=None):
+    def _store(self, data, name_hint, ctype, tags=None, ttl_seconds=None, once=False):
         if len(data) > MAX_FILE:
             return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
         fid = secrets.token_hex(8)
@@ -1450,6 +1477,8 @@ class Handler(BaseHTTPRequestHandler):
             "name": name_hint or fid,
             "created": time.time(),
         }
+        if once:
+            meta["once"] = True
         if tags:
             meta["tags"] = tags
         json.dump(meta, open(fp + ".meta", "w"))
@@ -2154,6 +2183,7 @@ USAGE
   POST {PUBLIC_BASE}/?name=file.txt   upload a file (body = file bytes)
   POST {PUBLIC_BASE}/?name=x&ttl=24h  upload with longer lifetime (max 14d)
   POST {PUBLIC_BASE}/?share=my-note   upload under a chosen name -> /d/my-note
+  POST {PUBLIC_BASE}/?once=1          burn-after-reading (auto-delete after 1 download)
   POST {PUBLIC_BASE}/                 upload a bundle (multipart, 2+ files)
   POST {PUBLIC_BASE}/?dir=1           create a dir (under /d/<key>)
   GET  {PUBLIC_BASE}/d/<key>          view a dir (listing / files / zip)
@@ -2337,9 +2367,9 @@ function copyDesc() {{
             "endpoints": {
                 "upload": {
                     "method": "POST",
-                    "url": PUBLIC_BASE + "/?name=<filename>[&ttl=<h|d>][&share=<name>]",
+                    "url": PUBLIC_BASE + "/?name=<filename>[&ttl=<h|d>][&share=<name>][&once=1]",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
-                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, 14d] (max 14 days); optional &share=<name> stores it under a chosen memorable name (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved) at /d/<name> with sliding lifetime (default 7d, ttl= clamped [4h,14d])", 
+                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, 14d] (max 14 days); optional &share=<name> stores it under a chosen memorable name (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved) at /d/<name> with sliding lifetime (default 7d, ttl= clamped [4h,14d]); optional &once=1 = burn-after-reading (single files only, not with &share=): the file auto-deletes after the first download", 
                     "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
                 },
                 "upload_bundle": {
@@ -2411,7 +2441,8 @@ _INDEX_JS = r"""(function () {
   var statusEl = $('status'), resultEl = $('result'), upBtn = $('up'), dirMode = $('dirMode'),
       ttlSel = $('ttlSel'), createBtn = $('create'), createText = $('createText'),
       createName = $('createName'), createTtl = $('createTtl'), createShare = $('createShare'),
-      shareSel = $('shareSel'), createBox = $('createBox'), plus = $('plus');
+      shareSel = $('shareSel'), createBox = $('createBox'), plus = $('plus'),
+      onceSel = $('onceSel'), createOnce = $('createOnce');
 
   /* --- "+" toggles the create-text box --- */
   plus.addEventListener('click', function () {
@@ -2504,6 +2535,7 @@ _INDEX_JS = r"""(function () {
     var q = {};
     if (dirMode.checked) q.dir = 1;
     if (shareSel.value.trim()) q.share = shareSel.value.trim();
+    if (onceSel.checked) q.once = 1;
     if (ttlSel.value) q.ttl = ttlSel.value;
     dz.options.url = PREFIX + '/' + qs(q);
     resultEl.style.display = 'none';
@@ -2516,6 +2548,7 @@ _INDEX_JS = r"""(function () {
     var q = {};
     if (createName.value.trim()) q.name = createName.value.trim();
     if (createShare.value.trim()) q.share = createShare.value.trim();
+    if (createOnce.checked) q.once = 1;
     if (createTtl.value) q.ttl = createTtl.value;
     resultEl.style.display = 'none';
     setStatus('Creating…');
@@ -2719,6 +2752,7 @@ def _index(self):
          "<button id='up'>Upload</button>"
          "<button id='plus' class='plus' title='Create text' aria-label='Create text'>&#43;</button>"
          "<label class='mode'><input type='checkbox' id='dirMode'>create a <b>dir</b></label>"
+         "<label class='mode'><input type='checkbox' id='onceSel'>download <b>once</b></label>"
          "<label class='mode'>live <select id='ttlSel'>"
          "<option value=''>" + str(TTL_HOURS) + "h (default)</option>"
          "<option value='24h'>24h</option>"
@@ -2734,6 +2768,7 @@ def _index(self):
          "<textarea id='createText' placeholder='Paste or type text to share…' rows=8></textarea>"
          "<div class='createbar'>"
          "<input id='createName' placeholder='filename (optional, e.g. note.txt)' style='flex:1;min-width:180px'>"
+         "<label class='mode'><input type='checkbox' id='createOnce'>once</label>"
          "<label class='mode'>live <select id='createTtl'>"
          "<option value=''>" + str(TTL_HOURS) + "h (default)</option>"
          "<option value='24h'>24h</option>"
