@@ -320,6 +320,25 @@ def test_pool_full_rejects_never_evicts(pool_srv):
 
 # --- self-service + store isolation -----------------------------------------
 
+def test_gallery_lightbox(srv):
+    """1.23.0: click-through viewer — ‹ › buttons, arrow keys, esc, swipe."""
+    _, g = create(srv)
+    a = up(srv, g["id"], jpeg(64, 64, (1, 2, 3)), "a.jpg")["id"]
+    b = up(srv, g["id"], jpeg(64, 64, (9, 9, 9)), "b.jpg")["id"]
+    st, _, html = srv.get(f"/pics/g/{g['id']}", headers=BROWSER)
+    assert st == 200
+    page = html.decode()
+    assert "id=lb" in page and "lbprev" in page and "lbnext" in page
+    assert "ArrowRight" in page and "Escape" in page   # keyboard nav
+    # both images baked into the viewer list, newest first
+    assert page.index(f"/pics/i/{b}") < page.index(f"/pics/i/{a}")
+    # admin lightbox uses secret-scoped urls and includes hidden images
+    admin(srv, g["id"], g["token"], a, "hide")
+    st, _, html = srv.get(f"/pics/g/{g['id']}/{g['token']}", headers=BROWSER)
+    page = html.decode()
+    assert f"/pics/g/{g['id']}/{g['token']}/i/{a}" in page
+
+
 def test_api_lists_pics_endpoints(srv):
     st, _, body = srv.get("/api", headers=AGENT)
     spec = json.loads(body)

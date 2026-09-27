@@ -580,6 +580,70 @@ def index_html(store, gals, created=None):
                  _GALLERY_CSS)
 
 
+_LB_CSS = (
+    "#lb{position:fixed;inset:0;background:rgba(17,24,39,.93);display:flex;flex-direction:column;"
+    "align-items:center;justify-content:center;z-index:50;padding:2.5rem 3.2rem 1rem}"
+    "#lb[hidden]{display:none}"
+    "#lb img{max-width:100%;max-height:80vh;object-fit:contain;border-radius:6px}"
+    "#lb .lbx{position:absolute;top:.5rem;right:.7rem;background:none;border:0;color:#e5e7eb;"
+    "font-size:1.5rem;cursor:pointer;min-height:44px;min-width:44px}"
+    "#lb .lbnav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.08);"
+    "border:0;color:#e5e7eb;font-size:1.9rem;cursor:pointer;border-radius:10px;min-height:56px;min-width:48px}"
+    "#lb .lbprev{left:.4rem}"
+    "#lb .lbnext{right:.4rem}"
+    "#lb .lbnav:hover,#lb .lbx:hover{background:rgba(255,255,255,.22)}"
+    "#lb .lbcap{color:#e5e7eb;font-size:.85rem;margin-top:.6rem;text-align:center;max-width:92vw;"
+    "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+    "@media(max-width:560px){#lb{padding:1rem 2.8rem .8rem}}"
+)
+
+_LB_HTML = (
+    "<div id=lb hidden role=dialog aria-label='image viewer'>"
+    "<button type=button class=lbx id=lbx aria-label='close'>&#10005;</button>"
+    "<button type=button class='lbnav lbprev' id=lbprev aria-label='previous'>&#8249;</button>"
+    "<img id=lbimg alt=''>"
+    "<button type=button class='lbnav lbnext' id=lbnext aria-label='next'>&#8250;</button>"
+    "<div class=lbcap id=lbcap></div>"
+    "</div>"
+)
+
+
+def _lb_script(imgs):
+    """Lightbox JS with the (page-local) image list baked in. imgs = [(url, name)].
+    Flip via on-screen buttons, arrow keys, or touch swipe; esc / backdrop
+    click closes. Without JS the thumbs stay plain links (progressive
+    enhancement)."""
+    data = json.dumps([{"u": u, "n": n} for u, n in imgs]).replace("</", "<\\/")
+    return (
+        "<script>(function(){"
+        "var LB=" + data + ";"
+        "var lb=document.getElementById('lb'),lbimg=document.getElementById('lbimg'),"
+        "lbcap=document.getElementById('lbcap'),lbi=-1;"
+        "function open(i){if(!LB.length)return;lbi=(i%LB.length+LB.length)%LB.length;"
+        "lb.hidden=false;document.body.style.overflow='hidden';"
+        "lbimg.src=LB[lbi].u;"
+        "lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'');"
+        "[lbi+1,lbi-1].forEach(function(j){var k=(j%LB.length+LB.length)%LB.length;"
+        "var im=new Image();im.src=LB[k].u;});}"
+        "function close(){lb.hidden=true;document.body.style.overflow='';lbimg.src='';lbi=-1;}"
+        "function nav(d){if(lbi<0)return;open(lbi+d);}"
+        "[].forEach.call(document.querySelectorAll('.grid a'),function(a,i){"
+        "a.addEventListener('click',function(e){e.preventDefault();open(i);});});"
+        "document.getElementById('lbx').addEventListener('click',close);"
+        "document.getElementById('lbprev').addEventListener('click',function(e){e.stopPropagation();nav(-1);});"
+        "document.getElementById('lbnext').addEventListener('click',function(e){e.stopPropagation();nav(1);});"
+        "lb.addEventListener('click',function(e){if(e.target===lb)close();});"
+        "document.addEventListener('keydown',function(e){if(lbi<0)return;"
+        "if(e.key==='Escape')close();"
+        "if(e.key==='ArrowLeft')nav(-1);if(e.key==='ArrowRight')nav(1);});"
+        "var tx=null;"
+        "lb.addEventListener('touchstart',function(e){tx=e.touches[0].clientX;},{passive:true});"
+        "lb.addEventListener('touchend',function(e){if(tx===null)return;"
+        "var dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>40)nav(dx<0?1:-1);tx=null;},{passive:true});"
+        "})();</script>"
+    )
+
+
 def gallery_html(store, gid, g, items, page, pages, total):
     """One public gallery: grid, uploader, pagination."""
     e = store._html_escape
@@ -597,6 +661,7 @@ def gallery_html(store, gid, g, items, page, pages, total):
         pgn.append(f"<a class=btn href='?p={page+1}'>&#228;lter &#8250;</a>")
     days = max(1, PICS_TTL // 86400)
     js = _UP_JS.replace("__P__", store.PREFIX).replace("__GID__", gid)
+    lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid)) for pid, m in items]
     return _page(store, f"pics — {title}",
                  f"<h1>{e(title)}</h1>"
                  + f"<p class=meta>{total} Bilder &#183; l&auml;uft nach {days} Tagen ab"
@@ -611,8 +676,10 @@ def gallery_html(store, gid, g, items, page, pages, total):
                      f"curl {store.PUBLIC_BASE}/pics/g/{gid}?name=photo.jpg --data-binary @photo.jpg  # upload",
                      f"curl -A curl {store.PUBLIC_BASE}/pics/g/{gid}                        # listing as JSON",
                  )
-                 + f"<script>{js}</script>",
-                 _GALLERY_CSS)
+                 + f"<script>{js}</script>"
+                 + _LB_HTML
+                 + _lb_script(lb_imgs),
+                 _GALLERY_CSS + _LB_CSS)
 
 
 _ADMIN_CSS = (
@@ -658,6 +725,8 @@ def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
     hcards = "".join(_admin_card(store, gid, secret, pid, page,
                                  [("unhide", "einblenden"), ("delete", "l&#246;schen")])
                      for pid, m in hid)
+    lb_imgs = [(f"{store.PREFIX}/pics/g/{gid}/{secret}/i/{pid}", m.get("name", pid))
+               for pid, m in list(vis) + list(hid)]
     pgn = []
     if page > 1:
         pgn.append(f"<a class=btn href='?p={page-1}'>&#8249;</a>")
@@ -673,8 +742,10 @@ def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
                  + f"<div class=pgn>{''.join(pgn)}</div>"
                  + f"<h2 class=hidden-sec>Verborgen ({len(hid)})</h2>"
                  + f"<div class='grid hidden-sec'>{hcards}</div>"
-                 + f"<a class=back href='{store.PREFIX}/pics/g/{gid}'>&#8592; zur Galerie</a>",
-                 _ADMIN_CSS)
+                 + f"<a class=back href='{store.PREFIX}/pics/g/{gid}'>&#8592; zur Galerie</a>"
+                 + _LB_HTML
+                 + _lb_script(lb_imgs),
+                 _ADMIN_CSS + _LB_CSS)
 
 
 # --- HTTP adapters (thin glue over the domain) ------------------------------

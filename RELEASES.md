@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.22.1`
+**Current version:** `1.23.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.23.0 — 2026-09-27
+
+### Galerie: Lightbox — Bilder weiterklicken (‹ › / Pfeiltasten / Swipe)
+
+Klick auf ein Thumbnail öffnet jetzt die **Bildansicht** statt eines
+nackten Bild-Loads:
+
+- **‹ › Buttons** überblättern, **← → Pfeiltasten** ebenso,
+  **Touch-Swipe** mobil; **Esc** oder Klick neben das Bild schließt.
+- Caption mit Position + Dateiname („2 / 6 — capri.jpeg“).
+- Nachbarbilder werden **vorgeladen** (flüssiges Blättern).
+- Body-Scroll lockt während offen; ohne JS bleiben Thumbs normale Links
+  (progressive enhancement).
+- Auch im **Admin** — dort mit secret-scoped URLs, inkl. verborgener
+  Bilder (nur im Admin sichtbar, public bleibt 404).
+- Lightbox deckt pro Seite die 60 gerenderten Thumbs ab (Paginierung
+  blättert weiter). Gerendertes JS per node --check validiert, 41 Tests
+  grün.
 
 ---
 
