@@ -626,6 +626,12 @@ _UP_JS = (
     "if(n){st.textContent=n+' ausgew\u00e4hlt \u2014 Upload startet\u2026';pump();return;}"
     "var u=(e.dataTransfer.getData('text/uri-list')||e.dataTransfer.getData('text/plain')||'').trim();"
     "if(/^https?:\\/\\//i.test(u)){importUrl(u);}});"
+    "document.addEventListener('paste',function(e){"
+    "var t=e.target;"
+    "if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'))return;"
+    "var txt=((e.clipboardData||{}).getData||function(){return '';})('text/plain')||'';"
+    "if(/^https?:\\/\\//i.test(txt.trim())){e.preventDefault();importUrl(txt.trim());}"
+    "});"
     "function importUrl(u){"
     "st.textContent='lade bild von url\u2026';"
     "fetch('__P__/pics/g/__GID__?url='+encodeURIComponent(u),"
@@ -1184,6 +1190,33 @@ def _serve(h, store, root, pid, admin, query, gid=None):
 
 # --- POST actions ------------------------------------------------------------
 
+_LH3_RE = re.compile(r"https://lh3\.googleusercontent\.com/[\w\-./%?=&]+")
+_LH3_SIZE_RE = re.compile(r"=(?:w|s)\d+(?:-h\d+)?[^=]*$")
+
+
+def _scrape_lh3(html_text, cap=100):
+    """Ordered, de-duplicated lh3.googleusercontent.com image URLs from a
+    Google Photos share page (they sit in the server-rendered HTML data
+    blobs — no JS needed). Photos only; videos live on other hosts."""
+    seen, out = set(), []
+    for m in _LH3_RE.findall(html_text):
+        u = m.rstrip(".,;:)")
+        if u and u not in seen and not u.endswith("/"):
+            seen.add(u)
+            out.append(u)
+            if len(out) >= cap:
+                break
+    return out
+
+
+def _lh3_hq(url):
+    """Raise an lh3 URL's size bound to our 2048px budget. w/h are bounding
+    box params (aspect preserved); the auth tail after them stays intact."""
+    if _LH3_SIZE_RE.search(url):
+        return _LH3_SIZE_RE.sub("=w2048-h2048-k-no", url)
+    return url + "=w2048-h2048-k-no"
+
+
 def _url_import(h, store, root, gid, qp):
     """POST /pics/g/<gid>?url=<url> — fetch a remote image server-side into
     the gallery (stage 1 of the google-photos-import plan). Same SSRF rules
@@ -1206,6 +1239,34 @@ def _url_import(h, store, root, gid, qp):
                        json.dumps({"error": f"fetch failed: {msg}"}),
                        "application/json")
     if not (ctype or "").startswith("image/"):
+        # a PAGE, not an image: Google Photos share links land here — scrape
+        # the embedded lh3 image URLs and import the whole album
+        if (ctype or "").startswith("text/html"):
+            urls = _scrape_lh3(data.decode("utf-8", "replace"))
+            if not urls:
+                return h._send(400, json.dumps(
+                    {"error": "page contains no importable images (only direct "
+                              "image URLs or Google Photos share links work)"}),
+                    "application/json")
+            imported, errors = [], []
+            for u in urls:
+                try:
+                    idata, iname, ict = store._fetch_remote(_lh3_hq(u),
+                                                            max_bytes=PICS_MAX_FILE)
+                    if not (ict or "").startswith("image/"):
+                        errors.append(f"{u[-24:]}: not an image")
+                        continue
+                    pid, m = store_pic(root, idata, iname or "image", h._client_ip(), gid)
+                    imported.append(public_meta(store, pid, m))
+                except store._FetchError as ex:
+                    errors.append(f"{u[-24:]}: {getattr(ex, 'msg', 'fetch failed')}")
+                except PicError as ex:
+                    errors.append(f"{u[-24:]}: {ex.msg}")
+            return h._send(200, json.dumps({
+                "gallery": store.PUBLIC_BASE + "/pics/g/" + gid,
+                "imported": len(imported), "failed": len(errors),
+                "images": imported[:20], "errors": errors[:10],
+            }, indent=2), "application/json")
         return h._send(400, json.dumps(
             {"error": f"not an image (content-type {ctype or 'unknown'})"}), "application/json")
     try:

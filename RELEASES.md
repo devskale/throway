@@ -1,9 +1,33 @@
 # throway — Releases
 
-**Current version:** `1.34.0`
+**Current version:** `1.35.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.35.0 — 2026-09-27
+
+### Google-Photos-Share-Links einfügen (Stufe 1.5)
+
+„Diesen Link will ich reinkopieren" — jetzt geht das:
+
+- **`?url=` versteht Share-Links** (`photos.app.goo.gl/…`): Kommt statt
+  eines Bildes eine HTML-Seite zurück, wird sie nach den eingebetteten
+  `lh3.googleusercontent.com`-Bild-URLs durchsucht (Server-gerendert,
+  kein JS nötig), die Größenbegrenzung wird auf unser 2048-px-Budget
+  angehoben (Auth-Tail bleibt) und **das ganze Album** wird sequenziell
+  importiert — Pipeline wie immer (Pixel-Regel, GPS-Strip, Pool).
+  Antwort: `{imported, failed, images, errors}`. Cap 100 Bilder/Link,
+  Videos (andere Hosts) bleiben automatisch draußen.
+- **Paste überall**: Link in die Galerie-Seite oder den Homepage-
+  Gallery-Tab einfügen (⌘V) → Import läuft mit Statuszeile; ohne
+  bestehende Galerie wird erst eine angelegt.
+- 1 neuer Pure-Function-Test (Scrape+HQ-Rewrite) — 65 grün. Share-Link-
+  Import live gegen einen echten Link verifiziert (siehe Release-Doku).
+- Bekanntes Risiko (im Issue notiert): Google kann das Share-Seiten-
+  Format ändern — der Scraper ist bewusst schmal (nur lh3-Muster).
 
 ---
 

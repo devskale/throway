@@ -574,3 +574,22 @@ def test_url_import_blocks_private_hosts_by_default(srv):
     st, err = srv.jpost(f"/pics/g/{g['id']}?url=http%3A%2F%2F127.0.0.1%2Fx.jpg",
                         data=b"", headers=AGENT)
     assert st == 400 and "blocked" in err["error"]
+
+
+def test_lh3_scrape_and_hq_helpers():
+    """1.34.0: Google Photos share-page scraping (pure functions)."""
+    from throway import pics as P
+    html = """
+    ["https://lh3.googleusercontent.com/pw/AB1=a1b2=w1600-h900-k-no",
+     "https://lh3.googleusercontent.com/pw/AB1=a1b2=w1600-h900-k-no",
+     "https://lh3.googleusercontent.com/gg/XYZ=s1200",
+     "https://example.com/not-google.jpg"]
+    """
+    urls = P._scrape_lh3(html)
+    assert len(urls) == 2                       # dedupe + nur lh3
+    hq = P._lh3_hq(urls[0])
+    assert hq.endswith("=w2048-h2048-k-no")
+    assert "=a1b2=" in hq                       # auth-tail bleibt
+    assert P._lh3_hq("https://lh3.googleusercontent.com/pw/AB") == \
+        "https://lh3.googleusercontent.com/pw/AB=w2048-h2048-k-no"
+    assert P._scrape_lh3("leer") == []

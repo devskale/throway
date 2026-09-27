@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.34.0"
+VERSION = "1.35.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -3079,6 +3079,39 @@ _INDEX_JS = r"""(function () {
       e.preventDefault();
       if (currentTab === 'gallery') pumpGallery();
       else setStatus('Pasted ' + added + ' image' + (added > 1 ? 's' : '') + ' — click Upload');
+      return;
+    }
+    /* pasted a URL as text while the gallery tab is active: import it */
+    if (currentTab === 'gallery' && !inField) {
+      var txt = (e.clipboardData || window.clipboardData || {}).getData ?
+        (e.clipboardData || window.clipboardData).getData('text/plain') : '';
+      txt = (txt || '').trim();
+      if (/^https?:\/\//i.test(txt)) {
+        e.preventDefault();
+        var row = galRow(txt.slice(0, 60), 'lade von url…');
+        var go = function () {
+          fetch(PREFIX + '/pics/g/' + gal.gid + '?url=' + encodeURIComponent(txt),
+                { method: 'POST', headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (x) {
+              if (x.ok) galSt(row, 'done ✓ (' + ((x.d.imported != null) ? x.d.imported + ' bilder' : '1 bild') + ')', 'ok');
+              else galSt(row, 'fehler: ' + ((x.d && x.d.error) || 'unbekannt'), 'err');
+            })
+            .catch(function (er) { galSt(row, 'fehler: ' + er, 'err'); });
+        };
+        if (gal.gid) { go(); }
+        else {
+          var q0 = 'create=1';
+          if (galName.value.trim()) q0 += '&name=' + encodeURIComponent(galName.value.trim());
+          if (galListed.checked) q0 += '&listed=1';
+          fetch(PREFIX + '/pics?' + q0, { method: 'POST', headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d && d.id && d.token) { gal.gid = d.id; showGalCreated(d); go(); }
+              else galSt(row, 'fehler: galerie anlegen', 'err');
+            });
+        }
+      }
     }
   }
   document.addEventListener('paste', handlePaste);
