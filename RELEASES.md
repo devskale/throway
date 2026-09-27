@@ -1,9 +1,21 @@
 # throway — Releases
 
-**Current version:** `1.35.1`
+**Current version:** `1.35.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.35.2 — 2026-09-27
+
+### Bugfix: Erfolgsmeldung bei Album-Import (soundspritzer-Fall)
+
+Der Galerie-Paste prüfte `x.d.id` — Album-Antworten haben aber
+`{imported: N}` statt `id`: der Import lief erfolgreich durch, die Seite
+meldete trotzdem „fehlgeschlagen: unbekannt" und lud nicht neu. Jetzt:
+„importiert ✓ 38 bilder" + Auto-Reload. Live auf soundspritzer
+verifiziert (38 Bilder drin, Meldung korrekt).
 
 ---
 
