@@ -527,7 +527,7 @@ def test_gallery_embed_view(srv):
     assert "class=grid" in p and "id=lb" in p and "background:transparent" in p
     assert "?embed=1&p=" in p or "1 / 1" in p
     # 1.36.0: infinite scroll + auto-hoehe
-    assert "id=sent" in p and "IntersectionObserver" in p
+    assert "id=sent" in p and "setInterval" in p   # polling-basiertes nachladen
     assert "throway:pics:height" in p            # postMessage an host
     # was NICHT drin sein darf: uploader, header, limits
     assert "upDrop" not in p and "galDrop" not in p and "galName" not in p
