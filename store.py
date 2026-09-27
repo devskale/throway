@@ -72,7 +72,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.20.0"
+VERSION = "1.21.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -2687,6 +2687,15 @@ def _index(self):
          "ul.feats li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem;font-size:.9rem}"
          "ul.feats li b{color:var(--accent)}"
          "ul.feats li small{display:block;color:var(--muted);margin-top:.15rem}"
+         ".pics{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.8rem .9rem;margin:.8rem 0 .2rem}"
+         ".pics .t{font-size:.9rem;color:var(--muted);margin:0 0 .55rem}"
+         ".pics .t b{color:var(--ink)}"
+         ".pics .row1{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
+         ".pics input[type=text]{flex:1;min-width:180px;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:.4rem .8rem;font-size:1rem}"
+         ".pics button{min-height:44px;background:var(--accent);color:#fff;border:0;border-radius:8px;font-weight:600;padding:.5rem 1.1rem;cursor:pointer}"
+         ".pics button:hover{background:#1d4ed8}"
+         ".pics label{color:var(--muted);font-size:.9rem;display:flex;gap:.35rem;align-items:center}"
+         ".pics a.more{color:var(--accent);font-size:.9rem;text-decoration:none;min-height:44px;display:inline-flex;align-items:center}"
                   "#drop{border:2px dashed #d1d5db;border-radius:14px;padding:2rem 1.5rem;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;background:var(--card);margin-bottom:.8rem}"
          "#drop:hover,#drop.dz-drag-hover{border-color:var(--accent);background:#eff6ff}"
          "#drop .big{font-size:1.05rem;font-weight:600}"
@@ -2770,6 +2779,7 @@ def _index(self):
          "<li><b>Files</b> — one URL per upload<small>inline for images &amp; text, download otherwise</small></li>"
          "<li><b>Bundles</b> — a whole mini-website<small>index.html renders inline; zip for agents</small></li>"
          "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (ttl= up to 14d, default 7d); edit history</small></li>"
+         "<li><b>Pics</b> — galleries for events<small>free upload, images live 90 days, per-gallery admin link · <a href='" + PREFIX + "/pics'>browse</a></small></li>"
          "</ul>"
          "<div id='drop' class='dropzone'>"
          "<div class='dz-message'>"
@@ -2810,6 +2820,14 @@ def _index(self):
          "<span class='hint'>a chosen, memorable URL (5-32 chars: a-z, 0-9, -)</span>"
          "</div>"
          "</div>"
+         "<div class='pics' id='pics'>"
+         "<div class='t'><b>pics</b> — a gallery for your event: visitors upload &amp; view, you curate with a private admin link. Images live 90 days (recompressed to &#8804;2048px).</div>"
+         "<form class='row1' method='post' action='" + PREFIX + "/pics?create=1'>"
+         "<input type='text' name='name' placeholder='gallery name, e.g. hochzeit-2026' maxlength=80>"
+         "<label><input type='checkbox' name='listed' value='1'> listed</label>"
+         "<button>Create gallery</button>"
+         "<a class='more' href='" + PREFIX + "/pics'>all galleries &#8594;</a>"
+         "</form></div>"
          "<div id='status'></div>"
          "<div id='result'></div>"
          "<div class='stats'>"

@@ -1,9 +1,26 @@
 # throway — Releases
 
-**Current version:** `1.20.0`
+**Current version:** `1.21.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.21.0 — 2026-09-27
+
+### pics auf der throway-Startseite
+
+Galerie-Anlegen ist jetzt Teil der Default-Site (`skale.dev/throway/`),
+nicht mehr nur unter `/pics`:
+
+- **Feature-Karte** in der Feats-Übersicht (Files / Bundles / Dirs / Pics)
+  mit Link zum Galerie-Index.
+- **Anlege-Formular** direkt unter den Upload-Controls: Name + „listed“-
+  Checkbox + Button → `POST /pics?create=1` (gleicher Flow wie auf der
+  pics-Seite, inkl. Einmal-Anzeige des Admin-Links).
+- Nur UI-Integration, keine API-/Verhaltensänderung. 1 neuer Test
+  (Homepage enthält Formular, Flow end-to-end) — 39 Tests grün.
 
 ---
 

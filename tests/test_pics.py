@@ -325,6 +325,23 @@ def test_post_pics_without_create_hints(srv):
     assert st == 400 and "create" in body.decode()
 
 
+def test_homepage_integrates_gallery_creation(srv):
+    """1.21.0: gallery creation is reachable from the default throway site."""
+    st, _, html = srv.get("/", headers=BROWSER)
+    assert st == 200
+    page = html.decode()
+    assert "/pics?create=1" in page            # create form on the homepage
+    assert "/pics" in page                     # link to the gallery index
+    # and the very form flow works end-to-end (urlencoded body, browser UA)
+    st, _, body = srv.post("/pics?create=1",
+                           data=urlencode({"name": "vom-homepage", "listed": "1"}),
+                           headers={"Content-Type": "application/x-www-form-urlencoded",
+                                    **BROWSER})
+    assert st == 200 and "Admin-Link" in body.decode()
+    st, _, body = srv.get("/pics", headers=AGENT)
+    assert "vom-homepage" in [g["id"] for g in json.loads(body)["galleries"]]
+
+
 def test_store_surface_unaffected(srv):
     st, meta = srv.upload_raw(b"still works", name="ok.txt")
     assert st == 200
