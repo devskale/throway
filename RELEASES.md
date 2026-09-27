@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.27.0`
+**Current version:** `1.28.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.28.0 — 2026-09-27
+
+### DIR-Root serviert index.html inline (Issue: throway-dir-index-landing)
+
+Parität mit Bundles: Enthält ein DIR eine `index.html`, bekommen Browser
+an `GET /d/<key>` diese inline ausgeliefert statt der Listing-Seite —
+der geteilte DIR-Link ist damit die Landing-Page (Kontext:
+firmenindex-Agent teilt Report-DIRs mit gerendertem Report als
+`index.html`).
+
+- `<base>`-Injection wie bei Bundles, damit relative Links
+  (`style.css`, `data.json`, …) gegen `/d/<key>/` auflösen.
+- Kleiner Footer-Link „files & history" → `?listing=1` erzwingt die
+  klassische Listing-Seite.
+- Agents: unverändert JSON-Listing. DIRs ohne `index.html`: unverändert.
+  `?zip=1`/`?download=1`: unverändert.
+- 1 neuer Test (Browser-Root, ?listing=1, Agent-JSON, ohne-index) — 57
+  grün. Issue in Review.
 
 ---
 

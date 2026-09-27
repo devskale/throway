@@ -72,7 +72,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.27.0"
+VERSION = "1.28.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1828,7 +1828,40 @@ class Handler(BaseHTTPRequestHandler):
         # JSON for agents, HTML for browsers
         if self._is_agent():
             return self._dir_response(key, dirpath, m)
+        # Issue throway-dir-index-landing: browsers get index.html inline
+        # when present (parity with bundles) — ?listing=1 forces the listing.
+        index_f = os.path.join(dirpath, "index.html")
+        if os.path.isfile(index_f) and "listing=1" not in query:
+            return self._serve_dir_index(index_f, dirpath, key)
         return self._dir_listing(key, dirpath, m)
+
+    def _serve_dir_index(self, index_path, dirpath, key):
+        """Serve a dir's index.html to a browser like a bundle root: inject a
+        <base> tag so relative links resolve against /d/<key>/, plus a small
+        footer link back to the file listing."""
+        with open(index_path, "rb") as f:
+            html = f.read()
+        base = f'<base href="{PREFIX}/{DIR_NS}/{key}/">'
+        head = re.search(rb"<head[^>]*>", html, re.I)
+        if head:
+            html = html[:head.end()] + base.encode() + html[head.end():]
+        else:
+            html = b"<head>" + base.encode() + b"</head>" + html
+        footer = (f'<div style="margin:2rem 0 0;padding:.6rem .9rem;border-top:1px solid #e5e7eb;'
+                  f'font:.8rem system-ui,sans-serif;color:#6b7280">'
+                  f'<a href="?listing=1" style="color:#2563eb">files &amp; history</a>'
+                  f' · throway</div>')
+        if b"</body>" in html:
+            html = html.replace(b"</body>", footer.encode() + b"</body>", 1)
+        else:
+            html += footer.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.send_header("Content-Disposition", "inline")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(html)
 
     def _dir_response(self, key, dirpath, meta):
         """JSON response for a dir (agents)."""

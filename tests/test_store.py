@@ -249,3 +249,34 @@ def test_md_rendered_for_browsers_raw_for_agents(srv):
     assert st == 200 and "<h1>Quartalsreport</h1>" in page.decode()
     st, _, raw = srv.get("/" + meta["id"], headers=AGENT)
     assert b"# Quartalsreport" in raw
+
+
+def test_dir_index_landing(srv):
+    """Issue throway-dir-index-landing: DIR root serves index.html inline
+    to browsers (bundle parity); ?listing=1 forces the listing; agents
+    keep getting JSON; without index.html nothing changes."""
+    from conftest import multipart
+    srv.post("/?dir=1&name=landing")
+    idx = b"""<!doctype html><html><head><title>Landing</title></head>
+<body><h1>Report</h1><a href="data.json">daten</a></body></html>"""
+    body, ctype = multipart([("index.html", idx, "text/html"),
+                             ("data.json", b"{}", "application/json")])
+    srv.post("/d/landing", data=body, headers={"Content-Type": ctype})
+    # browser at DIR root -> rendered index.html (+ base tag + footer)
+    st, hd, page = srv.get("/d/landing", headers=BROWSER)
+    assert st == 200 and hd["Content-Type"].startswith("text/html")
+    p = page.decode()
+    assert "<h1>Report</h1>" in p
+    assert f'<base href="/throway/d/landing/">' in p
+    assert "?listing=1" in p                      # footer link to the listing
+    # ?listing=1 forces the plain listing
+    st, _, page = srv.get("/d/landing?listing=1", headers=BROWSER)
+    assert b"index.html" in page and b"<h1>Report</h1>" not in page
+    # agents keep getting JSON
+    st, _, body2 = srv.get("/d/landing", headers=AGENT)
+    assert b'"files"' in body2
+    # dir without index.html: unchanged listing
+    srv.post("/?dir=1&name=no-landing")
+    st, _, page = srv.get("/d/no-landing", headers=BROWSER)
+    assert st == 200 and b"\u2190 throway" in page or b"throway" in page
+    assert b"<h1>Report</h1>" not in page
