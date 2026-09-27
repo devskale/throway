@@ -852,7 +852,7 @@ def embed_html(store, gid, g, items, page, pages, total):
         "var page=" + str(page) + ",pages=" + str(pages) + ",busy=false,"
         "grid=document.querySelector('.grid'),sent=document.getElementById('sent');"
         "var post=function(){try{parent.postMessage({type:'throway:pics:height',"
-        "height:document.documentElement.scrollHeight},'*');}catch(e){}};"
+        "height:Math.max(280,document.body.scrollHeight)},'*');}catch(e){}};"
         "function more(){"
         "if(busy||page>=pages){if(page>=pages&&sent)sent.remove();return;}"
         "busy=true;if(sent)sent.textContent='\u2026';"

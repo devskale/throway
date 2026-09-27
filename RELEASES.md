@@ -1,9 +1,21 @@
 # throway — Releases
 
-**Current version:** `1.36.0`
+**Current version:** `1.36.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.36.1 — 2026-09-27
+
+### Bugfix: Auto-Höhe meldet echte Inhaltshöhe
+
+`documentElement.scrollHeight` ist viewport-geklemmt — das Embed konnte
+nie kleiner werden als die Starthöhe des iframes (642px statt ~450px
+im Live-Test). Jetzt: `body.scrollHeight` mit 280px-Mindesthöhe.
+Live gegen die Host-Seite verifiziert: iframe schrumpft auf
+Inhaltshöhe, wächst beim Nachladen mit.
 
 ---
 
