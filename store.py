@@ -72,7 +72,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.22.0"
+VERSION = "1.22.1"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1260,7 +1260,7 @@ class Handler(BaseHTTPRequestHandler):
         once = ("once=1" in query)
         tags = _parse_tags(qp.get("tag", []))
         if "name" in qp:
-            name_hint = _safe_name(qp["name"][0])[:128]
+            name_hint = _safe_name(unquote(qp["name"][0]))[:128]
 
         path = self.path.split("?", 1)[0].rstrip("/")
         parts = path.lstrip("/").split("/")

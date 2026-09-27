@@ -778,7 +778,8 @@ def _create(h, store, root, qp):
     string (agents, curl) or an urlencoded form body (browser form);
     query wins, body fills in the rest."""
     qp = qp or {}
-    name = ((qp.get("name") or [""])[0]).strip()
+    from urllib.parse import unquote
+    name = unquote((qp.get("name") or [""])[0]).strip()
     listed = bool((qp.get("listed") or [""])[0])
     if not name and "name" not in qp and h.headers.get("Content-Type", "").startswith(
             "application/x-www-form-urlencoded"):
@@ -894,12 +895,13 @@ def _serve(h, store, root, pid, admin, query, gid=None):
 def _upload(h, store, root, gid, qp):
     """Public upload into one gallery: raw body (agents, JS queue) or
     multipart (browser form / batch)."""
+    from urllib.parse import unquote
     ip = h._client_ip()
     g = load_gallery(root, gid)
     if not g:
         return h._send(404, json.dumps({"error": "gallery not found"}),
                        "application/json")
-    name = ((qp.get("name") or [""])[0] or "").strip() or "image"
+    name = unquote((qp.get("name") or [""])[0] or "").strip() or "image"
     ctype = h.headers.get("Content-Type", "")
     if ctype.startswith("multipart/form-data"):
         length = h.headers.get("Content-Length")

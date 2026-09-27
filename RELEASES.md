@@ -1,9 +1,20 @@
 # throway — Releases
 
-**Current version:** `1.22.0`
+**Current version:** `1.22.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.22.1 — 2026-09-27
+
+### Bugfix: `?name=` wird jetzt percent-dekodiert
+
+Dateinamen wie `uniinfer-tu%40x.png` oder `PXL%20foto.jpg` landeten mit
+`%40`/`%20` im Metadaten-Namen. `name` (throway-Upload, pics-Upload und
+Galerie-Anzeigename) wird jetzt URL-dekodiert — Standard-Query-Verhalten.
+1 Test neu, 40 grün. Reiner Bugfix → Patch-Bump.
 
 ---
 

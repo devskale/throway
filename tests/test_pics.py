@@ -149,6 +149,19 @@ def test_upload_to_unknown_gallery_404(srv):
     assert st == 404
 
 
+def test_upload_name_url_decoded(srv):
+    """1.22.1: ?name= values are percent-decoded (uniinfer-tu%40x.png,
+    PXL%20foto.jpg arrive as @ and space, not %40/%20)."""
+    _, g = create(srv)
+    st, m = srv.jpost(f"/pics/g/{g['id']}?name=uniinfer-tu%40x.png",
+                      data=jpeg(), headers={"Content-Type": "application/octet-stream"})
+    assert st == 200, m
+    assert m["name"] == "uniinfer-tu@x.png"
+    st, m2 = srv.jpost(f"/pics/g/{g['id']}?name=PXL%20foto.jpg",
+                       data=jpeg(), headers={"Content-Type": "application/octet-stream"})
+    assert m2["name"] == "PXL foto.jpg"
+
+
 def test_galleries_are_isolated(srv):
     _, a = create(srv, "create=1&name=gal-a")
     _, b = create(srv, "create=1&name=gal-b")
