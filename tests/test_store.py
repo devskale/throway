@@ -198,3 +198,54 @@ def test_dir_history(srv):
     assert st == 200
     h = json.loads(hb)
     assert h.get("total", 0) >= 1
+
+
+# --- markdown rendering in browsers (issue: throway-md-render-browser) -----
+
+MD = """# Quartalsreport
+
+Fett **wichtig** und `code` plus [link](https://example.com).
+
+| Kennzahl | Wert |
+|---|---:|
+| Umsatz | 42 |
+
+- punkt eins
+- punkt zwei
+
+> zitiert
+
+```python
+print("hi")
+```
+"""
+
+
+def test_md_rendered_for_browsers_raw_for_agents(srv):
+    from conftest import multipart
+    body, ctype = multipart([("report.md", MD.encode(), "text/markdown")])
+    srv.post("/?dir=1&name=md-test")
+    srv.post("/d/md-test", data=body, headers={"Content-Type": ctype})
+    path = "/d/md-test/report.md"
+    HTML = {"User-Agent": BROWSER["User-Agent"], "Accept": "text/html,*/*"}
+    # browser: rendered HTML
+    st, hd, page = srv.get(path, headers=HTML)
+    assert st == 200 and hd["Content-Type"].startswith("text/html")
+    assert "<h1>Quartalsreport</h1>" in page.decode()
+    assert "<td>42</td>" in page.decode()
+    assert "<strong>wichtig</strong>" in page.decode()
+    assert "<title>Quartalsreport</title>" in page.decode()
+    # browser + ?raw=1: raw markdown
+    st, hd, raw = srv.get(path + "?raw=1", headers=HTML)
+    assert st == 200 and b"# Quartalsreport" in raw
+    assert not hd["Content-Type"].startswith("text/html")
+    # agent (curl UA): raw
+    st, hd, raw = srv.get(path, headers=AGENT)
+    assert b"# Quartalsreport" in raw
+    assert not hd["Content-Type"].startswith("text/html")
+    # single-file .md upload renders for browsers too
+    st, meta = srv.upload_raw(MD.encode(), name="single.md")
+    st, hd, page = srv.get("/" + meta["id"], headers=HTML)
+    assert st == 200 and "<h1>Quartalsreport</h1>" in page.decode()
+    st, _, raw = srv.get("/" + meta["id"], headers=AGENT)
+    assert b"# Quartalsreport" in raw

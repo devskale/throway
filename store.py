@@ -72,7 +72,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.26.0"
+VERSION = "1.27.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -943,6 +943,36 @@ class Handler(BaseHTTPRequestHandler):
         return not any(b in ua for b in browsers)
 
 
+    def _wants_md_render(self):
+        """Browser (non-agent UA, Accept: text/html) and no raw escape?
+        ?raw=1 / ?download=1 always opt out. Agents always get raw."""
+        if self._is_agent():
+            return False
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        if "raw=1" in query or "download=1" in query:
+            return False
+        return "text/html" in (self.headers.get("Accept") or "")
+
+    def _maybe_serve_markdown(self, fp, ctype, orig, fid):
+        """Issue throway-md-render-browser: .md files render as self-contained
+        HTML for browsers; agents and ?raw=1 keep getting the raw bytes.
+        Returns True when the request was handled here."""
+        if not self._wants_md_render():
+            return False
+        name = (orig or fid or "").lower()
+        if not (ctype == "text/markdown" or name.endswith((".md", ".markdown"))):
+            return False
+        try:
+            text = open(fp, "rb").read().decode("utf-8", "replace")
+        except OSError:
+            return False
+        from throway import mdrender
+        fname = (orig or fid or "markdown").rsplit("/", 1)[-1]
+        raw_url = self.path.split("?", 1)[0] + "?raw=1"
+        self._send(200, mdrender.render(text, title=fname, raw_url=raw_url),
+                   "text/html; charset=utf-8")
+        return True
+
     def _serve_file(self, fp, ctype, orig, force_dl, fid):
         """Serve a single stored file (inline or attachment). Agents also get
         a Link hint pointing at the machine-readable contract."""
@@ -1177,6 +1207,8 @@ class Handler(BaseHTTPRequestHandler):
                     ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
                 if "thumb=1" in query:
                     return self._serve_thumb(fpath, ctype)
+                if self._maybe_serve_markdown(fpath, ctype, fname, fname):
+                    return
                 return self._serve_file(fpath, ctype, fname, force_dl, fname)
             # dir root: JSON listing for agents, HTML for browsers, zip on ?zip=1
             if is_dir:
@@ -1243,6 +1275,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if "thumb=1" in query:
             return self._serve_thumb(fp, ctype)
+        if self._maybe_serve_markdown(fp, ctype, orig, fid):
+            return
         self._serve_file(fp, ctype, orig, force_dl, fid)
 
     def do_POST(self):
@@ -1785,6 +1819,8 @@ class Handler(BaseHTTPRequestHandler):
             ctype = m.get("files", {}).get(fname) or mimetypes.guess_type(fname)[0] or "application/octet-stream"
             if "thumb=1" in query:
                 return self._serve_thumb(fpath, ctype)
+            if self._maybe_serve_markdown(fpath, ctype, fname, fname):
+                return
             return self._serve_file(fpath, ctype, fname, force_dl, f"{DIR_NS}/{key}/{fname}")
         # root: zip on ?zip=1 / ?download=1
         if "zip=1" in query or force_dl:

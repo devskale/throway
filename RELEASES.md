@@ -1,9 +1,34 @@
 # throway — Releases
 
-**Current version:** `1.26.0`
+**Current version:** `1.27.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.27.0 — 2026-09-27
+
+### Markdown im Browser rendern (Issue: throway-md-render-browser)
+
+`.md`-Dateien liefern Browsern jetzt **gerendertes, self-contained HTML**
+statt Markdown-Quelltext (Kontext: firmenindex-Agent teilt Report-DIRs,
+`report.md` ist das Primary-Artefakt):
+
+- **Eigener Renderer** `throway/mdrender.py` — stdlib-only, kein JS, kein
+  externes CSS: Überschriften (Titel aus `# `-Zeile), Absätze, Listen
+  (verschachtelt, ordered/unordered), GFM-Tabellen, Code-Fences,
+  Blockquotes, HR, Links (+bare Autolinks), **bold/italic/code**.
+- **Sicherheit zuerst**: alles wird HTML-escaped, Link-Schemata auf
+  http/https/mailto/relativ/#anchor beschränkt (kein `javascript:`),
+  Code-Spans schützen Inline-Formatierung.
+- **Agents bleiben raw** (UA-basiert wie immer); `?raw=1` ist der
+  explizite Escape — auch für Browser. `?download=1` unangetastet.
+- Wirkt auf **alle drei Serve-Pfade**: Einzeldatei `/<id>`, Bundle-Datei
+  `/<fid>/<file>`, Dir-Datei `/d/<key>/<file>`. Footer-Link „raw:
+  markdown" auf jeder gerenderten Seite.
+- 10 Unit-Tests + Integrationstests über alle Pfade — 56 grün. Issue in
+  Review (throway-md-render-browser).
 
 ---
 

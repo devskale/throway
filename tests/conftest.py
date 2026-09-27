@@ -20,7 +20,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
+import sys as _sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO not in _sys.path:
+    _sys.path.insert(0, REPO)   # makes `throway` (mdrender) importable in tests
 VENV_PY = os.path.join(REPO, ".venv", "bin", "python")
 SRC_PY = os.path.join(REPO, "store.py")
 SRC_PKG = os.path.join(REPO, "throway")
