@@ -526,6 +526,9 @@ def test_gallery_embed_view(srv):
     # was drin sein muss: grid, lightbox, pagination, transparent bg
     assert "class=grid" in p and "id=lb" in p and "background:transparent" in p
     assert "?embed=1&p=" in p or "1 / 1" in p
+    # 1.36.0: infinite scroll + auto-hoehe
+    assert "id=sent" in p and "IntersectionObserver" in p
+    assert "throway:pics:height" in p            # postMessage an host
     # was NICHT drin sein darf: uploader, header, limits
     assert "upDrop" not in p and "galDrop" not in p and "galName" not in p
     assert "<h1>" not in p and "alle Galerien" not in p

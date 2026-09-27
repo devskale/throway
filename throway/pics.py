@@ -821,10 +821,19 @@ _EMBED_CSS = (
 ) + _LB_CSS
 
 
+EMBED_PAGE = 24   # initial images per embed page; more load on scroll
+
+
 def embed_html(store, gid, g, items, page, pages, total):
     """Minimal, chrome-less gallery view for <iframe> embedding: just the
-    grid, compact pagination and the lightbox — no header, no uploader,
-    transparent background so the host page shines through."""
+    grid, the lightbox and a scroll sentinel — no header, no uploader,
+    transparent background so the host page shines through.
+
+    Smart bits: (1) infinite scroll — an IntersectionObserver on the
+    sentinel fetches the next embed page and appends its grid (paging
+    links stay as the no-JS fallback); (2) auto-height — the page reports
+    its content height to the embedding parent via postMessage, so the
+    shipped iframe snippet can resize itself (no double scrollbars)."""
     cells = "".join(
         f"<a href='{store.PREFIX}/pics/i/{pid}'>"
         f"<img loading=lazy decoding=async alt='' "
@@ -837,6 +846,32 @@ def embed_html(store, gid, g, items, page, pages, total):
     if page < pages:
         pgn.append(f"<a href='?embed=1&p={page+1}'>&#8250;</a>")
     lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid)) for pid, m in items]
+    inf = (
+        "<div id=sent></div>"
+        "<script>(function(){"
+        "var page=" + str(page) + ",pages=" + str(pages) + ",busy=false,"
+        "grid=document.querySelector('.grid'),sent=document.getElementById('sent');"
+        "var post=function(){try{parent.postMessage({type:'throway:pics:height',"
+        "height:document.documentElement.scrollHeight},'*');}catch(e){}};"
+        "function more(){"
+        "if(busy||page>=pages){if(page>=pages&&sent)sent.remove();return;}"
+        "busy=true;if(sent)sent.textContent='\u2026';"
+        "fetch('?embed=1&p='+(page+1)).then(function(r){return r.text();})"
+        ".then(function(html){"
+        "var doc=new DOMParser().parseFromString(html,'text/html');"
+        "var g=doc.querySelector('.grid');"
+        "if(!g||!g.children.length){if(sent)sent.remove();busy=false;return;}"
+        "while(g.firstChild)grid.appendChild(g.firstChild);"
+        "page++;busy=false;if(sent)sent.textContent='';post();"
+        "if(page>=pages&&sent)sent.remove();"
+        "}).catch(function(){busy=false;});}"
+        "if('IntersectionObserver' in window&&sent){"
+        "new IntersectionObserver(function(es){if(es[0].isIntersecting)more();},"
+        "{rootMargin:'500px'}).observe(sent);}"
+        "if('ResizeObserver' in window)new ResizeObserver(post).observe(document.body);"
+        "window.addEventListener('load',post);setTimeout(post,300);"
+        "})();</script>"
+    )
     return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
             + store._META_MOBILE
             + f"<title>{store._html_escape(g.get('name') or gid)}</title>"
@@ -845,6 +880,7 @@ def embed_html(store, gid, g, items, page, pages, total):
             + f"<div class=pgn>{''.join(pgn)}</div>"
             + _LB_HTML
             + _lb_script(lb_imgs)
+            + inf
             + "</main></body></html>")
 
 
@@ -887,10 +923,15 @@ def gallery_html(store, gid, g, items, page, pages, total):
                  + f"<div class=grid>{cells}</div>"
                  + f"<div class=pgn>{''.join(pgn)}</div>"
                  + "<details class=embedbox><summary>diese Galerie einbetten (embed)</summary>"
+                 + "<p class=meta>Auto-H\u00f6he + Nachladen beim Scrollen — einfach beide Zeilen \u00fcbernehmen:</p>"
                  + "<input readonly onclick='this.select()' value='"
-                 + e(f'<iframe src="{store.PUBLIC_BASE}/pics/g/{gid}?embed=1" '
+                 + e(f'<iframe id="ty-{gid}" src="{store.PUBLIC_BASE}/pics/g/{gid}?embed=1" '
                      f'style="width:100%;height:640px;border:0;border-radius:8px" '
-                     f'loading="lazy" title="{g.get("name") or gid}"></iframe>')
+                     f'loading="lazy" title="{g.get("name") or gid}"></iframe>'
+                     f'<script>window.addEventListener("message",function(e){{'
+                     f'if(e.data&&e.data.type==="throway:pics:height")'
+                     f'document.getElementById("ty-{gid}").style.height=e.data.height+"px";}});'
+                     f'</script>')
                  + "'></details>"
                  + store._agent_hint(
                      f"curl {store.PUBLIC_BASE}/pics/g/{gid}?name=photo.jpg --data-binary @photo.jpg  # upload",
@@ -1129,12 +1170,16 @@ def _get_gallery(h, store, root, gid, query):
             "upload": {"method": "POST",
                        "url": f"{store.PUBLIC_BASE}/pics/g/{gid}?name=<filename>"},
         }, indent=2), "application/json")
+    if "embed=1" in query:
+        total = len(items)
+        pages = max(1, (total + EMBED_PAGE - 1) // EMBED_PAGE)
+        page = min(_page_of(query), pages)
+        chunk = items[(page - 1) * EMBED_PAGE: page * EMBED_PAGE]
+        return h._send(200, embed_html(store, gid, g, chunk, page, pages, total), "text/html")
     total = len(items)
     pages = max(1, (total + PICS_PAGE - 1) // PICS_PAGE)
     page = min(_page_of(query), pages)
     chunk = items[(page - 1) * PICS_PAGE: page * PICS_PAGE]
-    if "embed=1" in query:
-        return h._send(200, embed_html(store, gid, g, chunk, page, pages, total), "text/html")
     h._send(200, gallery_html(store, gid, g, chunk, page, pages, total), "text/html")
 
 

@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.35.2`
+**Current version:** `1.36.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.36.0 — 2026-09-27
+
+### Smartes Embed: Infinite-Scroll + Auto-Höhe
+
+- **Infinite Scroll im Embed**: IntersectionObserver am Sentinel lädt die
+  nächste Embed-Seite per fetch und hängt den Grid an (initial 24 Bilder,
+  rootMargin 500px — lädt VOR dem Erreichen des Randes). Paging-Links
+  bleiben als No-JS-Fallback.
+- **Auto-Höhe per postMessage**: Das Embed meldet seine Inhaltshöhe an
+  die Host-Seite (`throway:pics:height`, ResizeObserver + nach jedem
+  Nachladen). Das neue Embed-Snippet enthält die 2-Zeilen-Listener-
+  Zeile — iframe wächst mit, keine doppelten Scrollbars, kein leerer
+  Raum. Wer nur die iframe-Zeile nimmt, bekommt das Scroll-Verhalten
+  wie zuvor.
+- Snippet auf der Galerie-Seite aktualisiert (beide Zeilen, Klick
+  selektiert alles).
+- 1 Test erweitert (Sentinel/Observer/postMessage im Markup) — 65 grün;
+  embed-JS per node --check, rodney-Live-Beweis mit Host-Seite folgt.
 
 ---
 
