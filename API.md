@@ -19,7 +19,7 @@ are deleted. No auth required.
 | Max file size | 5 MB |
 | Pool size | 100 MB (oldest files evicted first) |
 | Rate limit | 100 req/min per IP |
-| pics gallery | own 20 GB pool (full → 507 reject, never evicts), fixed 90-day lifetime, 30 MB max/image, recompressed ≤ 2048 px WebP q80 |
+| pics gallery | own 20 GB pool (full → 507 reject, never evicts), fixed 90-day lifetime, 30 MB max/image; ≤ 2048 px stored byte-identical (JPEG metadata stripped losslessly), larger downscaled to 2048 px WebP q90 (≤ 1 MB) |
 
 ## Pics — event galleries (`/pics`, since 1.20.0)
 
@@ -71,6 +71,37 @@ curl -A "Mozilla" -d "id=<id>&action=hide&p=1" "$BASE/pics/g/<gid>/<secret>"
 
 Re-creating an existing named gallery returns it WITHOUT the token
 (`existed:true`) — guessing a name never grants admin.
+
+## Browser rendering (since 1.27.0 / 1.28.0)
+
+- **`.md` files** render as self-contained HTML for browsers (own
+  stdlib renderer: headings, lists, tables, fences, links, emphasis;
+  link schemes restricted, everything HTML-escaped). Agents keep getting
+  raw bytes; `?raw=1` is the explicit escape for browsers.
+- **DIR roots** with an `index.html` serve it inline to browsers (like
+  bundle URLs), with a small footer link to the file listing.
+  `?listing=1` forces the classic listing; agents keep getting JSON.
+
+## Dirs — write protection (optional, since 1.29.0)
+
+Create a dir with `&write=1` (server generates a token) or
+`&write=<own token>` (8-64 chars `[A-Za-z0-9._-]`). The create response
+contains `write_token` **exactly once**.
+
+Afterwards writes — `POST /d/<key>`, `PUT`/`PATCH`/`DELETE` on its
+files, `DELETE /d/<key>`, and `POST /?share=<name>` into it — require
+the token as the `X-Throway-Write` header or `?write=<token>`:
+
+```bash
+curl -X POST "$BASE/?dir=1&name=report&write=1"     # -> write_token
+curl -H "X-Throway-Write: <token>" -F "f=@report.md" "$BASE/d/report"
+curl -X PUT -H "X-Throway-Write: <token>" --data-binary v2 "$BASE/d/report/report.md"
+# oder per Query: ?write=<token> — ohne/falsch: 401
+```
+
+Reads, listing, history and zip stay open without the token; the
+listing shows `write_protected: true`. Re-creating an existing protected
+dir never re-reveals the token. Dirs without the flag behave as ever.
 
 ## Contract endpoint
 ```bash
