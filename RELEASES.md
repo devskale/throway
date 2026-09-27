@@ -1,9 +1,26 @@
 # throway — Releases
 
-**Current version:** `1.32.1`
+**Current version:** `1.33.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.33.0 — 2026-09-27
+
+### Galerien einbettbar (embed)
+
+- **`?embed=1`** auf `GET /pics/g/<gid>`: minimale, chrome-lose Ansicht
+  für `<iframe>` — nur Grid, kompakte Pagination und Lightbox; kein
+  Header, kein Uploader, **transparenter Hintergrund** (Host-Seite
+  scheint durch). Agents bekommen wie immer JSON (embed ist reines
+  Browser-Rendering).
+- **Copy-Paste-Snippet** auf jeder Galerie-Seite: „diese Galerie
+  einbetten" klappt ein `<details>` auf mit fertiger iframe-Zeile
+  (readonly-Input, Klick selektiert alles) — null zusätzliches JS.
+- `/api` + `/help/pics` dokumentieren den Parameter. 1 neuer Test
+  (Embed-Ansicht enthält/fehlt-X, Snippet, Agent-JSON) — 62 grün.
 
 ---
 

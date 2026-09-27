@@ -581,6 +581,11 @@ _GALLERY_CSS = (
     ".drop .meta{margin-top:.45rem}"
     ".srinput{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0)}"
     ".meta{color:var(--muted);font-size:.85rem}"
+    "details.embedbox{margin:.8rem 0 0;font-size:.85rem}"
+    "details.embedbox summary{cursor:pointer;color:var(--muted)}"
+    "details.embedbox input{width:100%;margin-top:.4rem;background:var(--card);"
+    "border:1px solid var(--line);border-radius:8px;padding:.45rem .6rem;"
+    "font:.75rem ui-monospace,monospace;color:var(--ink)}"
     "form.cnew{background:var(--card);border:1px solid var(--line);border-radius:8px;"
     "padding:1rem;margin:1rem 0;display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
     "form.cnew input[type=text]{flex:1;min-height:44px;border:1px solid var(--line);"
@@ -782,6 +787,47 @@ def _lb_script(imgs, admin_post=None):
     )
 
 
+_EMBED_CSS = (
+    "*{box-sizing:border-box}"
+    "body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
+    "background:transparent;color:#111827;line-height:1.5}"
+    "main{padding:.6rem}"
+    ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}"
+    ".grid a{display:block;background:#f4f4f5;border-radius:6px;overflow:hidden}"
+    ".grid img{width:100%;aspect-ratio:1;object-fit:cover;display:block}"
+    ".pgn{display:flex;align-items:center;justify-content:center;gap:.7rem;margin:.6rem 0 0;"
+    "font-size:.8rem;color:#6b7280}"
+    ".pgn a{color:#2563eb;text-decoration:none}"
+) + _LB_CSS
+
+
+def embed_html(store, gid, g, items, page, pages, total):
+    """Minimal, chrome-less gallery view for <iframe> embedding: just the
+    grid, compact pagination and the lightbox — no header, no uploader,
+    transparent background so the host page shines through."""
+    cells = "".join(
+        f"<a href='{store.PREFIX}/pics/i/{pid}'>"
+        f"<img loading=lazy decoding=async alt='' "
+        f"src='{store.PREFIX}/pics/i/{pid}?thumb=1'></a>"
+        for pid, m in items)
+    pgn = []
+    if page > 1:
+        pgn.append(f"<a href='?embed=1&p={page-1}'>&#8249;</a>")
+    pgn.append(f"<span>{page} / {pages}</span>")
+    if page < pages:
+        pgn.append(f"<a href='?embed=1&p={page+1}'>&#8250;</a>")
+    lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid)) for pid, m in items]
+    return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+            + store._META_MOBILE
+            + f"<title>{store._html_escape(g.get('name') or gid)}</title>"
+            + f"<style>{_EMBED_CSS}</style></head><body><main>"
+            + f"<div class=grid>{cells}</div>"
+            + f"<div class=pgn>{''.join(pgn)}</div>"
+            + _LB_HTML
+            + _lb_script(lb_imgs)
+            + "</main></body></html>")
+
+
 def gallery_html(store, gid, g, items, page, pages, total):
     """One public gallery: grid, uploader, pagination."""
     e = store._html_escape
@@ -820,6 +866,12 @@ def gallery_html(store, gid, g, items, page, pages, total):
                  + "</label>"
                  + f"<div class=grid>{cells}</div>"
                  + f"<div class=pgn>{''.join(pgn)}</div>"
+                 + "<details class=embedbox><summary>diese Galerie einbetten (embed)</summary>"
+                 + "<input readonly onclick='this.select()' value='"
+                 + e(f'<iframe src="{store.PUBLIC_BASE}/pics/g/{gid}?embed=1" '
+                     f'style="width:100%;height:640px;border:0;border-radius:8px" '
+                     f'loading="lazy" title="{g.get("name") or gid}"></iframe>')
+                 + "'></details>"
                  + store._agent_hint(
                      f"curl {store.PUBLIC_BASE}/pics/g/{gid}?name=photo.jpg --data-binary @photo.jpg  # upload",
                      f"curl -A curl {store.PUBLIC_BASE}/pics/g/{gid}                        # listing as JSON",
@@ -1059,6 +1111,8 @@ def _get_gallery(h, store, root, gid, query):
     pages = max(1, (total + PICS_PAGE - 1) // PICS_PAGE)
     page = min(_page_of(query), pages)
     chunk = items[(page - 1) * PICS_PAGE: page * PICS_PAGE]
+    if "embed=1" in query:
+        return h._send(200, embed_html(store, gid, g, chunk, page, pages, total), "text/html")
     h._send(200, gallery_html(store, gid, g, chunk, page, pages, total), "text/html")
 
 
@@ -1222,7 +1276,9 @@ def api_endpoints(store_base):
             "url": store_base + "/pics/g/<gid>",
             "note": "one gallery: HTML grid for browsers (paginated ?p=N), "
                     "JSON for agents (images[], pool, limits, upload how-to). "
-                    "Hidden images never appear.",
+                    "Hidden images never appear. ?embed=1 renders a minimal, "
+                    "chrome-less view (transparent bg, no uploader) for "
+                    "<iframe> embedding.",
         },
         "pics_upload": {
             "method": "POST",
@@ -1296,6 +1352,7 @@ pool: {PICS_GB} GB shared across galleries. Full pool REJECTS uploads
 VIEW
    GET {PUBLIC_BASE}/pics              index (listed galleries)
    GET {PUBLIC_BASE}/pics/g/<gid>      one gallery
+   GET {PUBLIC_BASE}/pics/g/<gid>?embed=1   minimal view for <iframe> embedding
    GET {PUBLIC_BASE}/pics/i/<id>       one image (?thumb=1 for preview)
 
 ADMIN (per-gallery token or the server superadmin token, as path segment)

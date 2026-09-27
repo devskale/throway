@@ -513,3 +513,27 @@ def test_pics_image_cache_header_and_stats(srv):
 def stats_path(srv):
     # stats.json liegt neben der serverkopie im tmpdir
     return os.path.join(os.path.dirname(srv.root), "app", "stats.json")
+
+
+def test_gallery_embed_view(srv):
+    """1.33.0: ?embed=1 = minimal chrome-less view for iframes."""
+    _, g = create(srv)
+    up(srv, g["id"])
+    up(srv, g["id"])
+    st, hd, page = srv.get(f"/pics/g/{g['id']}?embed=1", headers=BROWSER)
+    assert st == 200 and hd["Content-Type"].startswith("text/html")
+    p = page.decode()
+    # was drin sein muss: grid, lightbox, pagination, transparent bg
+    assert "class=grid" in p and "id=lb" in p and "background:transparent" in p
+    assert "?embed=1&p=" in p or "1 / 1" in p
+    # was NICHT drin sein darf: uploader, header, limits
+    assert "upDrop" not in p and "galDrop" not in p and "galName" not in p
+    assert "<h1>" not in p and "alle Galerien" not in p
+    # normale seite: weiterhin mit uploader + embed-snippet
+    st, _, page = srv.get(f"/pics/g/{g['id']}", headers=BROWSER)
+    p2 = page.decode()
+    assert "upDrop" in p2
+    assert "embedbox" in p2 and "?embed=1" in p2 and "&lt;iframe" in p2
+    # agents bekommen auch mit embed=1 das JSON (embed ist ein browser-rendering)
+    st, hd, body = srv.get(f"/pics/g/{g['id']}?embed=1", headers=AGENT)
+    assert hd["Content-Type"].startswith("application/json")
