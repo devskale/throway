@@ -72,7 +72,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.21.0"
+VERSION = "1.22.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -2469,16 +2469,60 @@ _INDEX_JS = r"""(function () {
   var statusEl = $('status'), resultEl = $('result'), upBtn = $('up'), dirMode = $('dirMode'),
       ttlSel = $('ttlSel'), createBtn = $('create'), createText = $('createText'),
       createName = $('createName'), createTtl = $('createTtl'), createShare = $('createShare'),
-      shareSel = $('shareSel'), createBox = $('createBox'), plus = $('plus'),
-      onceSel = $('onceSel'), createOnce = $('createOnce');
+      shareSel = $('shareSel'), onceSel = $('onceSel'), createOnce = $('createOnce');
 
-  /* --- "+" toggles the create-text box --- */
-  plus.addEventListener('click', function () {
-    var show = createBox.style.display === 'none';
-    createBox.style.display = show ? 'block' : 'none';
-    plus.style.background = show ? 'var(--accent)' : '';
-    plus.style.color = show ? '#fff' : '';
-    if (show) createText.focus();
+  /* --- upload type tabs (segmented control) ---
+     SOTA rules applied: unmistakable active state (pill + weight), instant
+     switch with a stable frame, per-tab state preserved (panels only hide),
+     roving-focus keyboard nav, active tab reflected in the URL hash. */
+  var tabBtns = [].slice.call(document.querySelectorAll('.tabs [role=tab]'));
+  var currentTab = 'files';
+  function selectTab(name, focus) {
+    currentTab = name;
+    tabBtns.forEach(function (t) {
+      var on = t.dataset.mode === name;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      var p = document.getElementById(t.getAttribute('aria-controls'));
+      if (p) p.hidden = !on;
+      if (on && focus) t.focus();
+    });
+    try { history.replaceState(null, '', '#' + name); } catch (e) { /* noop */ }
+  }
+  tabBtns.forEach(function (t) {
+    t.addEventListener('click', function () { selectTab(t.dataset.mode); });
+    t.addEventListener('keydown', function (e) {
+      var i = tabBtns.indexOf(t), n = tabBtns.length, j = null;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') j = (i + 1) % n;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') j = (i - 1 + n) % n;
+      if (e.key === 'Home') j = 0;
+      if (e.key === 'End') j = n - 1;
+      if (j !== null) { e.preventDefault(); selectTab(tabBtns[j].dataset.mode, true); }
+    });
+  });
+  selectTab(/^#(files|text|link|gallery)$/.test(location.hash) ? location.hash.slice(1) : 'files');
+
+  /* --- link tab: server-side URL import (POST /?url=…) --- */
+  var linkUrl = $('linkUrl'), linkName = $('linkName'), linkGo = $('linkGo');
+  linkGo.addEventListener('click', function () {
+    var u = linkUrl.value.trim();
+    if (!/^https?:\/\//i.test(u)) { setStatus('Enter a http(s) URL', true); return; }
+    var q = { url: u };
+    if (linkName.value.trim()) q.name = linkName.value.trim();
+    resultEl.style.display = 'none';
+    setStatus('Fetching…');
+    linkGo.disabled = true;
+    fetch(PREFIX + '/' + qs(q), { method: 'POST' })
+      .then(function (r) { return r.json().catch(function () { return { error: 'HTTP ' + r.status }; }); })
+      .then(function (d) {
+        linkGo.disabled = false;
+        if (d && d.url) { setStatus(''); showResult(d); linkUrl.value = ''; linkName.value = ''; }
+        else setStatus('Error: ' + ((d && d.error) || 'import failed'), true);
+      })
+      .catch(function (e) { linkGo.disabled = false; setStatus('Error: ' + e, true); });
+  });
+  linkUrl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); linkGo.click(); }
   });
 
   function esc(s) {
@@ -2591,6 +2635,158 @@ _INDEX_JS = r"""(function () {
       .catch(function (e) { createBtn.disabled = false; setStatus('Error: ' + e, true); });
   });
 
+  /* --- gallery tab: create-or-get + client-side downscale + per-file rows --- */
+  var galName = $('galName'), galListed = $('galListed'), galFile = $('galFile'),
+      galDrop = $('galDrop'), galRows = $('galRows'), galResult = $('galResult');
+  var gal = { gid: null, queue: [], busy: false };
+
+  galDrop.addEventListener('click', function () { galFile.click(); });
+  ['dragover', 'dragenter'].forEach(function (ev) {
+    galDrop.addEventListener(ev, function (e) { e.preventDefault(); galDrop.classList.add('hover'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    galDrop.addEventListener(ev, function (e) { e.preventDefault(); galDrop.classList.remove('hover'); });
+  });
+  galDrop.addEventListener('drop', function (e) { queueImages(e.dataTransfer.files); });
+  galFile.addEventListener('change', function () { queueImages(this.files); this.value = ''; });
+
+  function galRow(name, st, cls) {
+    var d = document.createElement('div');
+    d.className = 'grow';
+    d.innerHTML = '<span class=n>' + esc(name) + '</span><span class="st ' + (cls || '') + '">' + esc(st) + '</span>';
+    galRows.appendChild(d);
+    return d;
+  }
+  function galSt(row, st, cls) {
+    var s = row.querySelector('.st');
+    s.textContent = st;
+    s.className = 'st ' + (cls || '');
+  }
+  function galRetry(row, f) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.textContent = 'retry';
+    b.addEventListener('click', function () {
+      b.remove();
+      gal.queue.push(f);
+      if (!gal.busy) pumpGallery();
+    });
+    row.appendChild(b);
+  }
+
+  function queueImages(list) {
+    var added = 0;
+    for (var i = 0; i < list.length; i++) {
+      var f = list[i];
+      if (f.type && f.type.indexOf('image/') !== 0) {
+        galRow(f.name, 'skipped — not an image', 'err');
+        continue;
+      }
+      gal.queue.push(f);
+      galRow(f.name, 'queued');
+      added++;
+    }
+    if (added) pumpGallery();
+  }
+
+  /* Downscale in the browser BEFORE upload (saves phone-photo bandwidth
+     ~10-20x). EXIF orientation kept via createImageBitmap with an <img>
+     fallback. GIFs pass through untouched (animation survives). */
+  function shrink(f) {
+    return new Promise(function (res) {
+      if (!f.type || f.type === 'image/gif' || f.type.indexOf('image/') !== 0) return res(f);
+      var done = function (bmp) {
+        try {
+          var M = 2048, w = bmp.width, h = bmp.height;
+          if (Math.max(w, h) <= M) return res(f);
+          var s = M / Math.max(w, h);
+          w = Math.round(w * s); h = Math.round(h * s);
+          var c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+          c.toBlob(function (b) {
+            if (!b) return res(f);
+            var out = new File([b], f.name.replace(/\.[^.]+$/, '') + '.webp',
+                               { type: b.type || 'image/webp', lastModified: Date.now() });
+            res(out.size < f.size ? out : f);
+          }, 'image/webp', 0.85);
+        } catch (e) { res(f); }
+      };
+      if (window.createImageBitmap) {
+        createImageBitmap(f, { imageOrientation: 'from-image' }).then(done,
+          function () {
+            var img = new Image();
+            var url = URL.createObjectURL(f);
+            img.onload = function () { URL.revokeObjectURL(url); done(img); };
+            img.onerror = function () { URL.revokeObjectURL(url); res(f); };
+            img.src = url;
+          });
+      } else {
+        var img = new Image();
+        var url = URL.createObjectURL(f);
+        img.onload = function () { URL.revokeObjectURL(url); done(img); };
+        img.onerror = function () { URL.revokeObjectURL(url); res(f); };
+        img.src = url;
+      }
+    });
+  }
+
+  function showGalCreated(d) {
+    galResult.style.display = 'block';
+    galResult.innerHTML = '<h3>Gallery created \u2713</h3>'
+      + row('Gallery', '<div class=urlbox><input readonly value="' + esc(d.url) + '"><button class=btn data-copy>copy</button></div>')
+      + row('Admin link', '<div class=urlbox><input readonly value="' + esc(d.admin_url) + '"><button class=btn data-copy>copy</button></div>')
+      + '<div class=hint>Copy the admin link now — it is shown only once (hide / delete / reorder live there).</div>'
+      + '<div class=sharerow><a class=btn href="' + esc(d.url) + '" target=_blank>open gallery</a></div>';
+    [].forEach.call(galResult.querySelectorAll('[data-copy]'), function (b) {
+      b.addEventListener('click', function () {
+        navigator.clipboard.writeText(this.previousElementSibling.value);
+        this.textContent = 'copied ✓';
+      });
+    });
+  }
+
+  function pumpGallery() {
+    if (gal.busy) return;
+    gal.busy = true;
+    (async function () {
+      while (gal.queue.length) {
+        var f = gal.queue.shift();
+        var r0 = galRow(f.name, 'resizing…');
+        try {
+          var out = await shrink(f);
+          if (!gal.gid) {
+            galSt(r0, 'creating gallery…');
+            var q = 'create=1';
+            if (galName.value.trim()) q += '&name=' + encodeURIComponent(galName.value.trim());
+            if (galListed.checked) q += '&listed=1';
+            var r = await fetch(PREFIX + '/pics?' + q, { method: 'POST' });
+            var d = await r.json().catch(function () { return {}; });
+            if (!d.id) throw new Error(d.error || 'create failed');
+            gal.gid = d.id;
+            showGalCreated(d);
+          }
+          galSt(r0, 'uploading…');
+          var ok = false;
+          for (var a = 0; a < 3; a++) {
+            var r2 = await fetch(PREFIX + '/pics/g/' + gal.gid + '?name=' + encodeURIComponent(out.name),
+                                 { method: 'POST', body: out });
+            if (r2.ok) { ok = true; break; }
+            if (r2.status === 429) { galSt(r0, 'rate-limited, waiting…'); await sleep(61000); continue; }
+            await sleep(1500);
+          }
+          if (ok) galSt(r0, 'done ✓', 'ok');
+          else { galSt(r0, 'failed', 'err'); galRetry(r0, f); }
+        } catch (e) {
+          galSt(r0, 'failed — ' + (e && e.message ? e.message : 'error'), 'err');
+          galRetry(r0, f);
+        }
+      }
+      gal.busy = false;
+    })();
+  }
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
   dz.on('sendingmultiple', function () {
     upBtn.disabled = true;
     setStatus('Uploading\u2026');
@@ -2611,12 +2807,15 @@ _INDEX_JS = r"""(function () {
     setStatus('Error: ' + (file.status === Dropzone.CANCELED ? 'canceled' : msg), true);
   });
 
-  /* --- paste-to-upload (Ctrl+V images) --- */
-  /* Listen on the whole page so a paste anywhere (not just the dropzone)
-     grabs an image from the clipboard and queues it for upload. */
+  /* --- paste-to-upload (Ctrl+V) --- */
+  /* Listens on the whole page. Images go to the gallery queue when the
+     gallery tab is active, otherwise into the files dropzone. Pastes
+     inside inputs/textareas are never hijacked. */
   function handlePaste(e) {
     var items = (e.clipboardData || window.clipboardData);
     if (!items || !items.items) return;
+    var t = e.target;
+    var inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
     var added = 0;
     for (var i = 0; i < items.items.length; i++) {
       var it = items.items[i];
@@ -2627,6 +2826,13 @@ _INDEX_JS = r"""(function () {
       var base = (f.name || 'pasted').replace(/\.[^.]+$/, '');
       var ext = (f.type || 'image/png').split('/')[1] || 'png';
       var name = base + '-' + Date.now() + '.' + ext;
+      if (currentTab === 'gallery') {
+        gal.queue.push(f);
+        galRow(name, 'queued');
+        added++;
+        continue;
+      }
+      if (inField) continue;   /* never steal pastes inside form fields */
       var blob = new Blob([f], { type: f.type });
       blob.name = name;
       blob.lastModified = Date.now();
@@ -2639,7 +2845,8 @@ _INDEX_JS = r"""(function () {
     }
     if (added) {
       e.preventDefault();
-      setStatus('Pasted ' + added + ' image' + (added > 1 ? 's' : '') + ' — click Upload');
+      if (currentTab === 'gallery') pumpGallery();
+      else setStatus('Pasted ' + added + ' image' + (added > 1 ? 's' : '') + ' — click Upload');
     }
   }
   document.addEventListener('paste', handlePaste);
@@ -2687,15 +2894,6 @@ def _index(self):
          "ul.feats li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem;font-size:.9rem}"
          "ul.feats li b{color:var(--accent)}"
          "ul.feats li small{display:block;color:var(--muted);margin-top:.15rem}"
-         ".pics{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.8rem .9rem;margin:.8rem 0 .2rem}"
-         ".pics .t{font-size:.9rem;color:var(--muted);margin:0 0 .55rem}"
-         ".pics .t b{color:var(--ink)}"
-         ".pics .row1{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
-         ".pics input[type=text]{flex:1;min-width:180px;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:.4rem .8rem;font-size:1rem}"
-         ".pics button{min-height:44px;background:var(--accent);color:#fff;border:0;border-radius:8px;font-weight:600;padding:.5rem 1.1rem;cursor:pointer}"
-         ".pics button:hover{background:#1d4ed8}"
-         ".pics label{color:var(--muted);font-size:.9rem;display:flex;gap:.35rem;align-items:center}"
-         ".pics a.more{color:var(--accent);font-size:.9rem;text-decoration:none;min-height:44px;display:inline-flex;align-items:center}"
                   "#drop{border:2px dashed #d1d5db;border-radius:14px;padding:2rem 1.5rem;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;background:var(--card);margin-bottom:.8rem}"
          "#drop:hover,#drop.dz-drag-hover{border-color:var(--accent);background:#eff6ff}"
          "#drop .big{font-size:1.05rem;font-weight:600}"
@@ -2751,6 +2949,29 @@ def _index(self):
          ".meter{height:6px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:.4rem}"
          ".meter i{display:block;height:100%;background:var(--accent);border-radius:999px}"
          "nav.links{display:flex;gap:1.2rem;margin-top:2rem;font-size:.88rem;flex-wrap:wrap}"
+         ".uploader{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:.9rem;margin-bottom:.8rem}"
+         ".tabs{display:flex;gap:.25rem;background:var(--card2);border-radius:10px;padding:.25rem;width:max-content;max-width:100%;overflow-x:auto}"
+         ".tabs [role=tab]{border:0;background:transparent;color:var(--muted);font-weight:600;font-size:.9rem;padding:.45rem .95rem;border-radius:8px;cursor:pointer;min-height:40px;white-space:nowrap}"
+         ".tabs [role=tab]:hover{color:var(--ink)}"
+         ".tabs [role=tab][aria-selected=true]{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}"
+         ".tabs [role=tab]:focus-visible{outline:2px solid var(--accent);outline-offset:1px}"
+         ".panel{padding-top:.7rem}"
+         ".panel[hidden]{display:none}"
+         ".limits{color:var(--muted);font-size:.78rem;margin:.5rem 0 0}"
+         ".linkrow{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}"
+         ".linkrow input{flex:1;min-width:200px;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:.4rem .8rem;font-size:1rem}"
+         ".linkrow button,.galbar button{min-height:44px;background:var(--accent);color:#fff;border:0;border-radius:8px;font-weight:600;padding:.5rem 1.1rem;cursor:pointer}"
+         ".galbar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.55rem}"
+         ".galbar input[type=text]{flex:1;min-width:180px;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:.4rem .8rem;font-size:1rem}"
+         ".galbar label{color:var(--muted);font-size:.9rem;display:flex;gap:.35rem;align-items:center}"
+         ".minidrop{border:2px dashed #d1d5db;border-radius:10px;padding:1.3rem 1rem;text-align:center;cursor:pointer;color:var(--muted);background:#fff;font-size:.95rem;transition:border-color .15s,background .15s}"
+         ".minidrop:hover,.minidrop.hover{border-color:var(--accent);background:#eff6ff;color:var(--accent)}"
+         ".grow{display:flex;justify-content:space-between;gap:.6rem;align-items:center;background:#fff;border:1px solid var(--line);border-radius:8px;padding:.35rem .6rem;margin-top:.35rem;font-size:.85rem}"
+         ".grow .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+         ".grow .st{color:var(--muted);white-space:nowrap}"
+         ".grow .st.ok{color:#15803d}"
+         ".grow .st.err{color:#dc2626}"
+         ".grow button{min-height:32px;font-size:.78rem;padding:.15rem .6rem;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer}"
          "nav.links a{color:var(--muted);text-decoration:none;display:inline-flex;align-items:center;min-height:44px}"
          "nav.links a:hover{color:var(--accent)}"
          "details.agents{margin-top:1.5rem;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem 1rem}"
@@ -2766,6 +2987,10 @@ def _index(self):
          ".createbar{flex-direction:column;align-items:stretch}"
          ".createbar input{width:100%}"
          ".createbar button{width:100%;min-height:46px;font-size:1rem}"
+         ".tabs{width:100%}"
+         ".tabs [role=tab]{flex:1;padding:.45rem .3rem;font-size:.85rem}"
+         ".linkrow input,.galbar input[type=text]{width:100%}"
+         ".linkrow button,.galbar button{width:100%;min-height:46px;font-size:1rem}"
          "#result{padding:.8rem .9rem}"
          "#result .urlbox input{font-size:16px}"
          ".sharerow .btn{width:100%;min-height:46px;font-size:1rem}}"
@@ -2781,14 +3006,21 @@ def _index(self):
          "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (ttl= up to 14d, default 7d); edit history</small></li>"
          "<li><b>Pics</b> — galleries for events<small>free upload, images live 90 days, per-gallery admin link · <a href='" + PREFIX + "/pics'>browse</a></small></li>"
          "</ul>"
+         "<div class='uploader'>"
+         "<div class='tabs' role='tablist' aria-label='Upload type'>"
+         "<button type=button role=tab id=tab-files data-mode=files aria-controls=panel-files aria-selected=true tabindex=0>Files</button>"
+         "<button type=button role=tab id=tab-text data-mode=text aria-controls=panel-text aria-selected=false tabindex=-1>Text</button>"
+         "<button type=button role=tab id=tab-link data-mode=link aria-controls=panel-link aria-selected=false tabindex=-1>Link</button>"
+         "<button type=button role=tab id=tab-gallery data-mode=gallery aria-controls=panel-gallery aria-selected=false tabindex=-1>Gallery</button>"
+         "</div>"
+         "<div class='panel' id='panel-files' role='tabpanel' aria-labelledby='tab-files'>"
          "<div id='drop' class='dropzone'>"
          "<div class='dz-message'>"
          "<div class='big'>Drop files here, or click to choose</div>"
-         "<div class='sub'>Select one or many files</div>"
+         "<div class='sub'>Select one or many files — or just paste an image (⌘/Ctrl+V)</div>"
          "</div></div>"
          "<div class='controls'>"
          "<button id='up'>Upload</button>"
-         "<button id='plus' class='plus' title='Create text' aria-label='Create text'>&#43;</button>"
          "<label class='mode'><input type='checkbox' id='dirMode'>create a <b>dir</b></label>"
          "<label class='mode'><input type='checkbox' id='onceSel'>download <b>once</b></label>"
          "<label class='mode'>live <select id='ttlSel'>"
@@ -2802,7 +3034,9 @@ def _index(self):
          "<input id='shareSel' placeholder='optional, e.g. my-note' maxlength=32>"
          "<span class='hint'>a chosen, memorable URL (5-32 chars: a-z, 0-9, -)</span>"
          "</div>"
-         "<div id='createBox' style='display:none'>"
+         "<div class='limits'>max 5 MB per file &#183; lives 4h (ttl up to 14d) &#183; one file = share URL, many = bundle, dir checkbox = dir</div>"
+         "</div>"
+         "<div class='panel' id='panel-text' role='tabpanel' aria-labelledby='tab-text' hidden>"
          "<textarea id='createText' placeholder='Paste or type text to share…' rows=8></textarea>"
          "<div class='createbar'>"
          "<input id='createName' placeholder='filename (optional, e.g. note.txt)' style='flex:1;min-width:180px'>"
@@ -2819,15 +3053,29 @@ def _index(self):
          "<input id='createShare' placeholder='optional, e.g. my-note' maxlength=32>"
          "<span class='hint'>a chosen, memorable URL (5-32 chars: a-z, 0-9, -)</span>"
          "</div>"
+         "<div class='limits'>becomes a text file with its own URL &#183; lives 4h (ttl up to 14d)</div>"
          "</div>"
-         "<div class='pics' id='pics'>"
-         "<div class='t'><b>pics</b> — a gallery for your event: visitors upload &amp; view, you curate with a private admin link. Images live 90 days (recompressed to &#8804;2048px).</div>"
-         "<form class='row1' method='post' action='" + PREFIX + "/pics?create=1'>"
-         "<input type='text' name='name' placeholder='gallery name, e.g. hochzeit-2026' maxlength=80>"
-         "<label><input type='checkbox' name='listed' value='1'> listed</label>"
-         "<button>Create gallery</button>"
-         "<a class='more' href='" + PREFIX + "/pics'>all galleries &#8594;</a>"
-         "</form></div>"
+         "<div class='panel' id='panel-link' role='tabpanel' aria-labelledby='tab-link' hidden>"
+         "<div class='linkrow'>"
+         "<input id='linkUrl' type='url' placeholder='https://example.com/page-or-file'>"
+         "<input id='linkName' placeholder='filename (optional)'>"
+         "<button id='linkGo'>Import</button>"
+         "</div>"
+         "<div class='limits'>the server fetches the URL and hosts it here &#183; &#8804; 5 MB, public http(s) URLs only &#183; lives 4h</div>"
+         "</div>"
+         "<div class='panel' id='panel-gallery' role='tabpanel' aria-labelledby='tab-gallery' hidden>"
+         "<div class='galbar'>"
+         "<input id='galName' type='text' placeholder='gallery name, e.g. hochzeit-2026' maxlength=80>"
+         "<label class='mode'><input type='checkbox' id='galListed'> listed</label>"
+         "<a class='mode' href='" + PREFIX + "/pics' style='color:var(--accent);text-decoration:none'>all galleries &#8594;</a>"
+         "</div>"
+         "<div id='galDrop' class='minidrop'>Drop images here, click to choose — or just paste (⌘/Ctrl+V)</div>"
+         "<input id='galFile' type='file' accept='image/*' multiple hidden>"
+         "<div id='galRows'></div>"
+         "<div id='galResult'></div>"
+         "<div class='limits'>max 30 MB per image, downscaled in your browser to &#8804; 2048 px &#183; images live 90 days &#183; you get a private admin link (hide / delete / reorder)</div>"
+         "</div>"
+         "</div>"
          "<div id='status'></div>"
          "<div id='result'></div>"
          "<div class='stats'>"

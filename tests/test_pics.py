@@ -326,13 +326,17 @@ def test_post_pics_without_create_hints(srv):
 
 
 def test_homepage_integrates_gallery_creation(srv):
-    """1.21.0: gallery creation is reachable from the default throway site."""
+    """1.22.0: one multi-type uploader — tabs for files/text/link/gallery."""
     st, _, html = srv.get("/", headers=BROWSER)
     assert st == 200
     page = html.decode()
-    assert "/pics?create=1" in page            # create form on the homepage
-    assert "/pics" in page                     # link to the gallery index
-    # and the very form flow works end-to-end (urlencoded body, browser UA)
+    # segmented control with all four modes + stable frame
+    assert "role='tablist'" in page
+    for mode in ("files", "text", "link", "gallery"):
+        assert f"data-mode={mode}" in page, mode
+    assert "galName" in page and "linkUrl" in page      # gallery + link inputs
+    assert "/pics" in page                              # link to the gallery index
+    # gallery creation still works end-to-end (the JS flow uses this endpoint)
     st, _, body = srv.post("/pics?create=1",
                            data=urlencode({"name": "vom-homepage", "listed": "1"}),
                            headers={"Content-Type": "application/x-www-form-urlencoded",

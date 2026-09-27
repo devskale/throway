@@ -1,9 +1,41 @@
 # throway — Releases
 
-**Current version:** `1.21.0`
+**Current version:** `1.22.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.22.0 — 2026-09-27
+
+### Upload-Seite: ein Multi-Type-Uploader (Segmented Control)
+
+Die Startseite hat jetzt **einen Uploader mit vier Typen** als Segmented
+Control — nach aktueller Upload-UX-Praxis (per-file Status, Constraints
+vor der Auswahl, Paste-Routing, stabiles Layout, ARIA-Tabs):
+
+- **Files** (default): Drag & Drop / Klick / Paste wie gehabt — jetzt mit
+  Constraint-Zeile („max 5 MB · lives 4h …") unter dem Panel.
+- **Text** (ersetzt den „+"-Button): Textarea + filename/once/ttl/share
+  direkt im Panel.
+- **Link** (neu im UI): URL einfügen → server-seitiger Import
+  (`POST /?url=`, API existierte schon, war nur UI-los).
+- **Gallery**: Galerie-Name + listed + Drop/Paste von Bildern →
+  **client-seitiges Downscaling auf ≤ 2048px WebP** vor dem Upload
+  (10–20× weniger Bandbreite bei Handyfotos, EXIF-Rotation via
+  createImageBitmap erhalten, GIFs unangetastet) → create-or-get der
+  Galerie → sequenzielle Uploads mit **Per-File-Status** (queued /
+  resizing / uploading / done ✓ / failed + Retry-Button pro Datei,
+  429-Warteschleife). Nach dem Anlegen erscheinen Galerie-URL +
+  **Admin-Link** mit Copy-Buttons (Einmal-Hinweis).
+
+Details: Tab-Wechsel instant mit stabilem Rahmen, Panel-Zustände bleiben
+beim Wechsel erhalten, Roving-Focus + Pfeiltasten (ARIA-Tab-Pattern),
+aktiver Tab in der URL (Hash, Restore beim Laden), Paste-Routing
+(Bilder → Gallery-Tab wenn aktiv, sonst Dropzone; Pastes in Formular-
+felder werden nie gekapert). Mobile: Tabs scrollbar, Inputs volle Breite.
+JS-Syntax per node --check geprüft; 39 Tests grün.
 
 ---
 
