@@ -24,6 +24,7 @@ import ipaddress
 import mimetypes
 import urllib.error
 import urllib.request
+import hmac
 import html as _html
 from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.28.0"
+VERSION = "1.29.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -675,6 +676,12 @@ STORE A URL AS A DOCUMENT (link doc):
    - &tag=<t>  -> up to 5 discoverability tags (lowercase [a-z0-9-])
    - &ttl=<h|d> -> SLIDING lifetime, clamped to [4h, 14d] (MAX 14 days);
      default 7 days.
+WRITE PROTECTION (optional): create with &write=1 — the response
+contains write_token exactly once. Afterwards writes (POST /d/<key>,
+PUT/PATCH/DELETE on its files, DELETE the dir, POST /?share=<name>)
+require the token via the X-Throway-Write header or ?write=<token>
+(401 without it); reads, listing, history and zip stay open.
+
      Each add/edit/append/delete slides expires_at forward by ttl (capped at
      30 days total from creation). An active dir keeps living; an idle one
      dies ttl after its last activity.
@@ -972,6 +979,38 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, mdrender.render(text, title=fname, raw_url=raw_url),
                    "text/html; charset=utf-8")
         return True
+
+    def _dir_write_denied(self, key):
+        """Issue throway-dir-write-token: None when writing is allowed, else
+        an (http_code, json_error) tuple. Dirs without a write_token stay
+        open as ever (backward compatible). Protected dirs require the
+        token via the X-Throway-Write header or ?write=<token>, compared
+        constant-time."""
+        m = _dir_meta(key)
+        if not m or not m.get("write_token"):
+            return None
+        given = (self.headers.get("X-Throway-Write") or "").strip()
+        if not given:
+            q = self.path.split("?", 1)[1] if "?" in self.path else ""
+            for kv in q.split("&"):
+                k, _, v = kv.partition("=")
+                if k == "write" and v:
+                    given = unquote(v).strip()
+                    break
+        if not given:
+            return (401, {"error": "write token required: send the X-Throway-Write "
+                                   "header or ?write=<token>"})
+        if not hmac.compare_digest(given.encode(), m["write_token"].encode()):
+            return (401, {"error": "invalid write token"})
+        return None
+
+    def _dir_write_guard(self, key):
+        """Send the 401 when _dir_write_denied fires; True = request handled."""
+        denied = self._dir_write_denied(key)
+        if denied:
+            self._send(denied[0], json.dumps(denied[1]), "application/json")
+            return True
+        return False
 
     def _serve_file(self, fp, ctype, orig, force_dl, fid):
         """Serve a single stored file (inline or attachment). Agents also get
@@ -1580,6 +1619,9 @@ class Handler(BaseHTTPRequestHandler):
         if meta is not None and meta.get("expires", 0) < now:
             shutil.rmtree(dirpath, ignore_errors=True)
             meta = None
+        if meta is not None and meta.get("write_token"):
+            if self._dir_write_guard(key):
+                return
         if meta is None:
             os.makedirs(dirpath, exist_ok=True)
             ttl = ttl_seconds or DIR_DEFAULT_AGE
@@ -1685,6 +1727,17 @@ class Handler(BaseHTTPRequestHandler):
         ttl = _parse_ttl((qp.get("ttl") or [""])[0]) or DIR_DEFAULT_AGE
         listed = "listed=1" in (self.path.split("?", 1)[1] if "?" in self.path else "")
         tags = _parse_tags(qp.get("tag", []))
+        write_flag = (qp.get("write") or [""])[0].strip()
+        write_token = None
+        if write_flag:
+            if write_flag == "1":
+                write_token = secrets.token_hex(24)
+            elif re.fullmatch(r"[A-Za-z0-9._-]{8,64}", write_flag):
+                write_token = write_flag
+            else:
+                return self._send(400, json.dumps(
+                    {"error": "invalid write token: use write=1 (server generates) "
+                              "or 8-64 chars [A-Za-z0-9._-]"}), "application/json")
         meta = {
             "type": "dir",
             "created": now,
@@ -1699,12 +1752,14 @@ class Handler(BaseHTTPRequestHandler):
             meta["id"] = key
         else:
             meta["name"] = key
+        if write_token:
+            meta["write_token"] = write_token
         json.dump(meta, open(_dir_meta_path(key), "w"))
         # write initial files
         if initial_files:
             self._dir_write_files(key, dirpath, meta, initial_files, create=True)
         evict(THROW_POOL_SIZE)
-        return self._dir_response(key, dirpath, meta)
+        return self._dir_response(key, dirpath, meta, write_token=write_token)
 
     def _dir_write_files(self, key, dirpath, meta, files, create=False):
         """Write new files into a dir, update meta + stats + history.
@@ -1756,6 +1811,8 @@ class Handler(BaseHTTPRequestHandler):
         dirpath = _dir_path(key)
         if not os.path.isdir(dirpath):
             return None
+        if self._dir_write_guard(key):
+            return
         m = _dir_meta(key)
         if not m or m.get("type") != "dir":
             return None
@@ -1863,8 +1920,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(html)
 
-    def _dir_response(self, key, dirpath, meta):
-        """JSON response for a dir (agents)."""
+    def _dir_response(self, key, dirpath, meta, write_token=None):
+        """JSON response for a dir (agents). write_token appears only in
+        the creation response — never re-revealed on create-or-get."""
         files = []
         total = 0
         for f in sorted(os.listdir(dirpath)):
@@ -1898,6 +1956,12 @@ class Handler(BaseHTTPRequestHandler):
             resp["name"] = meta["name"]
         if meta.get("listed"):
             resp["listed"] = True
+        if meta.get("write_token"):
+            resp["write_protected"] = True
+        if write_token:
+            resp["write_token"] = write_token
+            resp["write_note"] = ("store this token now — writes need it as the "
+                                  "X-Throway-Write header or ?write=")
         if meta.get("tags"):
             resp["tags"] = meta["tags"]
         return self._send(200, json.dumps(resp), "application/json", {"X-Expires": str(expires)})
@@ -1955,6 +2019,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, h, "text/html")
 
     def _dir_edit(self, key, parts, append):
+        if self._dir_write_guard(key):
+            return
         """PUT/PATCH /d/<key>/<file> — replace or append text in a dir."""
         if len(parts) < 2 or not parts[1]:
             return self._send(400, json.dumps({"error": "file required"}), "application/json")
@@ -2001,6 +2067,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._dir_response(key, dirpath, m)
 
     def _dir_delete(self, parts):
+        if self._dir_write_guard(parts[0] if parts else ""):
+            return
         """DELETE /d/<key> or /d/<key>/<file>."""
         key = parts[0]
         dirpath = _dir_path(key)
@@ -2171,7 +2239,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         if not self._rate(): return
-        path = self.path.lstrip("/").rstrip("/")
+        path = self.path.split("?", 1)[0].lstrip("/").rstrip("/")
         parts = path.split("/")
         # DELETE /d/<key>[/<file>]
         if parts and parts[0] == DIR_NS and len(parts) >= 2 and parts[1]:
@@ -2214,7 +2282,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         """Replace text content (edit)."""
         if not self._rate(): return
-        p = self.path.lstrip("/")
+        p = self.path.split("?", 1)[0].lstrip("/")
         parts = p.split("/")
         # PUT /d/<key>/<file> -> edit a file inside a dir
         if parts and parts[0] == DIR_NS and len(parts) >= 3:
@@ -2240,7 +2308,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         """Append text to existing content."""
         if not self._rate(): return
-        p = self.path.lstrip("/")
+        p = self.path.split("?", 1)[0].lstrip("/")
         parts = p.split("/")
         # PATCH /d/<key>/<file> -> append to a file inside a dir
         if parts and parts[0] == DIR_NS and len(parts) >= 3:
@@ -2480,8 +2548,8 @@ function copyDesc() {{
                 "browse_files": {"method": "GET", "url": PUBLIC_BASE + "/browse?tag=<t>[&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]", "note": "JSON listing of live single files for agents (HTML page for browsers). Filter by one or more &tag= values (AND), by name/tag substring &q=; sort with &sort= (default created) and &order= (default desc). Each entry: id, url, name, content_type, size, tags, created_at, expires_at."},
                 "tag_file": {"method": "POST", "url": PUBLIC_BASE + "/<id>?tag=<t>[&tag=<t2>][&untag=<t3>]", "note": "update tags on an existing single file without touching its content or expiry. Tags: lowercase [a-z0-9-], 1-24 chars, max 5 per file."},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
-                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
-                "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl"},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
+                "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl; 401 without the X-Throway-Write token when the dir is write-protected"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
                 "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
                 "dir_zip": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>?zip=1", "note": "download the whole dir as a zip"},

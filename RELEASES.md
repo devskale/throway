@@ -1,9 +1,35 @@
 # throway — Releases
 
-**Current version:** `1.28.0`
+**Current version:** `1.29.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.29.0 — 2026-09-27
+
+### Opt-in Write-Token für DIRs (Issue: throway-dir-write-token)
+
+Lesen bleibt offen, Schreiben auf Wunsch geschützt — rückwärtskompatibel:
+
+- **Anlegen**: `POST /?dir=1&name=<name>&write=1` → Server generiert
+  Token (48 hex); alternativ `&write=<eigenes>` (8–64 Zeichen
+  [A-Za-z0-9._-]). **Token steht genau einmal im Create-Response**
+  (`write_token` + Hinweis); create-or-get auf existierenden DIR
+  verrät ihn nie.
+- **Schreiben geschützt**: `POST /d/<key>`, `PUT/PATCH /d/<key>/<file>`,
+  `DELETE /d/<key>[/<file>]` verlangen den Token — Header
+  `X-Throway-Write` oder `?write=<token>`, constant-time verglichen.
+  Ohne/falsch → 401. Auch das `?share=<name>`-Loch ist geschlossen.
+- **Lesen offen**: Files, Listing, History, Zip bleiben ohne Token
+  erreichbar. `write_protected: true` im Listing zeigt den Zustand an.
+- **Bugfix nebenbei**: `do_PUT`/`do_PATCH`/`do_DELETE` strippen jetzt
+  Query-Strings aus dem Pfad — `?write=…` (und jede andere Query) auf
+  diesen Routen führte vorher zu 404. Nur GET konnte das je.
+- 3 neue Tests (Token-Flow komplett, Backward-Compat + Leak-Guard,
+  Custom-Token) — 59 grün. API-Spec + Help aktualisiert. Issue in
+  Review.
 
 ---
 

@@ -280,3 +280,70 @@ def test_dir_index_landing(srv):
     st, _, page = srv.get("/d/no-landing", headers=BROWSER)
     assert st == 200 and b"\u2190 throway" in page or b"throway" in page
     assert b"<h1>Report</h1>" not in page
+
+
+def test_dir_write_token(srv):
+    """Issue throway-dir-write-token: opt-in write protection for dirs."""
+    from conftest import multipart
+    # create with write=1 -> token in response
+    st, _, body = srv.post("/?dir=1&name=protected&write=1")
+    d = json.loads(body)
+    tok = d.get("write_token")
+    assert st == 200 and tok and d.get("write_protected") is True
+    # writes WITHOUT token -> 401
+    body_mp, ctype = multipart([("x.txt", b"nope", "text/plain")])
+    st, _, _ = srv.post("/d/protected", data=body_mp, headers={"Content-Type": ctype})
+    assert st == 401
+    st, _, _ = srv.put("/d/protected/x.txt", data=b"evil")
+    assert st == 401
+    st, _, _ = srv.patch("/d/protected/x.txt", data=b"!")
+    assert st == 401
+    st, _, _ = srv.delete("/d/protected")
+    assert st == 401
+    # wrong token -> 401
+    st, _, _ = srv.post("/d/protected", data=body_mp,
+                        headers={"Content-Type": ctype, "X-Throway-Write": "wrong" * 8})
+    assert st == 401
+    # the share= hole is closed too
+    st, _, _ = srv.post("/?share=protected", data=b"evil")
+    assert st == 401
+    # reads stay open: listing, file, history, zip
+    st, _, _ = srv.get("/d/protected", headers=AGENT)
+    assert st == 200
+    st, _, _ = srv.get("/d/protected/history", headers=AGENT)
+    assert st == 200
+    st, _, _ = srv.get("/d/protected?zip=1")
+    assert st == 200
+    # write WITH token (header) -> 200
+    st, _, _ = srv.post("/d/protected", data=body_mp,
+                        headers={"Content-Type": ctype, "X-Throway-Write": tok})
+    assert st == 200
+    # write WITH token (query) -> 200
+    st, _, _ = srv.put("/d/protected/x.txt?write=" + tok, data=b"v2")
+    assert st == 200, "query token"
+    st, _, body = srv.get("/d/protected/x.txt")
+    assert body == b"v2"
+    st, _, _ = srv.delete("/d/protected?write=" + tok)
+    assert st == 200
+
+def test_dir_write_token_backward_compatible(srv):
+    """Dirs without write=1 behave exactly as before; re-creation of a
+    protected dir never re-reveals the token."""
+    from conftest import multipart
+    st, _, body = srv.post("/?dir=1&name=open-dir")
+    d = json.loads(body)
+    assert "write_token" not in d and "write_protected" not in d
+    body_mp, ctype = multipart([("f.txt", b"ok", "text/plain")])
+    st, _, _ = srv.post("/d/open-dir", data=body_mp, headers={"Content-Type": ctype})
+    assert st == 200                       # no token needed, as ever
+    # create-or-get on a protected dir: no token leak
+    srv.post("/?dir=1&name=leaky&write=1")
+    st, _, body = srv.post("/?dir=1&name=leaky&write=1")
+    d2 = json.loads(body)
+    assert "write_token" not in d2 and d2.get("write_protected") is True
+    # custom token via write=<token>
+    st, _, body = srv.post("/?dir=1&name=custom&write=my-own-token-123")
+    d3 = json.loads(body)
+    assert d3.get("write_token") == "my-own-token-123"
+    st, _, _ = srv.delete("/d/custom", headers={"X-Throway-Write": "my-own-token-123"})
+    assert st == 200
