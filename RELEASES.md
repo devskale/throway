@@ -1,9 +1,29 @@
 # throway — Releases
 
-**Current version:** `1.37.0`
+**Current version:** `1.37.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.37.1 — 2026-09-27
+
+### Bugfix: Google-Import holte jede Größenvariante + den User-Icon
+
+Live-Analyse der Share-Seite: Sie enthält pro Foto **mehrere
+Größenvarianten** (96px-Thumbs, OG-Cover, Vollversion) plus den Avatar
+(`/ogw/default-user=s83`). Der Scraper nahm alle mit, `_lh3_hq` blies
+alle auf 2048px auf → jedes Foto mehrfach + User-Icon als
+„unnamed.jpg". (Die frühere „Byte-Varianz"-Deutung war falsch — es waren
+Größenvarianten.)
+
+- **Basis-Dedupe im Scraper**: eine Variante pro Foto-Basispfad — die
+  größte (param-los = Vollversion). Avatare (`/ogw/`, `/a/`) und UI-
+  Icons (≤128px) fliegen raus.
+- Test erweitert (Varianten/Avatar/Icon gefiltert, größte gewählt) — 66
+  grün. Live in einer frischen Galerie verifiziert: nur echte Fotos,
+  kein unnamed.jpg.
 
 ---
 

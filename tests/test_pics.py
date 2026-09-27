@@ -585,12 +585,17 @@ def test_lh3_scrape_and_hq_helpers():
     from throway import pics as P
     html = """
     ["https://lh3.googleusercontent.com/pw/AB1=a1b2=w1600-h900-k-no",
-     "https://lh3.googleusercontent.com/pw/AB1=a1b2=w1600-h900-k-no",
+     "https://lh3.googleusercontent.com/pw/AB1=a1b2",
+     "https://lh3.googleusercontent.com/pw/AB1=a1b2=w96-h72-no",
+     "https://lh3.googleusercontent.com/ogw/default-user=s83",
+     "https://lh3.googleusercontent.com/a/ACg8ico=s40-p-no",
      "https://lh3.googleusercontent.com/gg/XYZ=s1200",
      "https://example.com/not-google.jpg"]
     """
     urls = P._scrape_lh3(html)
-    assert len(urls) == 2                       # dedupe + nur lh3
+    # pro foto-basis genau EINE (die groesste) variante, keine avatare/icons
+    assert urls == ["https://lh3.googleusercontent.com/pw/AB1=a1b2",
+                    "https://lh3.googleusercontent.com/gg/XYZ=s1200"]
     hq = P._lh3_hq(urls[0])
     assert hq.endswith("=w2048-h2048-k-no")
     assert "=a1b2=" in hq                       # auth-tail bleibt

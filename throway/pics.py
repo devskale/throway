@@ -1255,19 +1255,39 @@ _LH3_RE = re.compile(r"https://lh3\.googleusercontent\.com/[\w\-./%?=&]+")
 _LH3_SIZE_RE = re.compile(r"=(?:w|s)\d+(?:-h\d+)?[^=]*$")
 
 
+_LH3_SIZE_RE2 = re.compile(r"=(?:w|s)(\d+)", re.I)
+
+
+def _lh3_is_avatar_or_icon(u):
+    """/ogw/ and /a/ are profile/avatar paths (the user icon in share
+    pages); tiny w/s params (<=128px) are UI icons, not photos."""
+    if "/ogw/" in u or re.search(r"googleusercontent\.com/a/", u):
+        return True
+    m = _LH3_SIZE_RE2.search(u)
+    return bool(m and int(m.group(1)) <= 128)
+
+
 def _scrape_lh3(html_text, cap=100):
-    """Ordered, de-duplicated lh3.googleusercontent.com image URLs from a
-    Google Photos share page (they sit in the server-rendered HTML data
-    blobs — no JS needed). Photos only; videos live on other hosts."""
-    seen, out = set(), []
+    """Photo URLs from a Google Photos share page (server-rendered data
+    blobs, no JS needed). The page carries SEVERAL size variants of every
+    photo (96px thumbs, og-cover, full) plus the owner avatar — we keep
+    exactly ONE variant per photo (the largest / param-less full version)
+    and drop avatars and UI icons, so imports contain only real images."""
+    best = {}                                  # base-path -> (rank, url)
+    order = []                                 # stable output order
     for m in _LH3_RE.findall(html_text):
         u = m.rstrip(".,;:)")
-        if u and u not in seen and not u.endswith("/"):
-            seen.add(u)
-            out.append(u)
-            if len(out) >= cap:
-                break
-    return out
+        if not u or u.endswith("/") or _lh3_is_avatar_or_icon(u):
+            continue
+        base = u.split("=")[0]
+        sm = _LH3_SIZE_RE2.search(u)
+        rank = 10 ** 9 if not sm else int(sm.group(1))   # param-less = full
+        if base not in best:
+            order.append(base)
+            best[base] = (rank, u)
+        elif rank > best[base][0]:
+            best[base] = (rank, u)
+    return [best[b][1] for b in order][:cap]
 
 
 def _lh3_hq(url):
