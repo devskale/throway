@@ -373,8 +373,9 @@ def test_alpha_preserved(srv):
     assert Image.open(io.BytesIO(body)).mode == "RGBA"
 
 
-def test_exif_gps_stripped(srv):
-    """1.25.0: EXIF (incl. GPS) is dropped on re-encode — privacy default."""
+def test_exif_gps_stripped_lossless(srv):
+    """1.26.0: small JPEGs keep their pixels byte-identically, but EXIF
+    (incl. GPS) is removed via lossless container surgery."""
     from PIL import Image
     im = Image.new("RGB", (600, 400), (5, 5, 5))
     exif = Image.Exif()
@@ -383,10 +384,40 @@ def test_exif_gps_stripped(srv):
     buf = io.BytesIO()
     im.save(buf, "JPEG", exif=exif)
     _, g = create(srv)
-    m = up(srv, g["id"], buf.getvalue(), "with-exif.jpg")
+    orig = buf.getvalue()
+    m = up(srv, g["id"], orig, "with-exif.jpg")
+    assert m["content_type"] == "image/jpeg"
     st, _, body = srv.get("/pics/i/" + m["id"])
+    assert st == 200
     served = Image.open(io.BytesIO(body))
-    assert not served.getexif()
+    assert not served.getexif()                # metadata gone
+    assert served.size == im.size              # pixels untouched
+    assert len(body) <= len(orig)              # at least not bigger
+
+
+def test_small_images_kept_byte_identical(srv):
+    """1.26.0: <=2048px JPEG/PNG are stored byte-for-byte — zero quality
+    loss, zero re-encode."""
+    from PIL import Image
+    _, g = create(srv)
+    # JPEG <=2048px
+    im = Image.new("RGB", (1200, 800), (200, 30, 90))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=88, subsampling=0)
+    orig = buf.getvalue()
+    m = up(srv, g["id"], orig, "small.jpg")
+    assert m["content_type"] == "image/jpeg"
+    st, _, body = srv.get("/pics/i/" + m["id"])
+    assert body == orig                        # bit-identical!
+    # PNG <=2048px (with alpha)
+    im = Image.new("RGBA", (500, 400), (10, 200, 100, 128))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    orig_png = buf.getvalue()
+    m2 = up(srv, g["id"], orig_png, "small.png")
+    assert m2["content_type"] == "image/png"
+    st, _, body2 = srv.get("/pics/i/" + m2["id"])
+    assert body2 == orig_png                   # bit-identical, alpha intact
 
 
 def test_api_lists_pics_endpoints(srv):

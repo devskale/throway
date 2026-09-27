@@ -96,18 +96,65 @@ def looks_heic(data):
     return len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in HEIC_BRANDS
 
 
-def process_image(data):
-    """Validate + recompress one image (RFQ FR-5, 1.25.0: HQ first, size cap
-    second). Returns (bytes, ctype, w, h).
+def strip_jpeg_exif(data):
+    """Losslessly remove metadata segments (APP1 = EXIF/XMP incl. GPS,
+    APP13 = Photoshop/IPTC, COM = comments) from a JPEG. Pixels stay
+    byte-identical — only metadata chunks are cut out of the container.
+    JFIF (APP0) and ICC colour profile (APP2) are kept. Returns the input
+    unchanged on any structural surprise (play safe over clever)."""
+    if data[:2] != b"\xff\xd8" or data[-2:] != b"\xff\xd9":
+        return data
+    out = bytearray(b"\xff\xd8")
+    i, n = 2, len(data)
+    try:
+        while i + 4 <= n:
+            if data[i] != 0xFF:
+                return data
+            marker = data[i + 1]
+            if marker == 0xFF:                       # padding
+                i += 1
+                continue
+            if marker == 0xD9:                       # EOI
+                out += data[i:i + 2]
+                return bytes(out)
+            if marker == 0xDA:                       # SOS: entropy data follows
+                out += data[i:]
+                return bytes(out)
+            if 0xD0 <= marker <= 0xD7 or marker == 0x01:   # standalone
+                out += data[i:i + 2]
+                i += 2
+                continue
+            seg_len = int.from_bytes(data[i + 2:i + 4], "big")
+            if seg_len < 2 or i + 2 + seg_len > n:
+                return data
+            if marker not in (0xE1, 0xED, 0xFE):     # drop EXIF/XMP/PS/COM
+                out += data[i:i + 2 + seg_len]
+            i += 2 + seg_len
+    except Exception:
+        return data
+    return data
 
-    Raster images are re-encoded as WebP at max PICS_EDGE px, starting at
-    PICS_QUALITY (90) and stepping the quality down in 5-point steps only
-    while the result exceeds PICS_TARGET (default 1 MB), floor
-    PICS_QUALITY_FLOOR — results under the cap keep the high quality.
-    Alpha (transparent PNGs) is preserved in WebP. EXIF/GPS metadata is
-    dropped on every re-encode (privacy by default — event photos must
-    not leak coordinates). GIFs pass through untouched so animation
-    survives. Raises PicError on anything else.
+
+_KEEP_FORMATS = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
+
+
+def process_image(data):
+    """Validate + recompress one image (RFQ FR-5, 1.26.0). Returns
+    (bytes, ctype, w, h).
+
+    Rule (Johann): **nur komprimieren, wenn die Pixel zu gross sind.**
+      * max(w, h) <= PICS_EDGE (2048px) and the format is web-friendly
+        (JPEG/PNG/WebP) -> the ORIGINAL bytes are kept byte-identical.
+        For JPEGs, EXIF/GPS/Photoshop/comment segments are removed
+        losslessly (container surgery, zero pixel change) so event
+        photos never leak coordinates.
+      * larger images are downscaled to PICS_EDGE and encoded as WebP,
+        starting at PICS_QUALITY (90) and stepping the quality down in
+        5-point steps only while the result exceeds PICS_TARGET
+        (default 1 MB), floor PICS_QUALITY_FLOOR. Alpha is preserved.
+    GIFs always pass through untouched (animation survives). HEIC/AVIF
+    must always transcode (browsers cannot display them); the re-encode
+    drops their metadata. Raises PicError on anything else.
     """
     if not data:
         raise PicError(400, "empty body")
@@ -123,32 +170,47 @@ def process_image(data):
         raise PicError(400, "HEIC/AVIF upload not supported on this server "
                             "(missing pillow-heif)")
     try:
-        with Image.open(io.BytesIO(data)) as im:
-            im = ImageOps.exif_transpose(im)
-            if im.mode in ("P", "PA", "LA", "RGBA"):
-                im = im.convert("RGBA")          # keep transparency in WebP
-            elif im.mode != "RGB":
-                im = im.convert("RGB")
-            if max(im.size) > PICS_EDGE:
-                im.thumbnail((PICS_EDGE, PICS_EDGE))
-            w, h = im.size
-            best = None
-            q = PICS_QUALITY
-            while True:
-                buf = io.BytesIO()
-                im.save(buf, "WEBP", quality=q, method=4)
-                out = buf.getvalue()
-                if best is None or len(out) < len(best):
-                    best = out
-                if len(out) <= PICS_TARGET or q <= PICS_QUALITY_FLOOR:
-                    break
-                q = max(PICS_QUALITY_FLOOR, q - 5)
-            out = best
+        im = Image.open(io.BytesIO(data))
+        im.load()
+    except Exception:
+        raise PicError(400, "not a decodable image (jpeg/png/webp/gif/heic)")
+    try:
+        w, h = im.size
+        fmt = im.format
+        if fmt in _KEEP_FORMATS and max(w, h) <= PICS_EDGE:
+            im.close()
+            if fmt == "JPEG":
+                data = strip_jpeg_exif(data)     # lossless metadata strip
+            return data, _KEEP_FORMATS[fmt], w, h
+        im = ImageOps.exif_transpose(im)
+        if im.mode in ("P", "PA", "LA", "RGBA"):
+            im = im.convert("RGBA")              # keep transparency in WebP
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+        if max(im.size) > PICS_EDGE:
+            im.thumbnail((PICS_EDGE, PICS_EDGE))
+        w, h = im.size
+        best = None
+        q = PICS_QUALITY
+        while True:
+            buf = io.BytesIO()
+            im.save(buf, "WEBP", quality=q, method=4)
+            out = buf.getvalue()
+            if best is None or len(out) < len(best):
+                best = out
+            if len(out) <= PICS_TARGET or q <= PICS_QUALITY_FLOOR:
+                break
+            q = max(PICS_QUALITY_FLOOR, q - 5)
+        return best, "image/webp", w, h
     except PicError:
         raise
     except Exception:
         raise PicError(400, "not a decodable image (jpeg/png/webp/gif/heic)")
-    return out, "image/webp", w, h
+    finally:
+        try:
+            im.close()
+        except Exception:
+            pass
 
 
 # --- domain: image storage (meta sidecars like throway) ---------------------
@@ -1113,11 +1175,12 @@ def api_endpoints(store_base):
             "method": "POST",
             "url": store_base + "/pics/g/<gid>?name=<filename>",
             "body": "raw image bytes (or multipart/form-data for batches)",
-            "note": f"free upload into a gallery, public instantly. Recompressed "
-                    f"server-side to max {PICS_EDGE}px WebP starting at q{PICS_QUALITY}, "
-                    f"quality stepped down only while the result exceeds "
-                    f"~{PICS_TARGET // 1024} kB (HQ first, size second; alpha preserved; "
-                    f"EXIF/GPS stripped; GIFs pass through). Original discarded. Fixed lifetime "
+            "note": f"free upload into a gallery, public instantly. Images at or "
+                    f"under {PICS_EDGE}px are stored byte-identical (JPEG metadata "
+                    f"stripped losslessly); only larger images are downscaled to "
+                    f"{PICS_EDGE}px WebP starting at q{PICS_QUALITY}, quality stepped "
+                    f"down only while the result exceeds ~{PICS_TARGET // 1024} kB "
+                    f"(alpha preserved; GIFs pass through). Fixed lifetime "
                     f"{PICS_TTL // 86400}d (slides the gallery's lifetime), "
                     f"shared pool {PICS_POOL // 1024**3} GB — full pool rejects "
                     f"with 507, never evicts. Max {PICS_MAX_FILE // 1024**2} MB "
@@ -1168,10 +1231,11 @@ UPLOAD (public, no auth)
    POST {PUBLIC_BASE}/pics/g/<gid>?name=photo.jpg    (raw bytes)
    POST {PUBLIC_BASE}/pics/g/<gid>                   (multipart, batch)
 
-Recompressed server-side to max {PICS_EDGE}px WebP q{PICS_QUALITY},
-stepped down only while the result exceeds ~1 MB (HQ first, size
-second; alpha preserved; EXIF/GPS stripped; GIFs pass through;
-originals discarded). Fixed lifetime: {PICS_DAYS}
+Images at or under {PICS_EDGE}px are stored byte-identical (JPEG
+metadata stripped losslessly, pixels untouched). Only larger images
+are downscaled to {PICS_EDGE}px WebP q{PICS_QUALITY}, stepped down
+only while the result exceeds ~1 MB (alpha preserved; GIFs pass
+through). Fixed lifetime: {PICS_DAYS}
 days per image — an upload also slides the gallery's lifetime. Own
 pool: {PICS_GB} GB shared across galleries. Full pool REJECTS uploads
 (507) — existing images are never evicted.

@@ -1,9 +1,34 @@
 # throway — Releases
 
-**Current version:** `1.25.0`
+**Current version:** `1.26.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.26.0 — 2026-09-27
+
+### Nur komprimieren, wenn die Pixel zu gross sind
+
+Johanns Regel, jetzt wörtlich umgesetzt:
+
+- **≤ 2048 px und web-freundliches Format (JPEG/PNG/WebP)** → Bild wird
+  **byte-identisch** gespeichert. Kein Re-Encode, null Qualitätsverlust,
+  null Generationen-Drift. Transparenz natürlich intakt.
+- **JPEG-Metadaten lossless entfernt**: Auch im Keep-Original-Pfad werden
+  EXIF (inkl. GPS!), XMP, Photoshop/IPTC und Kommentare aus dem Container
+  geschnitten — reine Byte-Chirurgie an APP-Segmenten, **Pixel bleiben
+  100% identisch** (verifiziert per Hash). JFIF + ICC-Farbprofil bleiben.
+- **> 2048 px** → downscale auf 2048 px + WebP q90 mit Step-down bis
+  ≤ 1 MB (wie 1.25.0; Floor q65, alpha-erhaltend).
+- GIFs pass through weiter unangetastet (Animation), HEIC/AVIF müssen
+  transcodieren (Browser können sie nicht anzeigen) — dabei fällt deren
+  Metadaten ohnehin weg.
+- Server-Pipeline und Browser-Pre-Resize (Homepage-Tab) sind jetzt
+  konsistent: kleine Bilder gehen unberührt durch.
+- 2 neue Tests (byte-identisch JPEG+PNG, lossless EXIF-Strip), 45 grün.
+  RFQ FR-5 aktualisiert.
 
 ---
 

@@ -43,13 +43,14 @@ Namespace mit eigenem Pool-Budget** und eigene Lifetime-Politik (TR-1).
   **OFFEN-3**.
 - **FR-4** **Max. Größe pro Original-Upload: 30 MB** (Event-Kamera-JPEGs sind
   10–25 MB; throways 5-MB-Limit reicht dafür nicht).
-- **FR-5** **Serverseitige Komprimierung** nach Empfang: längste Kante max.
-  2048 px, Re-Encode als WebP **q90 mit Step-down nur oberhalb 1 MB**
-  (1.25.0: HQ first, size second — Ergebnisse unter dem Cap bleiben auf
-  hohem Quality-Level; Floor q65). Alpha/Transparenz bleibt erhalten,
-  EXIF/GPS wird entfernt (Privacy), EXIF-Rotation eingebacken
-  (Übernahme aus throway `_make_thumb`). Original verwerfen, nur
-  komprimierte Fassung speichern (siehe **OFFEN-4**).
+- **FR-5** **Serverseitige Komprimierung** nach Empfang (1.26.0: nur wenn
+  nötig): Bilder **≤ 2048 px** werden **byte-identisch** gespeichert —
+  JPEG-Metadaten (EXIF/GPS/XMP/IPTC) werden lossless aus dem Container
+  geschnitten, Pixel bleiben 100% identisch. Nur **größere** Bilder werden
+  auf 2048 px runterskaliert und als WebP q90 encodiert, Qualität sinkt
+  in 5er-Schritten nur oberhalb 1 MB (Floor q65). Alpha bleibt erhalten,
+  GIFs pass through (Animation), HEIC wird transcodiert. Original
+  verwerfen, nur komprimierte Fassung speichern (siehe **OFFEN-4**).
 - **FR-6** Hochgeladene Bilder sind **sofort öffentlich sichtbar** (kein
   Freigabe-Schritt, kein Pending-Zustand).
 
