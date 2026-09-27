@@ -32,6 +32,11 @@ A trailing slash on the package dir flattens its contents into
   heartbeat (2–3 ticks, 60–90 s). Blocking `wait_output` on a pane is
   the anti-pattern; the heartbeat message names the checks and "good".
 
+- Before interpreting any browser assertion after a deploy: hard-reload
+  and verify the NEW marker in the loaded DOM (a function/ID this release
+  introduced). Chrome served stale cache twice and cost two debugging
+  rounds on already-correct code.
+
 Done = active + live version correct + feature smoke green + heartbeat started.
 
 ## Tests
@@ -47,6 +52,11 @@ Done = active + live version correct + feature smoke green + heartbeat started.
   `pkill -9 -f "store.py"` — zombies from killed runs poison the next.
 - Every feature ships with its tests in the same commit. Suite green is
   a deploy precondition.
+- **Browser features get a browser test.** Anything with JS behavior
+  (handlers, fetch flows, paste/drop) is proven by a rodney flow that
+  actually triggers it (click / paste event / dispatch) — markup-grep and
+  curl (= agent UA) mask exactly the bugs users hit. Two shipped that way
+  (create-HTML-to-JS-fetch, paste Illegal invocation); both user-found.
 
 ## Code structure
 
@@ -80,10 +90,11 @@ Non-negotiable; each guards a real hole found this session:
 
 ## Editing discipline
 
-- Exact-match anchors break on real UTF-8 (—, ä, ⌘). Grep the exact
-  bytes first (`grep -n … | od -c` when in doubt); for edits whose
-  oldText contains non-ASCII, use a python script with `assert old in
-  src` + `replace` + `py_compile` instead of the edit tool.
+- Edits in store.py / pics.py (rich in —, ä, ⌘, ⌘): use the python-script
+  route (`assert old in src` + `replace` + `py_compile`) BY DEFAULT; the
+  edit tool only for pure-ASCII anchors. Rule-of-record: this rule was
+  written after violating its weaker form five times — anchor failures
+  cost more round-trips than scripts ever will.
 - Edit calls are atomic — one bad anchor applies nothing. Verify with a
   grep after any multi-edit.
 - Validate generated JS by extracting the rendered page's scripts and
@@ -102,6 +113,8 @@ Non-negotiable; each guards a real hole found this session:
 
 ```
 [ ] tests green — confirmed via ${PIPESTATUS[0]}, not a piped echo
+[ ] browser feature? -> rodney flow that triggers it (not markup-grep)
+[ ] scripts/release-check.sh green (version + docs drift; CI runs it too)
 [ ] VERSION + RELEASES.md + docs (api/help/API.md/AGENTS/README) current
 [ ] committed with (x.y.z), pushed
 [ ] rsync (no trailing slash) + restart + is-active

@@ -107,6 +107,48 @@ Reads, listing, history and zip stay open without the token; the
 listing shows `write_protected: true`. Re-creating an existing protected
 dir never re-reveals the token. Dirs without the flag behave as ever.
 
+## Endpoint-Index (Namen aus `/api`)
+
+Agenten können `/api` nach diesen Schlüsseln fragen; hier der Link zur
+Doku-Stelle. (CI prüft diese Liste gegen die Live-Spec — Docs-Drift
+schlägt beim Push an.)
+
+| Key | Doku |
+|---|---|
+| upload | [Upload a file](#upload-a-file) |
+| upload_bundle | [Upload a bundle](#upload-a-bundle-multiple-files) |
+| download | [Download / view a file](#download--view-a-file) |
+| import_url | [Upload a file](#upload-a-file) (`?url=`) |
+| browse_files | [Help](#help-modular-api-gatherable) (`/browse`) |
+| tag_file | [Upload a file](#upload-a-file) (Tags) |
+| download_bundle_file | [View / download a bundle](#view--download-a-bundle) |
+| create_dir | [Dirs](#dirs--one-unified-concept-under-dkey) |
+| add_to_dir | [Dirs](#dirs--one-unified-concept-under-dkey) |
+| get_dir | [Dirs](#dirs--one-unified-concept-under-dkey) |
+| get_dir_file | [Dirs](#dirs--one-unified-concept-under-dkey) |
+| dir_zip | [Dirs](#dirs--one-unified-concept-under-dkey) |
+| get_dir_history | [Dirs](#dirs--one-unified-concept-under-dkey) |
+| edit_dir_file | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
+| append_dir_file | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
+| delete_dir_file | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
+| delete_dir | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
+| list_dirs | [Dirs](#dirs--one-unified-concept-under-dkey) |
+| delete | [Delete a file](#delete-a-file) |
+| edit_text | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
+| append_text | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
+| contract | [Contract endpoint](#contract-endpoint) |
+| write_for_agents | [Contract endpoint](#contract-endpoint) |
+| copy_for_agents | [Contract endpoint](#contract-endpoint) |
+| help | [Help](#help-modular-api-gatherable) |
+| releases | [Contract endpoint](#contract-endpoint) |
+| pics_create | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_index | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_gallery | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_upload | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_import_url | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_image | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_admin | [Pics](#pics--event-galleries-pics-since-1200) |
+
 ## Contract endpoint
 ```bash
 curl "https://skale.dev/throway/api"

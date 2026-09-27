@@ -25,6 +25,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in _sys.path:
     _sys.path.insert(0, REPO)   # makes `throway` (mdrender) importable in tests
 VENV_PY = os.path.join(REPO, ".venv", "bin", "python")
+if not os.path.exists(VENV_PY):                 # CI: kein venv -> aktueller python
+    VENV_PY = sys.executable
 SRC_PY = os.path.join(REPO, "store.py")
 SRC_PKG = os.path.join(REPO, "throway")
 
