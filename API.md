@@ -19,6 +19,44 @@ are deleted. No auth required.
 | Max file size | 5 MB |
 | Pool size | 100 MB (oldest files evicted first) |
 | Rate limit | 100 req/min per IP |
+| pics gallery | own 20 GB pool (full → 507 reject, never evicts), fixed 90-day lifetime, 30 MB max/image, recompressed ≤ 2048 px WebP q80 |
+
+## Pics — event gallery (`/pics`, since 1.19.0)
+
+A curated, long-lived image gallery with its own storage pool — independent
+of the 4h throwaway pool. Free upload, instantly public; one admin with a
+long-lived secret URL curates (hide / delete / reorder).
+
+```bash
+BASE=https://skale.dev/throway
+
+# upload (raw bytes; multipart for batches) -> JSON with id, url, thumb
+curl --data-binary @photo.jpg "$BASE/pics?name=photo.jpg"
+
+# gallery listing: JSON for agents, HTML grid for browsers (paginated ?p=N)
+curl -A curl "$BASE/pics"
+
+# one image / its thumbnail
+curl "$BASE/pics/i/<id>"
+curl "$BASE/pics/i/<id>?thumb=1"
+```
+
+Behavior: uploads are recompressed server-side to max 2048 px WebP q80
+(EXIF rotation respected; GIFs pass through untouched; HEIC/AVIF decoded
+via pillow-heif). The original bytes are discarded. Fixed lifetime: 90
+days, then auto-deleted. Hidden images (admin) return 404 for everyone
+but the admin view.
+
+Admin (secret as a **path segment** from server env
+`THROWAWAY_PICS_ADMIN_TOKEN` — never a query param; wrong secret → 404):
+
+```bash
+# admin page (HTML) or JSON listing incl. hidden images
+curl -A curl "$BASE/pics/<secret>/json"
+
+# actions: hide | unhide | delete | up | down  (form-encoded id + action)
+curl -A "Mozilla" -d "id=<id>&action=hide&p=1" "$BASE/pics/<secret>"
+```
 
 ## Upload a file
 

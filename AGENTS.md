@@ -23,8 +23,8 @@ Auth:      none
 > auch als Minor-Release (`y`-Stelle) gelanden, Breaking Changes als Major
 > (`x`-Stelle). Das heißt: `VERSION` in `store.py` hochziehen,
 > Release-Note in `RELEASES.md` ergänzen, committen (mit `(x.y.z)` im
-> Betreff), pushen und auf lubu deployen (`store.py` nach `/var/www/store/`
-> kopieren + `sudo systemctl restart throway-store`).
+> Betreff), pushen und auf lubu deployen (`rsync -a --delete throway/ tests/ store.py lubu:/var/www/store/` — seit 1.19.0 ist der Code ein Paket:
+> `store.py` (Entry) + `throway/` — + `sudo systemctl restart throway-store`).
 
 1. `POST` a file → get back JSON with an `id` and `url`.
 2. Share that `url`. It's valid for 4 hours.
@@ -455,6 +455,35 @@ curl -X DELETE "https://skale.dev/throway/d/<key>/<file>"  # one file from a dir
 
 ---
 
+## Pics — event gallery (seit 1.19.0, Details: `GET /help/pics`)
+
+Eine kuratierte Bildgalerie unter `/pics` — eigenes Budget (20 GB), eigene
+Lifetime (fest 90 Tage), unabhängig vom 4h-Werfen-Pool. Uploads werden
+server-seitig auf max 2048px WebP recompress (GIFs pass through, HEIC via
+pillow-heif), Originale verworfen. Volle Pool → Uploads abgelehnt (507),
+nie Eviction bestehender Bilder.
+
+```bash
+BASE=https://skale.dev/throway
+
+# upload (roh oder multipart für Batches; sofort öffentlich)
+curl --data-binary @photo.jpg "$BASE/pics?name=photo.jpg"
+
+# Galerie (JSON für Agenten, HTML-Grid für Browser)
+curl -A curl "$BASE/pics"
+
+# ein Bild / Thumbnail
+curl "$BASE/pics/i/<id>"
+curl "$BASE/pics/i/<id>?thumb=1"
+```
+
+**Admin** (nur mit Secret aus der Server-Env, nie in der Query): GET
+`/pics/<secret>` (Admin-Page bzw. `/json`), POST-Form `id` + `action=`
+`hide` | `unhide` | `delete` | `up` | `down`. Verborgene Bilder: 404 für
+alle außer dem Admin. Falsches Secret: 404.
+
+---
+
 ## Error codes
 
 | Code | Meaning |
@@ -462,8 +491,9 @@ curl -X DELETE "https://skale.dev/throway/d/<key>/<file>"  # one file from a dir
 | `400` | invalid filename / not editable (e.g. image) |
 | `404` | not found / expired |
 | `411` | missing `Content-Length` |
-| `413` | file too large (> 5 MB) |
+| `413` | file too large (> 5 MB; pics: > 30 MB) |
 | `429` | rate limit exceeded (100 req/min/IP) |
+| `507` | pics pool full (20 GB) — admin must delete or wait for expiry |
 
 ---
 

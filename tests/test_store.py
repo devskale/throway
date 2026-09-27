@@ -1,0 +1,200 @@
+"""Behavior tests for the existing throway surface (pre-pics regression net).
+
+These describe observable HTTP behavior — they must survive the
+modularization (package split) unchanged.
+"""
+import json
+import time
+
+import pytest
+
+from conftest import Server, multipart, urlencode
+
+AGENT = {"User-Agent": "curl/8.0"}
+BROWSER = {"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/120.0"}
+
+
+@pytest.fixture
+def srv(tmp_path):
+    s = Server(tmp_path / "main")
+    yield s
+    s.stop()
+
+
+@pytest.fixture
+def fast_srv(tmp_path):
+    s = Server(tmp_path / "fast", env_extra={"THROWAWAY_TTL_HOURS": "0"})
+    yield s
+    s.stop()
+
+
+@pytest.fixture
+def tight_srv(tmp_path):
+    s = Server(tmp_path / "tight", env_extra={"THROWAWAY_RATE_LIMIT": "5"})
+    yield s
+    s.stop()
+
+
+# --- core contract -------------------------------------------------------
+
+def test_api_contract(srv):
+    st, hd, body = srv.get("/api", headers=AGENT)
+    assert st == 200
+    spec = json.loads(body)
+    assert spec["base_url"].endswith("/throway")
+    for ep in ("upload", "download", "create_dir", "get_dir", "browse_files"):
+        assert ep in spec["endpoints"]
+    assert hd["Content-Type"].startswith("application/json")
+
+
+def test_agent_homepage_is_help(srv):
+    st, _, body = srv.get("/", headers=AGENT)
+    assert st == 200
+    text = body.decode()
+    assert "throway" in text.lower()
+    assert "/api" in text
+
+
+def test_help_topics_all_served(srv):
+    st, _, body = srv.get("/help", headers=AGENT)
+    assert st == 200
+    idx = json.loads(body)
+    topics = [t["id"] for t in idx["help"]]
+    for t in topics:
+        st2, _, b2 = srv.get(f"/help/{t}", headers=AGENT)
+        assert st2 == 200, f"topic {t} -> {st2}"
+
+
+# --- single files --------------------------------------------------------
+
+def test_upload_raw_and_download_roundtrip(srv):
+    data = b"hello throway\n" * 10
+    st, meta = srv.upload_raw(data, name="note.txt")
+    assert st == 200, meta
+    assert meta["name"] == "note.txt"
+    assert meta["url"].endswith(meta["id"])
+    st, hd, body = srv.get("/" + meta["id"])
+    assert st == 200
+    assert body == data
+    assert hd["Content-Type"].startswith("text/plain")
+
+
+def test_upload_multipart(srv):
+    body, ctype = multipart([("a.txt", b"aaa", "text/plain")])
+    st, meta = srv.jpost("/", data=body, headers={"Content-Type": ctype})
+    assert st == 200
+    st, _, got = srv.get("/" + meta["id"])
+    assert got == b"aaa"
+
+
+def test_upload_too_large_rejected(srv):
+    import urllib.error
+    try:
+        st, meta = srv.upload_raw(b"x" * (5 * 1024 * 1024 + 1), name="big.bin")
+    except (urllib.error.URLError, OSError):
+        # server rejects before draining the body -> connection reset; that is
+        # also a rejection, not a silent accept
+        return
+    assert st == 413
+
+
+def test_upload_and_edit_text(srv):
+    st, meta = srv.upload_raw(b"v1", name="n.txt")
+    st, _, _ = srv.put("/" + meta["id"], data=b"v2")
+    assert st == 200
+    st, _, body = srv.get("/" + meta["id"])
+    assert body == b"v2"
+    st, _, _ = srv.patch("/" + meta["id"], data=b"+more")
+    assert st == 200
+    st, _, body = srv.get("/" + meta["id"])
+    assert body == b"v2+more"
+
+
+def test_once_burn_after_reading(srv):
+    st, meta = srv.upload_raw(b"secret", name="s.txt", qs="once=1")
+    assert st == 200
+    st, _, body = srv.get("/" + meta["id"])
+    assert st == 200 and body == b"secret"
+    st, _, _ = srv.get("/" + meta["id"])
+    assert st == 404
+
+
+def test_delete_file(srv):
+    st, meta = srv.upload_raw(b"bye", name="b.txt")
+    st, _, _ = srv.delete("/" + meta["id"])
+    assert st == 200
+    st, _, _ = srv.get("/" + meta["id"])
+    assert st == 404
+
+
+def test_expiry_removes_file(fast_srv):
+    st, meta = fast_srv.upload_raw(b"temp", name="t.txt")
+    assert st == 200
+    time.sleep(1.2)
+    st, _, _ = fast_srv.get("/" + meta["id"])
+    assert st == 404
+
+
+def test_rate_limit(tight_srv):
+    seen200 = 0
+    st = None
+    for _ in range(10):
+        st, _, _ = tight_srv.get("/api")
+        if st == 429:
+            break
+        seen200 += 1
+    assert seen200 >= 3, "limit never kicked in"
+    assert st == 429
+
+
+def test_tags_and_browse(srv):
+    st, meta = srv.upload_raw(b"paper", name="p.pdf", qs="tag=papers&tag=2026")
+    assert st == 200
+    st, _, body = srv.get("/browse?tag=papers", headers=AGENT)
+    assert st == 200
+    listing = json.loads(body)
+    entries = listing if isinstance(listing, list) else listing.get("files") or listing.get("entries") or []
+    assert any(e.get("id") == meta["id"] for e in entries)
+
+
+# --- share names & dirs --------------------------------------------------
+
+def test_share_named_dir(srv):
+    st, meta = srv.upload_raw(b"shared note", name="n.txt", qs="share=team-notes")
+    assert st == 200
+    assert meta["url"].endswith("/d/team-notes")
+    st, _, body = srv.get("/d/team-notes", headers=AGENT)
+    assert st == 200
+    d = json.loads(body)
+    files = d.get("files", [])
+    assert any(f["name"] == "n.txt" for f in files)
+
+
+def test_dir_create_add_edit_delete(srv):
+    st, _, body = srv.post("/?dir=1&name=team7&listed=1")
+    assert st == 200
+    body, ctype = multipart([("slide.txt", b"one", "text/plain")])
+    st, _, _ = srv.post("/d/team7", data=body, headers={"Content-Type": ctype})
+    assert st == 200
+    st, _, got = srv.get("/d/team7/slide.txt")
+    assert st == 200 and got == b"one"
+    st, _, _ = srv.put("/d/team7/slide.txt", data=b"two")
+    assert st == 200
+    st, _, got = srv.get("/d/team7/slide.txt")
+    assert got == b"two"
+    st, _, _ = srv.delete("/d/team7/slide.txt")
+    assert st == 200
+    st, _, _ = srv.get("/d/team7/slide.txt")
+    assert st == 404
+    st, _, lb = srv.get("/d", headers=AGENT)
+    assert st == 200 and b"team7" in lb
+
+
+def test_dir_history(srv):
+    srv.post("/?dir=1&name=hist1")
+    body, ctype = multipart([("h.txt", b"abc", "text/plain")])
+    srv.post("/d/hist1", data=body, headers={"Content-Type": ctype})
+    st, _, hb = srv.get("/d/hist1/history", headers=AGENT)
+    assert st == 200
+    h = json.loads(hb)
+    assert h.get("total", 0) >= 1

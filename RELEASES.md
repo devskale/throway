@@ -1,9 +1,43 @@
 # throway — Releases
 
-**Current version:** `1.18.4`
+**Current version:** `1.19.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.19.0 — 2026-09-27
+
+### pics — Event-Galerie (Upload, öffentliche Ansicht, Admin-Kuration)
+
+Neues Feature-Set unter `/pics` (RFQ.md): eine kuratierte Bildgalerie für
+Events — freier Upload für Besucher, sofort öffentlich, ein Admin mit
+langlebiger Geheim-URL kuratiert (verbergen / löschen / neu sortieren).
+
+- **Upload**: `POST /pics?name=bild.jpg` (roh) oder multipart (Batch).
+  Recompression server-seitig: max 2048px, WebP q80, EXIF-Rotation beachtet,
+  Originale verworfen. GIFs pass through (Animation bleibt). HEIC/AVIF via
+  `pillow-heif`. Max 30 MB pro Bild.
+- **Eigener Pool**: 20 GB in `ROOT/pics/` — voll = Uploads werden abgelehnt
+  (507), niemals LRU-Eviction. Vollständig getrennt vom 100-MB-Werfen-Pool:
+  `total_size()`, `_units()` und `evict()` sehen pics-Einheiten nie.
+- **Lifetime**: fest 90 Tage, abgewickelt über `sweep()`.
+- **Öffentliche Galerie**: HTML-Grid mit WebP-Thumbs (lazy), Paginierung,
+  JS-Upload-Queue mit Retry + 429-Handling; JSON-Listing für Agenten.
+- **Admin**: Geheim-Token als Pfad-Segment (`/pics/<secret>`, Env
+  `THROWAWAY_PICS_ADMIN_TOKEN`, constant-time-Vergleich). Verbergen → 404
+  für alle außer Admin; Löschen → Bytes+Meta+Thumb weg; Reihenfolge
+  (up/down) persistent per `order`-Feld. Pool-Auslastungsanzeige.
+- **Self-Service**: `/api` um pics_upload/pics_gallery/pics_image/pics_admin
+  ergänzt; neues Help-Topic `/help/pics`; pics-Link in der Homepage-Nav.
+- **Modularisierung (Schritt 1+2)**: pytest-Suite (34 Verhaltenstests,
+  subprocess-basiert) als Regressionsnetz; neuer Code liegt als Modul
+  `throway/pics.py` mit kleiner Schnittstelle (`get/post/sweep/api/HELP`)
+  statt im Monolith. store.py nur an 8 Punkten minimal berührt.
+- **Deploy**: Paket via `rsync` statt einzelner Datei (Ritual in AGENTS.md
+  aktualisiert); neu: `pip install pillow-heif` auf lubu, Env
+  `THROWAWAY_PICS_ADMIN_TOKEN` in der systemd-Unit setzen.
 
 ---
 

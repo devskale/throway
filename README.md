@@ -92,6 +92,10 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | `PUT` | `/throway/<id>` | replace text (text only) |
 | `PATCH` | `/throway/<id>` | append text (text only) |
 | `DELETE` | `/throway/<id>` | delete file / bundle / dir |
+| `GET` | `/throway/pics` | **pics gallery** (HTML grid for browsers, JSON for agents) |
+| `POST` | `/throway/pics?name=<file>` | upload an image to the gallery (raw or multipart batch) |
+| `GET` | `/throway/pics/i/<id>` | serve one gallery image (`?thumb=1` for preview) |
+| `GET`/`POST` | `/throway/pics/<secret>` | admin: page / `/json` / actions (`hide`,`unhide`,`delete`,`up`,`down`) |
 | `GET` | `/throway/api` | machine-readable contract (JSON) |
 | `GET` | `/throway/help` | modular help index (JSON for agents, HTML for browsers) |
 | `GET` | `/throway/help/<topic>` | one help topic (plain text for agents) |
@@ -108,6 +112,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |
 | Rate limit | **100 req/min** per IP |
+| **pics gallery** | own pool **20 GB** (full = uploads rejected with 507, never evicted), fixed lifetime **90 days**, max **30 MB** per image, recompressed to ≤ 2048 px WebP (GIFs pass through, HEIC supported) |
 
 ## 🖼️ Behavior
 
@@ -153,14 +158,18 @@ See **[`AGENTS.md`](AGENTS.md)** for the complete agent guide.
 
 | Piece | How |
 |-------|-----|
-| Server | single-file Python stdlib: [`store.py`](store.py) — no dependencies |
+| Server | Python stdlib: [`store.py`](store.py) (entry) + [`throway/`](throway/) package — only external dep: Pillow (+ `pillow-heif` for HEIC) |
 | Service | systemd `throway-store.service` (port `8111`, auto-start/restart) |
 | Proxy | nginx `/throway/` location |
-| Storage | `/srv/storage2/throway/` (USB HDD) |
+| Storage | `/srv/storage2/throway/` (USB HDD) — `pics/` subdir = gallery pool |
+| Tests | `pytest tests/` (34 behavior tests, subprocess-based) |
 
 ```bash
 # run it anywhere
 python3 store.py
+
+# run the tests
+.venv/bin/python -m pytest tests/ -q
 ```
 
 ## 📚 Docs

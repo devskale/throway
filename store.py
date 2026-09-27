@@ -28,6 +28,8 @@ import html as _html
 from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from throway import pics
+
 
 def _html_escape(s):
     return _html.escape(s)
@@ -63,14 +65,14 @@ MAX_TAG_LEN = 24
 RESERVED_NAMES = {
     "api", "index", "d", "releases", "llms", "llms-full", "llms_full",
     "write_for_agents", "copy_for_agents", "store", "static", "favicon",
-    "robots", "sitemap", "assets", "health", "browse", "list",
+    "robots", "sitemap", "assets", "health", "browse", "list", "pics",
 }
 
 PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway")
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.18.4"
+VERSION = "1.19.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -174,6 +176,8 @@ def total_size():
             if not f.endswith(".meta"):
                 total += os.path.getsize(p)
         elif os.path.isdir(p):
+            if f == pics.NS:
+                continue    # pics has its own pool (RFQ TR-1), never counted here
             if f == DIR_NS:
                 total += _dir_ns_total()
             else:
@@ -207,6 +211,8 @@ def _units():
         if os.path.isfile(p):
             yield p, False, os.path.getmtime(p)
         elif os.path.isdir(p):
+            if f == pics.NS:
+                continue    # pics is never an eviction unit (own pool, RFQ TR-1)
             if f == DIR_NS:
                 nd = p
                 for key in os.listdir(nd):
@@ -287,6 +293,9 @@ def sweep():
         elif os.path.isdir(p):
             if f == DIR_NS:
                 _sweep_dirs(now)
+                continue
+            if f == pics.NS:
+                pics.sweep(ROOT, now)
                 continue
             m = _bundle_meta(p, f)
             expires = (m or {}).get("expires")
@@ -752,19 +761,28 @@ An agent should read /api to discover current limits before acting.""",
 }
 
 
+HELP.update(pics.HELP_TOPICS)
+HELP_ORDER.append("pics")
+
+
 def _render_help_body(key):
     """Return a help topic's body with live values substituted."""
     t = HELP.get(key)
     if not t:
         return None
-    return t["body"].format(
+    vals = dict(
         PUBLIC_BASE=PUBLIC_BASE,
         TTL_HOURS=TTL_HOURS,
         MAX_FILE_MB=MAX_FILE // (1024 * 1024),
         POOL_MB=THROW_POOL_SIZE // (1024 * 1024),
         RATE_LIMIT=RATE_LIMIT,
         HISTORY_LIMIT=HISTORY_LIMIT,
+        PICS_DAYS=pics.PICS_TTL // 86400,
+        PICS_GB=pics.PICS_POOL // 1024**3,
+        PICS_EDGE=pics.PICS_EDGE,
+        PICS_QUALITY=pics.PICS_QUALITY,
     )
+    return t["body"].format(**vals)
 
 
 def _is_editable(ctype):
@@ -1119,6 +1137,11 @@ class Handler(BaseHTTPRequestHandler):
         # --- tagged file browser: /browse?tag=<t>&q=&sort=&order= ---
         if path == "/browse":
             return self._browse(self.path.split("?", 1)[1] if "?" in self.path else "")
+        # --- pics: event gallery — /pics, /pics/i/<id>, /pics/<secret>/… ---
+        pics_parts = path.lstrip("/").split("/")
+        if pics_parts and pics_parts[0] == pics.NS:
+            return pics.get(self, pics_parts[1:],
+                            self.path.split("?", 1)[1] if "?" in self.path else "")
         parts = path.lstrip("/").split("/")
         if parts and parts[0] == DIR_NS and len(parts) >= 2 and parts[1]:
             return self._dir_get(parts[1], parts[1:], query=self.path.split("?", 1)[1] if "?" in self.path else "")
@@ -1241,6 +1264,10 @@ class Handler(BaseHTTPRequestHandler):
 
         path = self.path.split("?", 1)[0].rstrip("/")
         parts = path.lstrip("/").split("/")
+
+        # --- pics: gallery upload (/pics) + admin actions (/pics/<secret>) ---
+        if parts and parts[0] == pics.NS:
+            return pics.post(self, parts[1:], qp)
 
         # POST /<id>?tag=a&tag=b&untag=c -> update tags on an existing file
         # (single-file ids only; dirs have their own tag handling at create)
@@ -2405,6 +2432,7 @@ function copyDesc() {{
                 "releases": {"method": "GET", "url": PUBLIC_BASE + "/releases", "note": "release notes; raw markdown for agents, rendered HTML for browsers"},
             },
         }
+        spec["endpoints"].update(pics.api_endpoints(PUBLIC_BASE))
         self._send(200, json.dumps(spec, indent=2), "application/json")
 
 def _fmt_size(n):
@@ -2794,6 +2822,7 @@ def _index(self):
          f"<div class='when'>since start</div></div>"
          "</div>"
          "<nav class='links'>"
+         f"<a href='{PREFIX}/pics'>pics</a>"
          f"<a href='{PREFIX}/api'>API</a>"
          f"<a href='{PREFIX}/help'>help</a>"
          f"<a href='{PREFIX}/write_for_agents'>for agents</a>"
