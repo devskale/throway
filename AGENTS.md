@@ -465,9 +465,10 @@ curl -X DELETE "https://skale.dev/throway/d/<key>/<file>"  # one file from a dir
 Beliebig viele Bildgalerien unter `/pics` — dirs-artig: wer anlegt, wird
 über einen **per-Galerie-Token** Admin. Eigenes Budget (20 GB geteilt),
 eigene Lifetime (fest 90 Tage pro Bild, Galerie sliding ab letztem
-Upload), unabhängig vom 4h-Werfen-Pool. Uploads werden server-seitig auf
-max 2048px WebP recompress (GIFs pass through, HEIC via pillow-heif),
-Originale verworfen. Voller Pool → Uploads abgelehnt (507), nie Eviction.
+Upload), unabhängig vom 4h-Werfen-Pool. Bilder ≤ 2048px werden **byte-identisch** gespeichert (JPEG-Metadaten
+lossless entfernt, GPS weg); nur größere werden auf 2048px WebP q90
+komprimiert (≤ 1 MB; GIFs pass through, HEIC via pillow-heif). Voller
+Pool → Uploads abgelehnt (507), nie Eviction.
 
 ```bash
 BASE=https://skale.dev/throway

@@ -469,3 +469,47 @@ def test_store_surface_unaffected(srv):
     pid = up(srv, g["id"])["id"]
     assert os.path.isfile(os.path.join(srv.root, "pics", pid))
     assert not os.path.isfile(os.path.join(srv.root, pid))
+
+
+def test_thumbs_dont_consume_rate_limit(tmp_path):
+    """1.30.0: gallery pages fire 60 thumbs — thumbs stay outside the rate
+    counter (two full pages/minute would 429 from request #101)."""
+    s = Server(tmp_path / "rl", env_extra={"THROWAWAY_RATE_LIMIT": "5"})
+    try:
+        _, g = create(s)
+        m = up(s, g["id"])
+        # 10 thumb requests: none may hit the limit
+        for _ in range(10):
+            st, hd, _ = s.get(f"/pics/i/{m['id']}?thumb=1")
+            assert st == 200, "thumb wurde gelimitet"
+            assert hd.get("Cache-Control") == "public, max-age=3600"
+        # non-thumb requests still count (setup already used ~3 of the 5;
+        # the 10 thumbs above must NOT have consumed any)
+        codes = [s.get(f"/pics/i/{m['id']}")[0] for _ in range(6)]
+        assert 429 in codes, "limit gilt weiterhin fuer non-thumb-requests"
+    finally:
+        s.stop()
+
+
+def test_pics_image_cache_header_and_stats(srv):
+    """1.30.0: pics images carry immutable cache hints; uploads count into
+    the shared stats (homepage counters see gallery activity)."""
+    _, g = create(srv)
+    stats_before = json.load(open(os.path.join(
+        os.path.dirname(stats_path(srv)), "stats.json"))) if os.path.isfile(
+        os.path.join(os.path.dirname(stats_path(srv)), "stats.json")) else {"files": 0, "bytes": 0}
+    m = up(srv, g["id"])
+    st, hd, _ = srv.get("/pics/i/" + m["id"])
+    assert st == 200 and hd.get("Cache-Control") == "public, max-age=86400"
+    # stats counted the upload
+    stats_after = json.load(open(stats_path(srv)))
+    assert stats_after["files"] == stats_before.get("files", 0) + 1
+    # throway single files stay uncached (they are PUT-editable)
+    st2, meta = srv.upload_raw(b"mutables", name="t.txt")
+    st2, hd2, _ = srv.get("/" + meta["id"])
+    assert hd2.get("Cache-Control") is None
+
+
+def stats_path(srv):
+    # stats.json liegt neben der serverkopie im tmpdir
+    return os.path.join(os.path.dirname(srv.root), "app", "stats.json")

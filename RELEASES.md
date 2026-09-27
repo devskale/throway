@@ -1,9 +1,39 @@
 # throway — Releases
 
-**Current version:** `1.29.0`
+**Current version:** `1.30.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.30.0 — 2026-09-27
+
+### pics ↔ throway-Integrationsreview: drei Nähte gefestigt
+
+Systematischer Konsistenz-Check der pics-Integration. Befunde + Fixes:
+
+- **Thumbs zählen nicht mehr aufs Rate-Limit** (der kritische Fund): Eine
+  Galerieseite feuert 60 `?thumb=1`-Requests — zwei volle Seiten pro
+  Minute liefen ab Request #101 in 429 (bewiesen im Lokaltest). Thumbs
+  sind gecachte Mikro-WebPs und bleiben jetzt außerhalb des Zählers;
+  Uploads, Vollbilder und API zählen weiter.
+- **Cache-Control für Unveränderliches**: Thumbs `public, max-age=3600`,
+  pics-Bilder `public, max-age=86400` (IDs sind bis zum Ablauf
+  immutable) — Event-Gäste hinter NAT profitieren kollektiv. Throway-
+  Einzeldateien bleiben bewusst ungecacht (PUT-editierbar). Nebenan
+  bereinigt: doppelter Cache-Header im Thumb-Pfad, Header-Nach-`end_
+  headers()`-Bug in `_serve_file`.
+- **pics zählen in die Stats**: Galerie-Uploads bumpen jetzt
+  stats.json + Since-Start-Zähler — die Homepage zeigt Galerie-Aktivität
+  statt „0 files". Stats sind kosmetisch: Fehler dort killen nie einen
+  Upload.
+- Docs: AGENTS.md-Kompressionszeile auf die 1.26er-Pixel-Regel
+  korrigiert (stand noch auf „recompress alles").
+- 2 neue Tests (Thumb-Limit-Exemption + Cache-Header/Stats) — 61 grün.
+
+Unverändert korrupt-frei bestätigt: Pool-Trennung (4 Stellen),
+RESERVED_NAMES, Homepage-/Browse-Listing überspringen pics, Routing.
 
 ---
 

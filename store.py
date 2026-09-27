@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.29.0"
+VERSION = "1.30.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -147,13 +147,14 @@ def _id_path(fid):
 def _meta_path(fid):
     return os.path.join(ROOT, os.path.basename(fid) + ".meta")
 
-def allowed(ip):
+def allowed(ip, count=True):
     now = time.time()
     t = _hits.setdefault(ip, [])
     t[:] = [x for x in t if x > now - 60]
     if len(t) >= RATE_LIMIT:
         return False
-    t.append(now)
+    if count:
+        t.append(now)
     return True
 
 def _dir_size(p):
@@ -922,8 +923,8 @@ class Handler(BaseHTTPRequestHandler):
                 # client hung up mid-response — nothing to do
                 return
 
-    def _rate(self):
-        if not allowed(self._client_ip()):
+    def _rate(self, count=True):
+        if not allowed(self._client_ip(), count=count):
             self._send(429, "rate limit exceeded\n"); return False
         return True
 
@@ -1012,7 +1013,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
-    def _serve_file(self, fp, ctype, orig, force_dl, fid):
+    def _serve_file(self, fp, ctype, orig, force_dl, fid, cache=None):
         """Serve a single stored file (inline or attachment). Agents also get
         a Link hint pointing at the machine-readable contract."""
         size = os.path.getsize(fp)
@@ -1027,6 +1028,8 @@ class Handler(BaseHTTPRequestHandler):
                              f'attachment; filename="{fname}"')
             for k, v in (hint or {}).items():
                 self.send_header(k, v)
+            if cache:
+                self.send_header("Cache-Control", cache)
             self.end_headers()
         else:
             ct = ctype
@@ -1038,6 +1041,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", "inline")
             for k, v in (hint or {}).items():
                 self.send_header(k, v)
+            if cache:
+                self.send_header("Cache-Control", cache)
             self.end_headers()
         with open(fp, "rb") as f:
             if self.command != "HEAD":
@@ -1070,7 +1075,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ct)
         self.send_header("Content-Length", str(size))
-        self.send_header("Cache-Control", "max-age=3600")
+        self.send_header("Cache-Control", "public, max-age=3600")
         self.end_headers()
         if self.command == "HEAD":
             return
@@ -1179,7 +1184,12 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
-        if not self._rate(): return
+        # ?thumb=1 requests are cached micro-WebPs; a gallery page fires 60
+        # of them, so they stay OUTSIDE the rate counter (full images,
+        # uploads and API calls still count). Two full gallery pages per
+        # minute would otherwise 429 from request #101.
+        _q = self.path.split("?", 1)[1] if "?" in self.path else ""
+        if not self._rate(count="thumb=1" not in _q): return
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path in ("/", ""):
             if self._is_agent():

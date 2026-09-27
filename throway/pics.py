@@ -339,6 +339,15 @@ def store_pic(root, data, name, ip, gid):
     }
     save_meta(root, pid, meta)
     touch_gallery(root, gid, now)              # sliding gallery lifetime
+    try:                                        # count into the shared stats
+        import store
+        s = store._load_stats()
+        s["files"] += 1
+        s["bytes"] += len(out)
+        store._save_stats(s)
+        store._bump_since_start(1, len(out))
+    except Exception:
+        pass                                    # stats are cosmetic — never fail an upload
     return pid, meta
 
 
@@ -1059,7 +1068,9 @@ def _serve(h, store, root, pid, admin, query, gid=None):
     ctype = m.get("ctype") or "image/webp"
     if "thumb=1" in query:
         return h._serve_thumb(fp, ctype)
-    h._serve_file(fp, ctype, m.get("name"), "download=1" in query, pid)
+    # image ids are immutable until expiry -> browsers may cache a day
+    h._serve_file(fp, ctype, m.get("name"), "download=1" in query, pid,
+                  cache=None if "download=1" in query else "public, max-age=86400")
 
 
 # --- POST actions ------------------------------------------------------------
