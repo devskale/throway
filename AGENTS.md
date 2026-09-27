@@ -14,6 +14,11 @@ Lifetime:  4 hours (files auto-delete)
 Auth:      none
 ```
 
+> **CODING_RULES.md lesen vor jeder Code-Änderung** — Release-Checkliste,
+> Deploy-Ritual (rsync-Falle), Test-Disziplin (`${PIPESTATUS[0]}`!), Security-
+> Invarianten (Token einmal, constant-time, 404), Edit-Disziplin (UTF-8-Anker).
+> Gilt für: Code ändern, Deployen, Tests, neue Features, Security-relevante Stellen.
+
 > **Bumppush-Pflicht:** Jede Änderung am Code wird immer als **Bumppush**
 > gelandet — per Default ein **Minor-Bump (`x.y.Z` → `x.y+1.0`-Stelle:
 > `1.11.0` → `1.12.0`)**; Patch-Bumps nur für reine Bugfixes, Major nur bei
