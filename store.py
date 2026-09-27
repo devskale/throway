@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.36.2"
+VERSION = "1.37.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -2980,6 +2980,7 @@ _INDEX_JS = r"""(function () {
   function pumpGallery() {
     if (gal.busy) return;
     gal.busy = true;
+    var dups = 0;
     (async function () {
       while (gal.queue.length) {
         var f = gal.queue.shift();
@@ -3002,11 +3003,15 @@ _INDEX_JS = r"""(function () {
           for (var a = 0; a < 3; a++) {
             var r2 = await fetch(PREFIX + '/pics/g/' + gal.gid + '?name=' + encodeURIComponent(out.name),
                                  { method: 'POST', body: out });
-            if (r2.ok) { ok = true; break; }
+            if (r2.ok) {
+              var dj = await r2.json().catch(function () { return {}; });
+              if (dj.duplicate) { dups++; galSt(r0, 'duplikat \u2014 \u00fcbersprungen', ''); }
+              ok = true; break;
+            }
             if (r2.status === 429) { galSt(r0, 'rate-limited, waiting…'); await sleep(61000); continue; }
             await sleep(1500);
           }
-          if (ok) galSt(r0, 'done ✓', 'ok');
+          if (ok && !dups) galSt(r0, 'done ✓', 'ok');
           else { galSt(r0, 'failed', 'err'); galRetry(r0, f); }
         } catch (e) {
           galSt(r0, 'failed — ' + (e && e.message ? e.message : 'error'), 'err');

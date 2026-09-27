@@ -37,6 +37,7 @@ Hidden images: 404 for everyone except via the owning gallery's admin route.
 Everything below the interface line is implementation; tests drive it
 through HTTP.
 """
+import hashlib
 import hmac
 import io
 import json
@@ -312,8 +313,11 @@ def _sorted_visible(items):
     return vis
 
 
-def store_pic(root, data, name, ip, gid):
-    """Process and store one upload into gallery gid. Returns (pid, meta)."""
+def store_pic(root, data, name, ip, gid, dedupe=True):
+    """Process and store one upload into gallery gid. Returns (pid, meta,
+    duplicate). With dedupe, an identical image (sha256 of the stored
+    bytes) already in THIS gallery is returned instead of stored twice —
+    idempotent uploads for event walls and re-imports."""
     g = load_gallery(root, gid)
     if not g:
         raise PicError(404, "gallery not found")
@@ -322,6 +326,11 @@ def store_pic(root, data, name, ip, gid):
     if used + len(out) > PICS_POOL:
         raise PicError(507, "gallery pool full — admin must delete images "
                             f"or wait for expiry (used {_fmt(used)} of {_fmt(PICS_POOL)})")
+    sha = hashlib.sha256(out).hexdigest()
+    if dedupe:
+        for pid_e, m_e in all_pics(root, gid):
+            if m_e.get("sha256") == sha:
+                return pid_e, m_e, True        # idempotent: existing wins
     pid = secrets.token_hex(8)
     d = _dir(root)
     os.makedirs(d, exist_ok=True)
@@ -336,6 +345,7 @@ def store_pic(root, data, name, ip, gid):
         "created": now, "expires": now + PICS_TTL, "ip": ip, "gid": gid,
         "name": (name or pid)[:128], "orig_size": len(data), "size": len(out),
         "ctype": ctype, "w": w, "h": h, "hidden": False, "order": order,
+        "sha256": sha,
     }
     save_meta(root, pid, meta)
     touch_gallery(root, gid, now)              # sliding gallery lifetime
@@ -348,7 +358,7 @@ def store_pic(root, data, name, ip, gid):
         store._bump_since_start(1, len(out))
     except Exception:
         pass                                    # stats are cosmetic — never fail an upload
-    return pid, meta
+    return pid, meta, False
 
 
 def moderate(root, pid, action, gid=None):
@@ -608,7 +618,7 @@ _UP_JS = (
     "var inp=document.getElementById('f'),st=document.getElementById('upstat'),"
     "dzEl=document.getElementById('upDrop');"
     "function upd(){st.textContent=(done||fail||q.length)"
-    "? done+' hochgeladen'+(fail?', '+fail+' fehlgeschlagen':'')+(q.length?', '+q.length+' ausstehend':'')"
+    "? done+' hochgeladen'+(dupcount?', '+dupcount+' duplikate \u00fcbersprungen':'')+(fail?', '+fail+' fehlgeschlagen':'')+(q.length?', '+q.length+' ausstehend':'')"
     ": '';}"
     "function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}"
     "inp.addEventListener('change',function(){"
@@ -644,11 +654,13 @@ _UP_JS = (
     "setTimeout(function(){location.reload();},700);}"
     "else st.textContent='import fehlgeschlagen: '+((x.d&&x.d.error)||'unbekannt');})"
     ".catch(function(e){st.textContent='import fehlgeschlagen: '+e;});}"
+    "var dupcount=0;"
     "async function one(f){"
     "for(var a=0;a<3;a++){"
     "var r=await fetch('__P__/pics/g/__GID__?name='+encodeURIComponent(f.name),"
     "{method:'POST',body:f});"
-    "if(r.ok)return true;"
+    "if(r.ok){var d=await r.json().catch(function(){return {};});"
+    "if(d.duplicate){dupcount++;}return true;}"
     "if(r.status===429){await sleep(61000);continue;}"
     "await sleep(1500);}"
     "return false;}"
@@ -1297,7 +1309,7 @@ def _url_import(h, store, root, gid, qp):
                     {"error": "page contains no importable images (only direct "
                               "image URLs or Google Photos share links work)"}),
                     "application/json")
-            imported, errors = [], []
+            imported, errors, dup_count = [], [], 0
             for u in urls:
                 try:
                     idata, iname, ict = store._fetch_remote(_lh3_hq(u),
@@ -1305,24 +1317,31 @@ def _url_import(h, store, root, gid, qp):
                     if not (ict or "").startswith("image/"):
                         errors.append(f"{u[-24:]}: not an image")
                         continue
-                    pid, m = store_pic(root, idata, iname or "image", h._client_ip(), gid)
-                    imported.append(public_meta(store, pid, m))
+                    pid, m, dup = store_pic(root, idata, iname or "image", h._client_ip(), gid)
+                    if dup:
+                        dup_count += 1
+                    else:
+                        imported.append(public_meta(store, pid, m))
                 except store._FetchError as ex:
                     errors.append(f"{u[-24:]}: {getattr(ex, 'msg', 'fetch failed')}")
                 except PicError as ex:
                     errors.append(f"{u[-24:]}: {ex.msg}")
             return h._send(200, json.dumps({
                 "gallery": store.PUBLIC_BASE + "/pics/g/" + gid,
-                "imported": len(imported), "failed": len(errors),
+                "imported": len(imported), "duplicates": dup_count,
+                "failed": len(errors),
                 "images": imported[:20], "errors": errors[:10],
             }, indent=2), "application/json")
         return h._send(400, json.dumps(
             {"error": f"not an image (content-type {ctype or 'unknown'})"}), "application/json")
     try:
-        pid, m = store_pic(root, data, name or "image", h._client_ip(), gid)
+        pid, m, dup = store_pic(root, data, name or "image", h._client_ip(), gid)
     except PicError as ex:
         return h._send(ex.code, json.dumps({"error": ex.msg}), "application/json")
-    h._send(200, json.dumps(public_meta(store, pid, m), indent=2), "application/json")
+    resp = dict(public_meta(store, pid, m))
+    if dup:
+        resp["duplicate"] = True
+    h._send(200, json.dumps(resp, indent=2), "application/json")
 
 
 def _upload(h, store, root, gid, qp):
@@ -1348,18 +1367,22 @@ def _upload(h, store, root, gid, qp):
         files = [t for t in store._parse_multipart(payload, ctype) if t[0]]
         if not files:
             return h._send(400, json.dumps({"error": "no file part"}), "application/json")
-        added, errors = [], []
+        added, errors, dups = [], [], []
         for n, d, _c in files:
             try:
-                pid, m = store_pic(root, d, store._safe_name(n)[:128], ip, gid)
-                added.append(public_meta(store, pid, m))
+                pid, m, dup = store_pic(root, d, store._safe_name(n)[:128], ip, gid)
+                if dup:
+                    dups.append(public_meta(store, pid, m))
+                else:
+                    added.append(public_meta(store, pid, m))
             except PicError as ex:
                 errors.append(f"{store._safe_name(n)[:64]}: {ex.msg}")
         if h._is_agent():
             code = 200 if not errors else (507 if all(
                 "pool" in e for e in errors) and not added else 207)
             return h._send(code, json.dumps(
-                {"added": added, "errors": errors}, indent=2), "application/json")
+                {"added": added, "duplicates": len(dups), "errors": errors},
+                indent=2), "application/json")
         return h._send(303, b"", extra={"Location": f"{store.PREFIX}/pics/g/{gid}"})
     # raw body: one image per request (JS queue + agents)
     length = h.headers.get("Content-Length")
@@ -1378,10 +1401,13 @@ def _upload(h, store, root, gid, qp):
             {"error": f"too large (max {_fmt(PICS_MAX_FILE)})"}), "application/json")
     data = h.rfile.read(length)
     try:
-        pid, m = store_pic(root, data, store._safe_name(name)[:128], ip, gid)
+        pid, m, dup = store_pic(root, data, store._safe_name(name)[:128], ip, gid)
     except PicError as ex:
         return h._send(ex.code, json.dumps({"error": ex.msg}), "application/json")
-    h._send(200, json.dumps(public_meta(store, pid, m), indent=2), "application/json")
+    resp = dict(public_meta(store, pid, m))
+    if dup:
+        resp["duplicate"] = True
+    h._send(200, json.dumps(resp, indent=2), "application/json")
 
 
 def _admin_action(h, store, root, gid, secret):

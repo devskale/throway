@@ -1,9 +1,28 @@
 # throway — Releases
 
-**Current version:** `1.36.2`
+**Current version:** `1.37.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.37.0 — 2026-09-27
+
+### Duplikat-Erkennung (Content-Hash, pro Galerie)
+
+Event-Wänden und Re-Imports sei Dank: identische Bilder werden nicht
+zweitgespeichert.
+
+- **SHA-256 der gespeicherten Bytes** pro Bild in der Meta. Upload eines
+  bereits vorhandenen Bildes (gleiche Galerie) liefert die **existierende
+  ID zurück** mit `duplicate: true` — idempotente Upload-Semantik statt
+  Fehler. Andere Galerien sind bewusst nicht dedupliziert.
+- Multipart-Batches: `duplicates: N` im Response; Album-Import
+  (Share-Link): `duplicates` gezählt, nicht neu geholt; Uploader-Status
+  zeigt „N duplikate übersprungen" / Zeile „duplikat — übersprungen".
+- 1 neuer Test (gleiche ID + Flag, Count bleibt, anderes Bild speichert,
+  Batch-Duplikate) — 66 grün.
 
 ---
 

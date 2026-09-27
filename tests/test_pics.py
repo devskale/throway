@@ -158,7 +158,8 @@ def test_upload_name_url_decoded(srv):
     assert st == 200, m
     assert m["name"] == "uniinfer-tu@x.png"
     st, m2 = srv.jpost(f"/pics/g/{g['id']}?name=PXL%20foto.jpg",
-                       data=jpeg(), headers={"Content-Type": "application/octet-stream"})
+                       data=jpeg(500, 400, (7, 7, 7)),   # anderes bild — dedupe!
+                       headers={"Content-Type": "application/octet-stream"})
     assert m2["name"] == "PXL foto.jpg"
 
 
@@ -596,3 +597,31 @@ def test_lh3_scrape_and_hq_helpers():
     assert P._lh3_hq("https://lh3.googleusercontent.com/pw/AB") == \
         "https://lh3.googleusercontent.com/pw/AB=w2048-h2048-k-no"
     assert P._scrape_lh3("leer") == []
+
+
+def test_duplicate_detection(srv):
+    """1.37.0: same image twice -> second is idempotent (same id, duplicate
+    flag), gallery count stays 1. Different images both store."""
+    _, g = create(srv)
+    img = jpeg(500, 400, (9, 99, 199))
+    m1 = up(srv, g["id"], img, "a.jpg")
+    st, m2 = srv.jpost(f"/pics/g/{g['id']}?name=a-kopie.jpg", data=img,
+                       headers={"Content-Type": "application/octet-stream",
+                                **AGENT})
+    assert st == 200
+    assert m2["id"] == m1["id"]                 # same picture back
+    assert m2.get("duplicate") is True
+    st, _, body = srv.get(f"/pics/g/{g['id']}", headers=AGENT)
+    assert json.loads(body)["gallery"]["images"] == 1
+    # different image stores normally
+    m3 = up(srv, g["id"], jpeg(500, 400, (1, 2, 3)), "b.jpg")
+    st, _, body = srv.get(f"/pics/g/{g['id']}", headers=AGENT)
+    assert json.loads(body)["gallery"]["images"] == 2
+    # multipart batch with a dup inside
+    from conftest import multipart
+    body_mp, ctype = multipart([("x.jpg", img, "image/jpeg"),
+                                ("y.jpg", img, "image/jpeg")])
+    st, _, out = srv.post(f"/pics/g/{g['id']}", data=body_mp,
+                          headers={"Content-Type": ctype, **AGENT})
+    res = json.loads(out)
+    assert res["added"] == [] and res["duplicates"] == 2
