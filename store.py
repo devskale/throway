@@ -2805,7 +2805,7 @@ _INDEX_JS = r"""(function () {
     if (galListed.checked) q += '&listed=1';
     this.disabled = true;
     var btn = this;
-    fetch(PREFIX + '/pics?' + q, { method: 'POST' })
+    fetch(PREFIX + '/pics?' + q, { method: 'POST', headers: { 'Accept': 'application/json' } })
       .then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function (d) {
         btn.disabled = false;
@@ -2948,7 +2948,7 @@ _INDEX_JS = r"""(function () {
             var q = 'create=1';
             if (galName.value.trim()) q += '&name=' + encodeURIComponent(galName.value.trim());
             if (galListed.checked) q += '&listed=1';
-            var r = await fetch(PREFIX + '/pics?' + q, { method: 'POST' });
+            var r = await fetch(PREFIX + '/pics?' + q, { method: 'POST', headers: { 'Accept': 'application/json' } });
             var d = await r.json().catch(function () { return {}; });
             if (!d.id) throw new Error(d.error || 'create failed');
             gal.gid = d.id;

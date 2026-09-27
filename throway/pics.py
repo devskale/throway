@@ -1010,10 +1010,12 @@ def _create(h, store, root, qp):
     key = (store._safe_name(name) or "")[:80] or None
     gid, g, existed = create_gallery(root, key, listed, h._client_ip())
     pub = f"{store.PUBLIC_BASE}/pics/g/{gid}"
+    wants_json = (h._is_agent()
+                  or "application/json" in (h.headers.get("Accept") or ""))
     if existed:
         # create-or-get on an existing named gallery: public info only —
         # the admin token stays with whoever created it
-        if h._is_agent():
+        if wants_json:
             return h._send(200, json.dumps({
                 "id": gid, "url": pub, "name": g.get("name") or gid,
                 "existed": True,
@@ -1026,7 +1028,7 @@ def _create(h, store, root, qp):
             + "<p class=meta>Der Admin-Link wurde nur beim Anlegen gezeigt.",
             _GALLERY_CSS), "text/html")
     adm = f"{pub}/{g['token']}"
-    if h._is_agent():
+    if wants_json:
         return h._send(200, json.dumps({
             "id": gid, "url": pub, "admin_url": adm, "token": g["token"],
             "name": g["name"], "listed": g["listed"],
