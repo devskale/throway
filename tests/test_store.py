@@ -347,3 +347,4 @@ def test_dir_write_token_backward_compatible(srv):
     assert d3.get("write_token") == "my-own-token-123"
     st, _, _ = srv.delete("/d/custom", headers={"X-Throway-Write": "my-own-token-123"})
     assert st == 200
+

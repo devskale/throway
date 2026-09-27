@@ -12,6 +12,9 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+import pytest
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Never follow redirects in tests — we assert on the raw status."""
@@ -140,3 +143,29 @@ class Server:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+
+
+# --- Retro 2026-09-27 (Befund 7): server.log in den Fehlerbericht -------
+# Bei fehlgeschlagenen Tests wird der Tail jedes server.log der Test-Tmpdirs
+# in den Bericht gedruckt — der nächste Hänger ist ein Blick statt einer
+# Suchaktion in /private/var/folders/…
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    rep = yield
+    setattr(item, f"rep_{rep.when}", rep)
+    return rep
+
+
+@pytest.fixture(autouse=True)
+def _server_log_on_failure(request):
+    yield
+    rep = getattr(request.node, "rep_call", None)
+    if rep is not None and rep.failed:
+        tmp = request.node.funcargs.get("tmp_path")
+        if tmp and os.path.isdir(str(tmp)):
+            for log in sorted(Path(str(tmp)).rglob("server.log")):
+                lines = log.read_text(errors="replace").splitlines()[-15:]
+                if lines:
+                    print(f"\n--- server.log: {log} (Tail) ---")
+                    print("\n".join(lines))

@@ -104,6 +104,14 @@ Non-negotiable; each guards a real hole found this session:
 
 - **Fail early**: prove the smallest step first (one API call before a
   batch, one rendered page before a suite).
+- **rodney runs on a shared Chrome.** Before interpreting any eval chain,
+  `rodney url` once — other agents navigate the same instance, and evals
+  on a foreign page read as mysterious failures (three misread rounds
+  this session).
+- **Functional assertions over screenshots** on iframe-heavy pages:
+  `rodney screenshot` waits for network-idle, which external embeds never
+  reach. Measure the DOM (`getBoundingClientRect`, counts, flags) —
+  numbers, not pixels.
 - **Prove features with real data once** — the ~/Pictures upload
   surfaced the `%40`-encoding bug that every synthetic test missed.
 - Long tasks run in a Herdr pane with `tee` into a log; the heartbeat
