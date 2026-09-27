@@ -1,9 +1,25 @@
 # throway — Releases
 
-**Current version:** `1.32.0`
+**Current version:** `1.32.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.32.1 — 2026-09-27
+
+### Bugfix: Gallery-Create aus dem Browser (gefunden durch echten Browser-Test)
+
+Der `POST /pics?create=1` antwortete nur für Agent-UAs mit JSON — der
+Browser-JS-Flow (Create-Button UND Upload-Create-on-first-file im
+Homepage-Gallery-Tab) bekam HTML, `r.json()` scheiterte still. Meine
+bisherigen Validierungen liefen per curl (= Agent-UA) und maskierten
+das. Jetzt Content-Negotiation: JSON bei `Accept: application/json`
+oder Agent-UA; beide JS-Fetches senden den Header. Rodney-Browser-Test
+bestätigt: Button-Flow, Admin-Link-Anzeige, Space-Kuration vollständig
+durchgeklickt. (Und der Checklisten-Schritt „VERSION bumpen" rächt
+sich, wenn man ihn überspringt — nachgeholt.) 61 Tests grün.
 
 ---
 
