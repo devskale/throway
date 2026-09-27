@@ -1,9 +1,21 @@
 # throway — Releases
 
-**Current version:** `1.35.0`
+**Current version:** `1.35.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.35.1 — 2026-09-27
+
+### Bugfix: Ctrl+V auf der Galerie-Seite (Illegal invocation)
+
+Der Paste-Handler rief `clipboardData.getData` abgekoppelt auf
+(`(e.clipboardData.getData || …)(…)' — ohne Empfänger) → Chrome wirft
+stillschweigend „Illegal invocation", der Import startete nie. Mein
+übercleveres Defensivkonstrukt; jetzt schlicht gebunden. Mit echtem
+Paste-Event gegen die soundspritzer-Galerie live verifiziert.
 
 ---
 
