@@ -20,10 +20,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
-import sys as _sys
+import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if REPO not in _sys.path:
-    _sys.path.insert(0, REPO)   # makes `throway` (mdrender) importable in tests
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)    # makes `throway` (mdrender) importable in tests
 VENV_PY = os.path.join(REPO, ".venv", "bin", "python")
 if not os.path.exists(VENV_PY):                 # CI: kein venv -> aktueller python
     VENV_PY = sys.executable
