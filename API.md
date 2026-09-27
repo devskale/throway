@@ -41,6 +41,10 @@ curl --data-binary @photo.jpg "$BASE/pics/g/hochzeit-2026?name=photo.jpg"
 # gallery listing: JSON for agents, HTML grid for browsers (paginated ?p=N)
 curl -A curl "$BASE/pics/g/hochzeit-2026"
 
+# embed a gallery anywhere (minimal view, transparent bg, no uploader):
+#   <iframe src="$BASE/pics/g/hochzeit-2026?embed=1"
+#           style="width:100%;height:640px;border:0" loading="lazy"></iframe>
+
 # index (only listed=1 galleries)
 curl -A curl "$BASE/pics"
 
