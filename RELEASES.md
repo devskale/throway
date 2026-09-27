@@ -1,9 +1,36 @@
 # throway — Releases
 
-**Current version:** `1.24.0`
+**Current version:** `1.25.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.25.0 — 2026-09-27
+
+### Komprimierung: HQ first, size second (1-MB-Cap)
+
+Auf Johanns Rückmeldung: Fotos sollen hochwertig bleiben — Limit ~1 MB.
+
+- **q90 statt q80** als Start-Qualität; nur wenn das Ergebnis **> 1 MB**
+  ist, sinkt die Qualität in 5er-Schritten (90 → 85 → … → Floor 65) bis
+  es passt. **Ergebnisse unter 1 MB bleiben auf q90** — keine unnötige
+  Verschlechterung mehr bei bereits kleinen Fotos.
+- **Alpha bleibt erhalten**: transparente PNGs (Logos, Grafiken) werden
+  nicht mehr auf Weiß aufgefüllt, sondern als RGBA-WebP gespeichert.
+- **EXIF/GPS wird konsequent entfernt** (vorher konnte der
+  „keep-original"-Pfad bei winzigen Dateien EXIF inkl. GPS durchreichen —
+  jetzt strippt jeder Pfad, Privacy by Default für eine öffentliche
+  Galerie).
+- Client-seitig (Homepage-Gallery-Tab) spiegelt der Browser-Shrink das
+  Verfahren: 2048 px, q0.90, Step-down bis ≤ 1 MB (Floor 0.70) — spart
+  Upload-Bandbreite bei gleichem Ergebnis.
+- Env-tunbar: `THROWAWAY_PICS_QUALITY` (90), `THROWAWAY_PICS_QUALITY_FLOOR`
+  (65), `THROWAWAY_PICS_TARGET_BYTES` (1 MB), `THROWAWAY_PICS_EDGE_PX`
+  (2048).
+- 3 neue Tests (Size-Cap, Alpha, EXIF-Stripping) — 44 grün. RFQ FR-5
+  aktualisiert.
 
 ---
 

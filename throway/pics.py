@@ -52,7 +52,9 @@ PICS_TTL = int(os.environ.get("THROWAWAY_PICS_TTL", "") or 90 * 24 * 3600)
 PICS_POOL = int(os.environ.get("THROWAWAY_PICS_POOL_BYTES", "") or 20 * 1024**3)
 PICS_MAX_FILE = int(os.environ.get("THROWAWAY_PICS_MAX_FILE_BYTES", "") or 30 * 1024**2)
 PICS_EDGE = int(os.environ.get("THROWAWAY_PICS_EDGE_PX", "") or 2048)
-PICS_QUALITY = int(os.environ.get("THROWAWAY_PICS_QUALITY", "") or 80)
+PICS_QUALITY = int(os.environ.get("THROWAWAY_PICS_QUALITY", "") or 90)
+PICS_QUALITY_FLOOR = int(os.environ.get("THROWAWAY_PICS_QUALITY_FLOOR", "") or 65)
+PICS_TARGET = int(os.environ.get("THROWAWAY_PICS_TARGET_BYTES", "") or 1024 * 1024)  # HQ cap
 PICS_ADMIN_TOKEN = os.environ.get("THROWAWAY_PICS_ADMIN_TOKEN", "")  # superadmin
 PICS_PAGE = 60          # gallery thumbs per page
 PICS_ADMIN_PAGE = 48    # admin thumbs per page
@@ -95,12 +97,17 @@ def looks_heic(data):
 
 
 def process_image(data):
-    """Validate + recompress one image (RFQ FR-5).
+    """Validate + recompress one image (RFQ FR-5, 1.25.0: HQ first, size cap
+    second). Returns (bytes, ctype, w, h).
 
-    Returns (bytes, ctype, w, h). Raster images are re-encoded as WebP at
-    max PICS_EDGE px / PICS_QUALITY; if the re-encode does not shrink an
-    already-small JPEG/WebP, the original bytes are kept. GIFs pass through
-    untouched so animation survives. Raises PicError on anything else.
+    Raster images are re-encoded as WebP at max PICS_EDGE px, starting at
+    PICS_QUALITY (90) and stepping the quality down in 5-point steps only
+    while the result exceeds PICS_TARGET (default 1 MB), floor
+    PICS_QUALITY_FLOOR — results under the cap keep the high quality.
+    Alpha (transparent PNGs) is preserved in WebP. EXIF/GPS metadata is
+    dropped on every re-encode (privacy by default — event photos must
+    not leak coordinates). GIFs pass through untouched so animation
+    survives. Raises PicError on anything else.
     """
     if not data:
         raise PicError(400, "empty body")
@@ -117,27 +124,30 @@ def process_image(data):
                             "(missing pillow-heif)")
     try:
         with Image.open(io.BytesIO(data)) as im:
-            fmt = im.format
             im = ImageOps.exif_transpose(im)
-            if im.mode in ("RGBA", "LA", "P"):
-                im = im.convert("RGBA")
-                bg = Image.new("RGB", im.size, (255, 255, 255))
-                bg.paste(im, mask=im.split()[-1])
-                im = bg
+            if im.mode in ("P", "PA", "LA", "RGBA"):
+                im = im.convert("RGBA")          # keep transparency in WebP
             elif im.mode != "RGB":
                 im = im.convert("RGB")
             if max(im.size) > PICS_EDGE:
                 im.thumbnail((PICS_EDGE, PICS_EDGE))
             w, h = im.size
-            buf = io.BytesIO()
-            im.save(buf, "WEBP", quality=PICS_QUALITY, method=4)
-            out = buf.getvalue()
+            best = None
+            q = PICS_QUALITY
+            while True:
+                buf = io.BytesIO()
+                im.save(buf, "WEBP", quality=q, method=4)
+                out = buf.getvalue()
+                if best is None or len(out) < len(best):
+                    best = out
+                if len(out) <= PICS_TARGET or q <= PICS_QUALITY_FLOOR:
+                    break
+                q = max(PICS_QUALITY_FLOOR, q - 5)
+            out = best
     except PicError:
         raise
     except Exception:
         raise PicError(400, "not a decodable image (jpeg/png/webp/gif/heic)")
-    if fmt in ("JPEG", "WEBP") and len(out) >= len(data):
-        return data, ("image/jpeg" if fmt == "JPEG" else "image/webp"), w, h
     return out, "image/webp", w, h
 
 
@@ -1104,8 +1114,10 @@ def api_endpoints(store_base):
             "url": store_base + "/pics/g/<gid>?name=<filename>",
             "body": "raw image bytes (or multipart/form-data for batches)",
             "note": f"free upload into a gallery, public instantly. Recompressed "
-                    f"server-side to max {PICS_EDGE}px WebP q{PICS_QUALITY} "
-                    f"(GIFs pass through); original discarded. Fixed lifetime "
+                    f"server-side to max {PICS_EDGE}px WebP starting at q{PICS_QUALITY}, "
+                    f"quality stepped down only while the result exceeds "
+                    f"~{PICS_TARGET // 1024} kB (HQ first, size second; alpha preserved; "
+                    f"EXIF/GPS stripped; GIFs pass through). Original discarded. Fixed lifetime "
                     f"{PICS_TTL // 86400}d (slides the gallery's lifetime), "
                     f"shared pool {PICS_POOL // 1024**3} GB — full pool rejects "
                     f"with 507, never evicts. Max {PICS_MAX_FILE // 1024**2} MB "
@@ -1156,8 +1168,10 @@ UPLOAD (public, no auth)
    POST {PUBLIC_BASE}/pics/g/<gid>?name=photo.jpg    (raw bytes)
    POST {PUBLIC_BASE}/pics/g/<gid>                   (multipart, batch)
 
-Recompressed server-side to max {PICS_EDGE}px WebP q{PICS_QUALITY}
-(GIFs pass through; originals discarded). Fixed lifetime: {PICS_DAYS}
+Recompressed server-side to max {PICS_EDGE}px WebP q{PICS_QUALITY},
+stepped down only while the result exceeds ~1 MB (HQ first, size
+second; alpha preserved; EXIF/GPS stripped; GIFs pass through;
+originals discarded). Fixed lifetime: {PICS_DAYS}
 days per image — an upload also slides the gallery's lifetime. Own
 pool: {PICS_GB} GB shared across galleries. Full pool REJECTS uploads
 (507) — existing images are never evicted.

@@ -72,7 +72,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.24.0"
+VERSION = "1.25.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -2696,19 +2696,28 @@ _INDEX_JS = r"""(function () {
       if (!f.type || f.type === 'image/gif' || f.type.indexOf('image/') !== 0) return res(f);
       var done = function (bmp) {
         try {
-          var M = 2048, w = bmp.width, h = bmp.height;
-          if (Math.max(w, h) <= M) return res(f);
-          var s = M / Math.max(w, h);
+          var M = 2048, TARGET = 1048576;   /* HQ: 2048px, q0.90, cap ~1MB */
+          var w = bmp.width, h = bmp.height;
+          if (Math.max(w, h) <= M && f.size <= TARGET) return res(f);
+          var s = Math.min(1, M / Math.max(w, h));
           w = Math.round(w * s); h = Math.round(h * s);
           var c = document.createElement('canvas');
           c.width = w; c.height = h;
           c.getContext('2d').drawImage(bmp, 0, 0, w, h);
-          c.toBlob(function (b) {
+          var q = 0.90;
+          var finish = function (b) {
             if (!b) return res(f);
             var out = new File([b], f.name.replace(/\.[^.]+$/, '') + '.webp',
                                { type: b.type || 'image/webp', lastModified: Date.now() });
             res(out.size < f.size ? out : f);
-          }, 'image/webp', 0.85);
+          };
+          var attempt = function (b) {
+            if (b && b.size <= TARGET) return finish(b);
+            if (q <= 0.70) return finish(b);
+            q -= 0.05;
+            c.toBlob(attempt, 'image/webp', q);
+          };
+          c.toBlob(attempt, 'image/webp', q);
         } catch (e) { res(f); }
       };
       if (window.createImageBitmap) {

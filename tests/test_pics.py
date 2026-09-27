@@ -339,6 +339,56 @@ def test_gallery_lightbox(srv):
     assert f"/pics/g/{g['id']}/{g['token']}/i/{a}" in page
 
 
+def test_hq_size_cap_and_quality_floor(srv):
+    """1.25.0: HQ first — noisy photo > 1 MB gets stepped down until it fits
+    ~1 MB, stays 2048px."""
+    import random
+    from PIL import Image
+    im = Image.new("RGB", (3000, 2000))
+    px = im.load()
+    random.seed(42)
+    for y in range(0, 2000, 3):
+        for x in range(0, 3000, 3):
+            px[x, y] = (random.randrange(256), random.randrange(256), random.randrange(256))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=95)
+    orig = buf.getvalue()
+    assert len(orig) > 1024 * 1024
+    _, g = create(srv)
+    m = up(srv, g["id"], orig, "noisy.jpg")
+    assert m["size"] <= 1024 * 1024          # PICS_TARGET
+    assert m["width"] <= 2048 and m["height"] <= 2048
+
+
+def test_alpha_preserved(srv):
+    """1.25.0: transparent PNGs keep their alpha (no white flattening)."""
+    from PIL import Image
+    im = Image.new("RGBA", (800, 600), (10, 200, 100, 0))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    _, g = create(srv)
+    m = up(srv, g["id"], buf.getvalue(), "transparent.png")
+    st, _, body = srv.get("/pics/i/" + m["id"])
+    assert st == 200
+    assert Image.open(io.BytesIO(body)).mode == "RGBA"
+
+
+def test_exif_gps_stripped(srv):
+    """1.25.0: EXIF (incl. GPS) is dropped on re-encode — privacy default."""
+    from PIL import Image
+    im = Image.new("RGB", (600, 400), (5, 5, 5))
+    exif = Image.Exif()
+    exif[271] = "TestCam"                      # Make
+    exif[272] = "Model X"                      # Model
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", exif=exif)
+    _, g = create(srv)
+    m = up(srv, g["id"], buf.getvalue(), "with-exif.jpg")
+    st, _, body = srv.get("/pics/i/" + m["id"])
+    served = Image.open(io.BytesIO(body))
+    assert not served.getexif()
+
+
 def test_api_lists_pics_endpoints(srv):
     st, _, body = srv.get("/api", headers=AGENT)
     spec = json.loads(body)
