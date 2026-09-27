@@ -1,9 +1,22 @@
 # throway — Releases
 
-**Current version:** `1.36.1`
+**Current version:** `1.36.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.36.2 — 2026-09-27
+
+### Bugfix: Embed-Infinite-Scroll feuert zuverlässig
+
+IntersectionObserver meldete im Embed-Kontext `isIntersecting:false`
+trotz sichtbarem Sentinel (y=412 im 800px-Viewport, live reproduziert) —
+das Nachladen startete nie. Ersetzt durch schlichtes Intervall-Polling
+(400ms, räumt sich nach letzter Seite selbst ab, Initial-Check nach
+150ms). Lokal bewiesen: 24 initial → alle 38 geladen, Sentinel entfernt;
+Host-Seite: iframe wächst auf exakte Inhaltshöhe (739px für 38 Bilder).
 
 ---
 
