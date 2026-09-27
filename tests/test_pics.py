@@ -537,3 +537,40 @@ def test_gallery_embed_view(srv):
     # agents bekommen auch mit embed=1 das JSON (embed ist ein browser-rendering)
     st, hd, body = srv.get(f"/pics/g/{g['id']}?embed=1", headers=AGENT)
     assert hd["Content-Type"].startswith("application/json")
+
+
+def test_url_import_into_gallery(tmp_path):
+    """1.34.0 stage-1 google-photos plan: POST /pics/g/<gid>?url= imports a
+    remote image through the normal pics pipeline."""
+    s = Server(tmp_path / "imp", env_extra={"THROWAWAY_ALLOW_PRIVATE_FETCH": "1"})
+    try:
+        # quelle: ein throway-file das als bild-url dient (loopback erlaubt)
+        st, _, body = s.post("/?name=remote.jpg", data=jpeg(900, 600),
+                             headers={"User-Agent": "curl/8.0",
+                                      "Content-Type": "image/jpeg"})
+        src_url = f"{s.base}/{json.loads(body)['id']}"
+        _, g = create(s)
+        st, m = s.jpost(f"/pics/g/{g['id']}?url=" + src_url.replace(":", "%3A").replace("/", "%2F"),
+                        data=b"", headers={"User-Agent": "curl/8.0"})
+        assert st == 200, m
+        assert m["size"] > 0 and m["content_type"].startswith("image/")
+        st, _, listing = s.get(f"/pics/g/{g['id']}", headers=AGENT)
+        assert len(json.loads(listing)["images"]) == 1
+        # nicht-bild-url -> 400
+        st, _, body = s.post("/?name=nope.txt", data=b"text",
+                             headers={"User-Agent": "curl/8.0",
+                                      "Content-Type": "text/plain"})
+        txt_url = f"{s.base}/{json.loads(body)['id']}"
+        st, err = s.jpost(f"/pics/g/{g['id']}?url=" + txt_url.replace(":", "%3A").replace("/", "%2F"),
+                          data=b"", headers={"User-Agent": "curl/8.0"})
+        assert st == 400 and "not an image" in err["error"]
+    finally:
+        s.stop()
+
+
+def test_url_import_blocks_private_hosts_by_default(srv):
+    """SSRF guard stays on without the env escape (production default)."""
+    _, g = create(srv)
+    st, err = srv.jpost(f"/pics/g/{g['id']}?url=http%3A%2F%2F127.0.0.1%2Fx.jpg",
+                        data=b"", headers=AGENT)
+    assert st == 400 and "blocked" in err["error"]

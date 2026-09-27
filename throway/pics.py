@@ -623,7 +623,18 @@ _UP_JS = (
     "var fl=e.dataTransfer.files,n=0;"
     "for(var i=0;i<fl.length;i++){if(fl[i].type&&fl[i].type.indexOf('image/')!==0)continue;"
     "q.push(fl[i]);n++;}"
-    "if(n){st.textContent=n+' ausgew\u00e4hlt \u2014 Upload startet\u2026';pump();}});"
+    "if(n){st.textContent=n+' ausgew\u00e4hlt \u2014 Upload startet\u2026';pump();return;}"
+    "var u=(e.dataTransfer.getData('text/uri-list')||e.dataTransfer.getData('text/plain')||'').trim();"
+    "if(/^https?:\\/\\//i.test(u)){importUrl(u);}});"
+    "function importUrl(u){"
+    "st.textContent='lade bild von url\u2026';"
+    "fetch('__P__/pics/g/__GID__?url='+encodeURIComponent(u),"
+    "{method:'POST',headers:{'Accept':'application/json'}})"
+    ".then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})"
+    ".then(function(x){"
+    "if(x.ok&&x.d.id){st.textContent='bild importiert \u2713';location.reload();}"
+    "else st.textContent='import fehlgeschlagen: '+((x.d&&x.d.error)||'unbekannt');})"
+    ".catch(function(e){st.textContent='import fehlgeschlagen: '+e;});}"
     "async function one(f){"
     "for(var a=0;a<3;a++){"
     "var r=await fetch('__P__/pics/g/__GID__?name='+encodeURIComponent(f.name),"
@@ -994,6 +1005,8 @@ def post(h, rest, qp):
         return _create(h, store, root, qp)
     if rest[0] == "g":
         if len(rest) == 2 and rest[1]:
+            if "url" in (qp or {}):
+                return _url_import(h, store, root, unquote(rest[1]), qp)
             return _upload(h, store, root, unquote(rest[1]), qp)
         if len(rest) == 3:
             gid, secret = unquote(rest[1]), unquote(rest[2])
@@ -1171,6 +1184,37 @@ def _serve(h, store, root, pid, admin, query, gid=None):
 
 # --- POST actions ------------------------------------------------------------
 
+def _url_import(h, store, root, gid, qp):
+    """POST /pics/g/<gid>?url=<url> — fetch a remote image server-side into
+    the gallery (stage 1 of the google-photos-import plan). Same SSRF rules
+    as the throway url import (public hosts only, redirect-checked), images
+    only, capped at PICS_MAX_FILE, then through the normal pics pipeline
+    (pixel rule, GPS strip, pool)."""
+    from urllib.parse import unquote
+    raw = unquote((qp.get("url") or [""])[0]).strip()
+    if not raw:
+        return h._send(400, json.dumps({"error": "url required"}), "application/json")
+    g = load_gallery(root, gid)
+    if not g:
+        return h._send(404, json.dumps({"error": "gallery not found"}), "application/json")
+    try:
+        data, name, ctype = store._fetch_remote(raw, max_bytes=PICS_MAX_FILE)
+    except store._FetchError as ex:
+        code = getattr(ex, "code", None) or ex.args[0] if ex.args else 502
+        msg = getattr(ex, "msg", None) or (ex.args[0] if ex.args else "fetch failed")
+        return h._send(code if isinstance(code, int) else 502,
+                       json.dumps({"error": f"fetch failed: {msg}"}),
+                       "application/json")
+    if not (ctype or "").startswith("image/"):
+        return h._send(400, json.dumps(
+            {"error": f"not an image (content-type {ctype or 'unknown'})"}), "application/json")
+    try:
+        pid, m = store_pic(root, data, name or "image", h._client_ip(), gid)
+    except PicError as ex:
+        return h._send(ex.code, json.dumps({"error": ex.msg}), "application/json")
+    h._send(200, json.dumps(public_meta(store, pid, m), indent=2), "application/json")
+
+
 def _upload(h, store, root, gid, qp):
     """Public upload into one gallery: raw body (agents, JS queue) or
     multipart (browser form / batch)."""
@@ -1296,6 +1340,16 @@ def api_endpoints(store_base):
                     f"per upload. Accepts jpeg/png/webp/gif"
                     + ("/heic." if pillow_heif else " (heic needs pillow-heif on the server)."),
         },
+        "pics_import_url": {
+            "method": "POST",
+            "url": store_base + "/pics/g/<gid>?url=<image-url>",
+            "note": "server-side import of a remote image into a gallery "
+                    "(drag a picture from another site into the dropzone, or "
+                    "call directly). Public http(s) hosts only, images only, "
+                    "max 30 MB — then the normal pics pipeline applies "
+                    "(pixel rule, EXIF/GPS strip, pool).",
+            "response": "same JSON as pics_upload",
+        },
         "pics_image": {
             "method": "GET",
             "url": store_base + "/pics/i/<id>",
@@ -1339,6 +1393,9 @@ by default; &listed=1 puts them in the public index at GET /pics.
 UPLOAD (public, no auth)
    POST {PUBLIC_BASE}/pics/g/<gid>?name=photo.jpg    (raw bytes)
    POST {PUBLIC_BASE}/pics/g/<gid>                   (multipart, batch)
+   POST {PUBLIC_BASE}/pics/g/<gid>?url=<image-url>   (server-side import —
+        drag a picture from another site onto the dropzone, e.g. straight
+        from a Google Photos tab; public hosts, images only, max 30 MB)
 
 Images at or under {PICS_EDGE}px are stored byte-identical (JPEG
 metadata stripped losslessly, pixels untouched). Only larger images

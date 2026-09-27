@@ -488,6 +488,10 @@ curl -A curl "$BASE/pics"                # nur listed=1-Galerien
 # ein Bild / Thumbnail
 curl "$BASE/pics/i/<id>"
 curl "$BASE/pics/i/<id>?thumb=1"
+
+# Remote-Bild serverseitig importieren (auch: Bild aus anderem Tab in die
+# Dropzone ziehen, z.B. direkt aus Google Photos)
+curl -X POST "$BASE/pics/g/<gid>?url=https%3A%2F%2Fexample.com%2Fphoto.jpg"
 ```
 
 **Admin** (per-Galerie-Token aus dem Anlegen oder Superadmin-Env-Token,

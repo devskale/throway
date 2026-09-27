@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.33.0`
+**Current version:** `1.34.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.34.0 — 2026-09-27
+
+### Stufe 1 des Google-Photos-Plans: URL-Import in Galerien
+
+- **`POST /pics/g/<gid>?url=<bild-url>`**: Server holt das Remote-Bild
+  durch die normale Pics-Pipeline (Pixel-Regel, GPS-Strip, 30-MB-Cap,
+  Pool-507). SSRF-Guard wie beim throway-Import (nur öffentliche Hosts,
+  Redirect-geprüft), nur `image/*`. `_fetch_remote` ist jetzt größen-
+  parametrisierbar; `THROWAWAY_ALLOW_PRIVATE_FETCH=1` als Test/Dev-
+  Flucht (Prod-Default: an).
+- **URL-Drops in beiden Dropzonen** (Galerie-Seite + Homepage-Gallery-
+  Tab): Bild aus einem anderen Tab (z.B. Google Photos) auf die Dropzone
+  ziehen → Server-Import mit Statuszeile. Homepage-Tab legt bei Bedarf
+  erst die leere Galerie an.
+- Stufe 0 (Copy-Paste aus Google Photos) funktioniert seit den Paste-
+  Uploads ohnehin. Stufe 2 (Picker-API) bleibt im Issue-Backlog.
+- 2 neue Tests (Import-Flow inkl. Nicht-Bild-400, SSRF-Default-Block) —
+  64 grün. /api + /help/pics + AGENTS.md dokumentiert.
 
 ---
 

@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.33.0"
+VERSION = "1.34.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -354,8 +354,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # we follow redirects manually to re-check SSRF per hop
 
 
+ALLOW_PRIVATE_FETCH = os.environ.get("THROWAWAY_ALLOW_PRIVATE_FETCH", "") == "1"
+
+
 def _assert_public_host(host):
-    """Reject hosts that resolve to private/loopback/reserved IPs (SSRF guard)."""
+    """Reject hosts that resolve to private/loopback/reserved IPs (SSRF guard).
+    THROWAWAY_ALLOW_PRIVATE_FETCH=1 disables the guard (tests/dev only —
+    never set this in production)."""
+    if ALLOW_PRIVATE_FETCH:
+        return
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
@@ -370,9 +377,10 @@ def _assert_public_host(host):
             raise _FetchError(400, "blocked host (private/reserved IP)")
 
 
-def _fetch_remote(raw_url):
+def _fetch_remote(raw_url, max_bytes=None):
     """Fetch an http(s) URL server-side. Returns (data, name, ctype).
-    Raises _FetchError on any problem. Size-capped at MAX_FILE."""
+    Raises _FetchError on any problem. Size-capped (default MAX_FILE;
+    pics passes its own 30 MB budget)."""
     u = urlparse(raw_url)
     if u.scheme not in ("http", "https") or not u.hostname:
         raise _FetchError(400, "url must be http(s) and absolute")
@@ -405,9 +413,10 @@ def _fetch_remote(raw_url):
         name = unquote(m.group(1))
     ct_hdr = resp.headers.get("Content-Type", "")
     ctype = ct_hdr.split(";")[0].strip() or None
-    data = resp.read(MAX_FILE + 1)
-    if len(data) > MAX_FILE:
-        raise _FetchError(413, "too large (max 5MB)")
+    cap = max_bytes or MAX_FILE
+    data = resp.read(cap + 1)
+    if len(data) > cap:
+        raise _FetchError(413, f"too large (max {cap // (1024 * 1024)}MB)")
     fname = _safe_name(name) if name else None
     if not ctype or ctype == "application/octet-stream":
         if fname:
@@ -2794,7 +2803,41 @@ _INDEX_JS = r"""(function () {
   ['dragleave', 'drop'].forEach(function (ev) {
     galDrop.addEventListener(ev, function (e) { e.preventDefault(); galDrop.classList.remove('hover'); });
   });
-  galDrop.addEventListener('drop', function (e) { queueImages(e.dataTransfer.files); });
+  galDrop.addEventListener('drop', function (e) {
+    e.preventDefault(); galDrop.classList.remove('hover');
+    var fl = e.dataTransfer.files, n = 0;
+    for (var i = 0; i < fl.length; i++) {
+      if (fl[i].type && fl[i].type.indexOf('image/') !== 0) continue;
+      gal.queue.push(fl[i]); galRow(fl[i].name, 'queued'); n++;
+    }
+    if (n) { pumpGallery(); return; }
+    var u = (e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain') || '').trim();
+    if (/^https?:\/\//i.test(u)) {
+      var r0 = galRow(u.slice(0, 60), 'lade von url\u2026');
+      if (!gal.gid) {
+        /* gallery not created yet: create empty first, then import */
+        var q0 = 'create=1';
+        if (galName.value.trim()) q0 += '&name=' + encodeURIComponent(galName.value.trim());
+        if (galListed.checked) q0 += '&listed=1';
+        fetch(PREFIX + '/pics?' + q0, { method: 'POST', headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d && d.id && d.token) { gal.gid = d.id; showGalCreated(d); importUrl(r0, u); }
+            else { galSt(r0, 'fehler: galerie anlegen', 'err'); }
+          });
+      } else importUrl(r0, u);
+    }
+  });
+  function importUrl(row, u) {
+    fetch(PREFIX + '/pics/g/' + gal.gid + '?url=' + encodeURIComponent(u),
+          { method: 'POST', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (x.ok && x.d.id) galSt(row, 'done \u2713', 'ok');
+        else galSt(row, 'fehler: ' + ((x.d && x.d.error) || 'unbekannt'), 'err');
+      })
+      .catch(function (e) { galSt(row, 'fehler: ' + e, 'err'); });
+  }
   galFile.addEventListener('change', function () { queueImages(this.files); this.value = ''; });
 
   /* Create an empty gallery now — no images needed yet (name reserves the
