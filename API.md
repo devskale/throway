@@ -21,19 +21,27 @@ are deleted. No auth required.
 | Rate limit | 100 req/min per IP |
 | pics gallery | own 20 GB pool (full → 507 reject, never evicts), fixed 90-day lifetime, 30 MB max/image, recompressed ≤ 2048 px WebP q80 |
 
-## Pics — event gallery (`/pics`, since 1.19.0)
+## Pics — event galleries (`/pics`, since 1.20.0)
 
-A curated, long-lived image gallery with its own storage pool — independent
-of the 4h throwaway pool. Free upload, instantly public; one admin with a
-long-lived secret URL curates (hide / delete / reorder).
+Anyone can create a gallery and becomes its admin via a per-gallery secret
+token (dirs-style: create-or-get for dir-shaped names, unlisted by default,
+`listed=1` for the public index). Own pool shared across galleries —
+independent of the 4h throwaway pool.
 
 ```bash
 BASE=https://skale.dev/throway
 
+# create (token + admin_url shown exactly once; create-or-get for
+# dir-style names like "hochzeit-2026" -> /pics/g/hochzeit-2026)
+curl -X POST "$BASE/pics?create=1&name=hochzeit-2026"
+
 # upload (raw bytes; multipart for batches) -> JSON with id, url, thumb
-curl --data-binary @photo.jpg "$BASE/pics?name=photo.jpg"
+curl --data-binary @photo.jpg "$BASE/pics/g/hochzeit-2026?name=photo.jpg"
 
 # gallery listing: JSON for agents, HTML grid for browsers (paginated ?p=N)
+curl -A curl "$BASE/pics/g/hochzeit-2026"
+
+# index (only listed=1 galleries)
 curl -A curl "$BASE/pics"
 
 # one image / its thumbnail
@@ -43,265 +51,26 @@ curl "$BASE/pics/i/<id>?thumb=1"
 
 Behavior: uploads are recompressed server-side to max 2048 px WebP q80
 (EXIF rotation respected; GIFs pass through untouched; HEIC/AVIF decoded
-via pillow-heif). The original bytes are discarded. Fixed lifetime: 90
-days, then auto-deleted. Hidden images (admin) return 404 for everyone
-but the admin view.
+via pillow-heif). The original bytes are discarded. Images live a fixed
+90 days; an upload slides the gallery's lifetime (90 days after last
+upload the gallery and its images are swept). Hidden images (admin)
+return 404 for everyone but the admin view. Full pool → 507, never
+eviction.
 
-Admin (secret as a **path segment** from server env
-`THROWAWAY_PICS_ADMIN_TOKEN` — never a query param; wrong secret → 404):
+Admin (per-gallery token from creation, or the server-wide superadmin
+env token — always a **path segment**, never a query param; wrong token
+→ 404):
 
 ```bash
 # admin page (HTML) or JSON listing incl. hidden images
-curl -A curl "$BASE/pics/<secret>/json"
+curl -A curl "$BASE/pics/g/<gid>/<secret>/json"
 
 # actions: hide | unhide | delete | up | down  (form-encoded id + action)
-curl -A "Mozilla" -d "id=<id>&action=hide&p=1" "$BASE/pics/<secret>"
+curl -A "Mozilla" -d "id=<id>&action=hide&p=1" "$BASE/pics/g/<gid>/<secret>"
 ```
 
-## Upload a file
-
-### Option A — raw body (simplest)
-```bash
-curl -X POST --data-binary @photo.png \
-  "https://skale.dev/throway/?name=photo.png"
-```
-
-### Option B — multipart form (single file)
-```bash
-curl -F "file=@photo.png" "https://skale.dev/throway/"
-```
-
-### Lifetime override (optional)
-By default a single file lives **4 hours**. Pass `&ttl=<h|d>` to extend it
-(clamped to a **max of 14 days**):
-```bash
-curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=24h"
-curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=14d"   # max
-```
-
-### Share name (optional)
-Pass `&share=<name>` to store the upload under a **chosen, memorable name**
-(create-or-get, like a named dir) at `/d/<name>` instead of a random hex id:
-```bash
-curl -X POST --data-binary @note.txt "https://skale.dev/throway/?share=my-note"
-# -> {"id":"my-note","url":"https://skale.dev/throway/d/my-note","dir":true,"files":[...],...}
-```
-Rules: 5-32 chars `[a-z0-9-]`, at least one letter, not a reserved word.
-Uses the sliding dir lifetime (default 7 days, `&ttl=` clamped to `[4h, 14d]`).
-
-### Download once (burn-after-reading, optional)
-Pass `&once=1` to make a **single file** auto-delete after the first
-successful download — a second GET returns 404. Not combinable with
-`&share=` (dirs):
-```bash
-curl -X POST --data-binary @secret.txt "https://skale.dev/throway/?name=secret.txt&once=1"
-# first GET serves the bytes; the file is then removed
-```
-
-### Success response (JSON)
-```json
-{
-  "id": "96c31bf491abdf91",
-  "url": "https://skale.dev/throway/96c31bf491abdf91",
-  "size": 148,
-  "name": "photo.png",
-  "content_type": "image/png",
-  "editable": false,
-  "persistence": {
-    "type": "single",
-    "expires_at": "2026-08-10T14:57:09Z",
-    "extendable_by": "activity",
-    "max_age": null
-  },
-  "expires_in": 14400,
-  "expires_at": "2026-08-10T14:57:09Z"
-}
-```
-
-The `url` field is what you share. It is valid until `expires_at`.
-
-**`editable`** — `true` for `text/*` and `application/json` (PUT/PATCH work);
-`false` for images and binaries.
-
-**`persistence`** — how long the resource lives and how to keep it alive:
-- `type` — `single` | `dir` | `bundle`.
-- `expires_at` — when it dies.
-- `extendable_by` — `none` (fixed lifetime) | `activity` (sliding lifetime).
-- `max_age` — max total lifetime in seconds (`null` for fixed).
-
-### Errors
-| Code | Meaning |
-|---|---|
-| 411 | missing `Content-Length` |
-| 413 | file too large (> 5 MB) |
-| 429 | rate limit exceeded |
-
-## Upload a bundle (multiple files)
-
-`POST` 2+ file parts in a single multipart body creates a **bundle** — one
-URL holding several files (e.g. an `index.html` + `style.css` website).
-
-```bash
-curl -F "f=@index.html;type=text/html" \
-     -F "f=@style.css;type=text/css" \
-     "https://skale.dev/throway/"
-```
-
-### Success response (JSON)
-```json
-{
-  "id": "9c0f2b8a1d4e6f03",
-  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03",
-  "bundle": true,
-  "editable": false,
-  "persistence": {
-    "type": "bundle",
-    "expires_at": "2026-08-12T12:19:14Z",
-    "extendable_by": "activity",
-    "max_age": null
-  },
-  "files": [
-    {"name": "index.html", "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html", "editable": true},
-    {"name": "style.css",  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css", "editable": true}
-  ],
-  "size": 277,
-  "expires_in": 14400,
-  "expires_at": "2026-08-12T12:19:14Z"
-}
-```
-
-A **bundle itself is immutable** (`editable:false`); individual `text/*` or
-`application/json` files within it are editable (`editable:true` in `files[]`).
-
-## Download / view a file
-`GET {base}/<id>`
-- **Images and text-like types** (text, html, json, pdf, svg) render inline
-  in the browser (viewer).
-- **Everything else** downloads.
-- Append `?download=1` to force a download of any file.
-
-```bash
-curl -O "https://skale.dev/throway/<id>"
-```
-
-## View / download a bundle
-`GET {base}/<id>` — the bundle root:
-- **Browsers** get `index.html` rendered inline (a real mini-website);
-  relative links to other bundle files just work.
-- **Agents / curl** get the whole bundle as a **zip**.
-- `?download=1` forces the zip download for anyone.
-
-`GET {base}/<id>/<filename>` — fetch one file from the bundle (inline for
-text/images, download otherwise).
-
-If a bundle has no `index.html`, browsers get a simple file listing instead.
-The whole bundle shares one 4-hour expiry and is evicted as one unit.
-
-```bash
-curl -O "https://skale.dev/throway/<id>/style.css"
-```
-
-## Dirs (one unified concept, under /d/<key>)
-
-A **dir** is a collection of files you keep adding to and editing over time —
-a disposable workspace for an agent. One concept, addressable by an opaque
-**id** (unnamed) or a memorable **name** (named), always under `/d/<key>`.
-Fixed lifetime (default 7 days) and a lightweight edit history.
-
-### Create
-`POST {base}/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>]`
-
-```bash
-curl -X POST "https://skale.dev/throway/?dir=1"          # unnamed (hex id)
-curl -X POST "https://skale.dev/throway/?dir=1&name=team7" # named (create-or-get)
-# -> {"id":"team7","name":"team7","url":"…/d/team7","dir":true,"editable":false,"persistence":{"type":"dir","extendable_by":"activity",...},"listed":false,"tags":[],"files":[],"expires_at":"…","max_age":604800}
-```
-**Create-or-get** (idempotent): any agent calling the same create converges
-on the shared dir. Create flags are honored **only on first creation**;
-re-calling create on an existing name silently returns it.
-
-### Naming rules
-Rejected if: length <5 or >32; not `[a-z0-9-]`; all digits (no letter); or a
-reserved word (`api`, `index`, `d`, `releases`, `llms`, `store`, …).
-
-### Create flags (immutable at create)
-- `&listed=1` — appears in the public `GET /d` listing.
-- `&tag=<t>` — up to 5 discoverability tags (lowercase `[a-z0-9-]`, 1-24 chars).
-- `&ttl=<h|d>` — **sliding lifetime**, clamped to `[4h, 14d]`, default **7 days**.
-- `&ttl=<h|d>` — **sliding lifetime**, clamped to `[4h, 14d]` — **14 days is
-  the maximum**; default (no `ttl=`) is **7 days**.
-
-### Fixed lifetime
-`expires_at` slides forward by `ttl` on each add/edit/delete (capped at 30 days
-total from creation). An active dir keeps living; an idle one dies `ttl` after
-its last activity.
-
-### Using a dir
-```bash
-BASE=https://skale.dev/throway
-curl -F "f=@note.txt" "$BASE/d/team7"          # add files (bumps updated_at)
-curl -A "curl" "$BASE/d/team7"                 # list (JSON for agents, HTML for browsers)
-curl "$BASE/d/team7/note.txt"                  # fetch one file
-curl "$BASE/d/team7?zip=1"                     # whole dir as zip
-curl -X PUT --data-binary "new" "$BASE/d/team7/note.txt"   # edit text
-curl -X PATCH --data-binary " more" "$BASE/d/team7/note.txt" # append text
-curl -A "curl" "$BASE/d/team7/history"         # edit history (JSON)
-curl -X DELETE "$BASE/d/team7/note.txt"        # delete one file
-curl -X DELETE "$BASE/d/team7"                 # delete whole dir
-```
-- **`updated_at`** = last add/edit/delete. Tracks activity; does **not** affect lifetime.
-- **Privacy:** unlisted by default; only `listed=1` dirs appear in `GET /d`.
-
-### Edit history
-`GET /d/<key>/history` — lightweight history of the last **50** edits,
-newest first. JSON for agents, HTML for browsers.
-```json
-{"dir":"team7","history":[
-  {"ts":1787051638,"file":"note.txt","action":"put","old_bytes":5,"new_bytes":16},
-  {"ts":1787051638,"file":"note.txt","action":"add"}
-],"total":2}
-```
-Actions: `add` | `put` | `append` | `delete`, each with a timestamp and a
-byte delta where relevant. No full-text versions, no revert.
-
-### Listing `GET /d` (only listed dirs)
-JSON for agents, HTML for browsers. Entries: `{name, url, tags, files, size,
-created_at, updated_at, expires_at, max_age, persistence}` + `total`. Each
-`files[]` carries a per-file `editable` boolean; the dir's `persistence` has
-`type:"dir"`, `extendable_by:"activity"` (sliding lifetime) and `max_age`.
-```bash
-curl -A "curl" "$BASE/d"                                    # all listed
-curl -A "curl" "$BASE/d?q=team"                            # name/tag substring
-curl -A "curl" "$BASE/d?created_after=1750000000"          # by creation time
-curl -A "curl" "$BASE/d?updated_before=1750000000"         # by update time
-curl -A "curl" "$BASE/d?sort=updated&order=asc"            # sort created|updated|name, asc|desc
-```
-
-## Edit / append text
-
-For **text** and **JSON** files only (images are immutable). Both return the
-updated JSON metadata (with `editable` and `persistence`).
-
-### Replace (edit) — `PUT /<id>`
-```bash
-curl -X PUT --data-binary "new full text" "https://skale.dev/throway/<id>"
-```
-
-### Append — `PATCH /<id>`
-```bash
-curl -X PATCH --data-binary "text to add" "https://skale.dev/throway/<id>"
-```
-
-> `PUT`/`PATCH` on a non-text file (e.g. an image) returns `400`.
-
-Every response's `editable` field tells you whether PUT/PATCH will work on a
-given file — `true` for `text/*` and `application/json`, `false` otherwise.
-Trust it instead of guessing from the filename.
-
-## Delete a file
-```bash
-curl -X DELETE "https://skale.dev/throway/<id>"
-```
+Re-creating an existing named gallery returns it WITHOUT the token
+(`existed:true`) — guessing a name never grants admin.
 
 ## Contract endpoint
 ```bash

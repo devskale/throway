@@ -1,9 +1,47 @@
 # throway — Releases
 
-**Current version:** `1.19.0`
+**Current version:** `1.20.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.20.0 — 2026-09-27
+
+### pics: Multi-Galerie-Modell — jede:r kann Galerien anlegen (dirs-artig)
+
+Aus *einer* Admin-Galerie (1.19.0) wird ein Verzeichnis beliebiger
+Galerien — konzeptionell wie die throway-dirs: create-or-get-Namen,
+unlistet per Default, `listed=1` für den öffentlichen Index, sliding
+lifetime.
+
+- **Anlegen**: `POST /pics?create=1[&name=<name>][&listed=1]` → JSON mit
+  `id`, öffentlicher URL, **`admin_url` + `token` (genau einmal
+  angezeigt)**. Dir-style Namen (`[a-z0-9-]`, 5–32 Zeichen, ≥1 Buchstabe,
+  nicht reserviert) werden zum Schlüssel: `/pics/g/hochzeit-2026`
+  (create-or-get, idempotent). Andere Namen sind Anzeigenamen auf frischer
+  Hex-ID.
+- **Token-Sicherheit**: Re-Create einer existierenden benannten Galerie
+  liefert diese **ohne Token** zurück (`existed:true`) — Name erraten ist
+  keine Admin-Übernahme.
+- **Upload**: `POST /pics/g/<gid>?name=` (roh oder multipart-batch),
+  sofort öffentlich, schiebt das Galerie-Ablaufdatum nach vorn.
+- **Admin**: `GET/POST /pics/g/<gid>/<secret>` — hide/unhide/delete/up/down,
+  `/json`-Listing inkl. hidden, Aktionen strikt auf Bilder der eigenen
+  Galerie beschränkt (Cross-Galerie-Zugriff = No-op bzw. 404).
+- **Superadmin**: der Env-Token (`THROWAWAY_PICS_ADMIN_TOKEN`) kuratiert
+  zusätzlich **jede** Galerie (Betreiber-Pflicht bei Verstößen); ohne Env-Token gibt es keinen Superadmin, eigene Tokens funktionieren weiter.
+- **Ablauf**: Bilder fest 90 Tage; Galerie lebt sliding 90 Tage ab letztem
+  Upload, danach räumt der Sweep Galerie + Bilder gemeinsam ab.
+- **Pool**: weiterhin ein gemeinsamer 20-GB-Pool über alle Galerien
+  (voll → 507 Reject, nie Eviction).
+- **Breaking** ggü. 1.19.0 (Feature war Stunden alt, 0 Bilder in Prod):
+  `POST /pics` lädt nicht mehr in eine globale Galerie hoch, sondern
+  braucht `?create=1` bzw. `POST /pics/g/<gid>`; alter Global-Admin-Route
+  `/pics/<secret>` entfällt (Superadmin jetzt pro Galerie).
+- Tests: 23 pics-Verhaltenstests neu/umgestellt (Gesamt 38 grün),
+  `/api` + `/help/pics` + Docs aktualisiert.
 
 ---
 

@@ -1,26 +1,41 @@
-"""pics — the event gallery for throway (see RFQ.md).
+"""pics — event galleries for throway (see RFQ.md + 1.20.0 in RELEASES.md).
 
-A curated, long-lived image gallery in its own storage namespace
-(ROOT/pics) with its own budget, fully separate from the throwaway
-pool (which LRU-evicts at 100 MB):
+Multi-gallery model (since 1.20.0): anyone can create a gallery and becomes
+its admin via a per-gallery secret token. One env token
+(THROWAWAY_PICS_ADMIN_TOKEN) acts as superadmin across all galleries
+(operator moderation duty).
 
-  * free upload for visitors — no accounts, images are public instantly
-  * fixed lifetime: 90 days, then gone (the main cleanup mechanism)
-  * pool: 20 GB — full pool REJECTS uploads, never evicts existing images
-  * one admin with a long-lived secret URL: hide / unhide / delete / reorder
-  * hidden images: 404 for everyone except the admin view
+Layout (all inside ROOT/pics/ — one namespace, one 20 GB pool, fixed
+90-day lifetime, reject-when-full, never evicted):
+
+    ROOT/pics/<pid>            image bytes (+ <pid>.meta, <pid>.thumb)
+    ROOT/pics/g/<gid>.json     gallery meta: {id, token, name, listed, ip,
+                               created, expires}
 
 Interface (the whole surface store.py needs to know):
 
     get(h, rest, query)        dispatch GET  /pics/…
     post(h, rest, qp)          dispatch POST /pics/…
-    sweep(root, now)           delete expired images (called from sweep())
+    sweep(root, now)           delete expired images + galleries
     api_endpoints()            entries for the /api contract
     HELP_TOPICS                entries for /help
-    PICS_NS                    the namespace dir name ("pics")
+    NS                         the namespace dir name ("pics")
 
-Everything below that line is implementation: image pipeline, meta
-sidecars, ordering, moderation, HTML. Tests drive it through HTTP.
+Routes:
+
+    POST /pics?create=1[&name=][&listed=1]     create gallery
+    GET  /pics                                 gallery index (listed only)
+    GET  /pics/g/<gid>                         public gallery (+ upload box)
+    POST /pics/g/<gid>?name=                   upload (raw / multipart batch)
+    GET  /pics/g/<gid>/<secret>                admin page
+    GET  /pics/g/<gid>/<secret>/json           admin listing incl. hidden
+    POST /pics/g/<gid>/<secret>                actions: hide|unhide|delete|up|down
+    GET  /pics/g/<gid>/<secret>/i/<pid>        admin view of hidden images
+    GET  /pics/i/<pid>                         public image (?thumb=1)
+
+Hidden images: 404 for everyone except via the owning gallery's admin route.
+Everything below the interface line is implementation; tests drive it
+through HTTP.
 """
 import hmac
 import io
@@ -38,7 +53,7 @@ PICS_POOL = int(os.environ.get("THROWAWAY_PICS_POOL_BYTES", "") or 20 * 1024**3)
 PICS_MAX_FILE = int(os.environ.get("THROWAWAY_PICS_MAX_FILE_BYTES", "") or 30 * 1024**2)
 PICS_EDGE = int(os.environ.get("THROWAWAY_PICS_EDGE_PX", "") or 2048)
 PICS_QUALITY = int(os.environ.get("THROWAWAY_PICS_QUALITY", "") or 80)
-PICS_ADMIN_TOKEN = os.environ.get("THROWAWAY_PICS_ADMIN_TOKEN", "")
+PICS_ADMIN_TOKEN = os.environ.get("THROWAWAY_PICS_ADMIN_TOKEN", "")  # superadmin
 PICS_PAGE = 60          # gallery thumbs per page
 PICS_ADMIN_PAGE = 48    # admin thumbs per page
 PICS_JSON_CAP = 2000    # max images in agent JSON listings
@@ -54,6 +69,16 @@ HEIC_BRANDS = (b"heic", b"heix", b"hevc", b"heim", b"heis",
                b"mif1", b"msf1", b"avif")
 
 _HEX = re.compile(r"^[0-9a-f]{4,32}$")
+# gallery ids: hex (unnamed) OR dir-style memorable names (create-or-get):
+# 5-32 chars [a-z0-9-], >=1 letter, not a reserved word (validated via
+# store._valid_name at creation). Images (pids) stay hex-only.
+_GID = re.compile(r"^[a-z0-9][a-z0-9-]{3,31}$")
+
+
+def _valid_gid(gid):
+    if not _GID.match(gid or ""):
+        return False
+    return bool(re.search(r"[a-z]", gid))
 
 
 class PicError(Exception):
@@ -116,7 +141,7 @@ def process_image(data):
     return out, "image/webp", w, h
 
 
-# --- domain: storage (meta sidecars like throway) --------------------------
+# --- domain: image storage (meta sidecars like throway) ---------------------
 
 def _dir(root):
     return os.path.join(root, NS)
@@ -169,7 +194,7 @@ def remove_pic(root, pid):
 
 
 def sweep(root, now=None):
-    """Delete expired images (fixed PICS_TTL from creation)."""
+    """Delete expired images AND expired galleries (fixed PICS_TTL)."""
     now = now if now is not None else time.time()
     d = _dir(root)
     try:
@@ -188,10 +213,12 @@ def sweep(root, now=None):
                 continue
         if expires < now:
             remove_pic(root, f)
+    gallery_sweep(root, now)
 
 
-def all_pics(root):
-    """All live images as [(pid, meta)], sweeping expired ones first."""
+def all_pics(root, gid=None):
+    """All live images as [(pid, meta)] — optionally scoped to one gallery.
+    Sweeps expired ones first."""
     sweep(root)
     d, out = _dir(root), []
     try:
@@ -202,7 +229,7 @@ def all_pics(root):
         if not _HEX.match(f):
             continue
         m = load_meta(root, f)
-        if m:
+        if m and (gid is None or m.get("gid") == gid):
             out.append((f, m))
     return out
 
@@ -213,8 +240,11 @@ def _sorted_visible(items):
     return vis
 
 
-def store_pic(root, data, name, ip):
-    """Process and store one upload. Returns (pid, meta)."""
+def store_pic(root, data, name, ip, gid):
+    """Process and store one upload into gallery gid. Returns (pid, meta)."""
+    g = load_gallery(root, gid)
+    if not g:
+        raise PicError(404, "gallery not found")
     out, ctype, w, h = process_image(data)
     used = pics_size(root)
     if used + len(out) > PICS_POOL:
@@ -228,24 +258,27 @@ def store_pic(root, data, name, ip):
         f.write(out)
     os.replace(tmp, _path(root, pid))          # atomic: no half-written pic
     now = time.time()
-    items = all_pics(root)
+    items = [t for t in all_pics(root, gid)]
     order = min([m.get("order", 0) for _, m in items] or [1]) - 1  # newest first
     meta = {
-        "created": now, "expires": now + PICS_TTL, "ip": ip,
+        "created": now, "expires": now + PICS_TTL, "ip": ip, "gid": gid,
         "name": (name or pid)[:128], "orig_size": len(data), "size": len(out),
         "ctype": ctype, "w": w, "h": h, "hidden": False, "order": order,
     }
     save_meta(root, pid, meta)
+    touch_gallery(root, gid, now)              # sliding gallery lifetime
     return pid, meta
 
 
-def moderate(root, pid, action):
-    """hide | unhide | delete — the admin verbs (RFQ FR-13/14)."""
+def moderate(root, pid, action, gid=None):
+    """hide | unhide | delete — scoped to one gallery when gid is given."""
     if not _HEX.match(pid or ""):
         return False
     m = load_meta(root, pid)
     if not m or not os.path.isfile(_path(root, pid)):
         return False
+    if gid is not None and m.get("gid") != gid:
+        return False                            # foreign gallery's image
     if action == "delete":
         remove_pic(root, pid)
         return True
@@ -259,9 +292,9 @@ def moderate(root, pid, action):
     return True
 
 
-def reorder(root, pid, delta):
+def reorder(root, pid, delta, gid=None):
     """Move one visible image up (-1) / down (+1), then renumber 0..n-1."""
-    vis = _sorted_visible(all_pics(root))
+    vis = _sorted_visible(all_pics(root, gid))
     ids = [p for p, _ in vis]
     if pid not in ids:
         return False
@@ -278,11 +311,128 @@ def reorder(root, pid, delta):
     return True
 
 
-def admin_ok(secret):
-    """Constant-time check; empty token disables admin entirely."""
-    if not PICS_ADMIN_TOKEN or not secret:
-        return False
-    return hmac.compare_digest(secret.encode(), PICS_ADMIN_TOKEN.encode())
+# --- domain: galleries ------------------------------------------------------
+
+def g_dir(root):
+    return os.path.join(root, NS, "g")
+
+
+def g_meta_path(root, gid):
+    return os.path.join(g_dir(root), gid + ".json")
+
+
+def load_gallery(root, gid):
+    """Gallery meta or None (also None when expired — sweeps it)."""
+    if not _valid_gid(gid):
+        return None
+    try:
+        g = json.load(open(g_meta_path(root, gid)))
+    except Exception:
+        return None
+    if g.get("expires", 0) < time.time():
+        remove_gallery(root, gid)
+        return None
+    return g
+
+
+def save_gallery(root, g):
+    os.makedirs(g_dir(root), exist_ok=True)
+    with open(g_meta_path(root, g["id"]), "w") as f:
+        json.dump(g, f)
+
+
+def remove_gallery(root, gid):
+    try:
+        os.remove(g_meta_path(root, gid))
+    except OSError:
+        pass
+
+
+def create_gallery(root, name, listed, ip):
+    """Create (or get, for key-shaped names) a gallery with its own admin
+    token. Mirrors dirs: a valid dir-style name ([a-z0-9-], 5-32, >=1
+    letter, not reserved) becomes the gallery's key under /pics/g/<name>
+    (create-or-get, idempotent); anything else is a display name on a
+    fresh hex id. Returns (gid, meta, existed). The token is only
+    meaningful for the creator: an existing named gallery is returned
+    WITHOUT its token (never leak it to someone who just knows the name)."""
+    import store
+    now = time.time()
+    if name and _GID.match(name) and store._valid_name(name)[0]:
+        existing = load_gallery(root, name)
+        if existing:
+            return name, existing, True
+        gid = name
+    else:
+        gid = secrets.token_hex(8)
+    g = {
+        "id": gid, "token": secrets.token_hex(24),
+        "name": (name or "")[:80], "listed": bool(listed), "ip": ip,
+        "created": now, "expires": now + PICS_TTL,   # slides on upload
+    }
+    save_gallery(root, g)
+    return gid, g, False
+
+
+def touch_gallery(root, gid, now=None):
+    """Slide the gallery lifetime forward on uploads."""
+    g = load_gallery(root, gid)
+    if not g:
+        return
+    g["expires"] = (now or time.time()) + PICS_TTL
+    save_gallery(root, g)
+
+
+def gallery_sweep(root, now=None):
+    """Remove expired gallery metas (their images expired with them)."""
+    now = now if now is not None else time.time()
+    d = g_dir(root)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for f in names:
+        if not f.endswith(".json"):
+            continue
+        try:
+            g = json.load(open(os.path.join(d, f)))
+            if g.get("expires", 0) < now:
+                os.remove(os.path.join(d, f))
+        except Exception:
+            pass
+
+
+def all_galleries(root, listed_only=False):
+    """Live galleries as [(gid, g)], newest first. Sweeps first."""
+    gallery_sweep(root)
+    d, out = g_dir(root), []
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    for f in names:
+        if not f.endswith(".json"):
+            continue
+        gid = f[:-len(".json")]
+        g = load_gallery(root, gid)
+        if g and (not listed_only or g.get("listed")):
+            out.append((gid, g))
+    out.sort(key=lambda t: -t[1].get("created", 0))
+    return out
+
+
+def gallery_admin_ok(root, gid, secret):
+    """Gallery meta if secret is this gallery's token OR the superadmin
+    token; None otherwise (constant-time compares, no user enumeration)."""
+    g = load_gallery(root, gid)
+    if not g or not secret:
+        return None
+    s = secret.encode()
+    if hmac.compare_digest(s, g["token"].encode()):
+        return g
+    if PICS_ADMIN_TOKEN and hmac.compare_digest(s, PICS_ADMIN_TOKEN.encode()):
+        return g
+    return None
 
 
 # --- presentation helpers ---------------------------------------------------
@@ -304,6 +454,7 @@ def public_meta(store, pid, m):
     iso = _iso(m["expires"])
     return {
         "id": pid,
+        "gid": m.get("gid"),
         "url": f"{base}/pics/i/{pid}",
         "thumb": f"{base}/pics/i/{pid}?thumb=1",
         "name": m.get("name", pid),
@@ -318,6 +469,20 @@ def public_meta(store, pid, m):
     }
 
 
+def gallery_public_meta(store, gid, g, count):
+    return {
+        "id": gid,
+        "url": f"{store.PUBLIC_BASE}/pics/g/{gid}",
+        "name": g.get("name") or gid,
+        "listed": bool(g.get("listed")),
+        "images": count,
+        "created_at": _iso(g.get("created", 0)),
+        "expires_at": _iso(g.get("expires", 0)),
+        "persistence": {"type": "pics-gallery", "expires_at": _iso(g.get("expires", 0)),
+                        "extendable_by": "activity", "max_age": PICS_TTL},
+    }
+
+
 # --- HTML pages (pure functions over data) ---------------------------------
 
 _GALLERY_CSS = (
@@ -329,6 +494,21 @@ _GALLERY_CSS = (
     "padding:1rem;margin:1rem 0;display:flex;flex-direction:column;gap:.5rem}"
     ".up input{min-height:44px}"
     ".meta{color:var(--muted);font-size:.85rem}"
+    "form.cnew{background:var(--card);border:1px solid var(--line);border-radius:8px;"
+    "padding:1rem;margin:1rem 0;display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}"
+    "form.cnew input[type=text]{flex:1;min-height:44px;border:1px solid var(--line);"
+    "border-radius:8px;padding:.4rem .8rem;font-size:1rem}"
+    "form.cnew label{display:flex;gap:.4rem;align-items:center;color:var(--muted);font-size:.9rem}"
+    "button{min-height:44px;background:var(--accent);color:#fff;border:0;border-radius:8px;"
+    "font-weight:600;padding:.5rem 1.2rem;cursor:pointer}"
+    ".gl{background:var(--card);border:1px solid var(--line);border-radius:8px;"
+    "padding:.7rem .9rem;margin:.4rem 0;display:flex;justify-content:space-between;"
+    "align-items:center;gap:.6rem;flex-wrap:wrap}"
+    ".gl a{color:var(--ink);font-weight:500;text-decoration:none;overflow-wrap:anywhere}"
+    ".gl .meta{white-space:nowrap}"
+    ".secret{background:#fffbe6;border:1px solid #eab308;border-radius:8px;"
+    "padding:1rem;margin:1rem 0;overflow-wrap:anywhere}"
+    ".secret code{background:var(--card);padding:.1rem .4rem;border-radius:4px}"
 )
 
 _UP_JS = (
@@ -341,7 +521,7 @@ _UP_JS = (
     "for(var i=0;i<this.files.length;i++)q.push(this.files[i]);this.value='';upd();pump();});"
     "async function one(f){"
     "for(var a=0;a<3;a++){"
-    "var r=await fetch('__PREFIX__/pics?name='+encodeURIComponent(f.name),"
+    "var r=await fetch('__P__/pics/g/__GID__?name='+encodeURIComponent(f.name),"
     "{method:'POST',body:f});"
     "if(r.ok)return true;"
     "if(r.status===429){await sleep(61000);continue;}"
@@ -349,13 +529,61 @@ _UP_JS = (
     "return false;}"
     "async function pump(){if(busy)return;busy=true;"
     "while(q.length){var f=q.shift();if(await one(f))done++;else fail++;upd();}"
-    "busy=false;if(done&&!fail){location.reload();}}".replace("__PREFIX__", "__P__")
+    "busy=false;if(done&&!fail){location.reload();}}"
 )
 
 
-def gallery_html(store, items, page, pages, total):
-    """Public gallery page: grid, uploader, pagination."""
+def _page(store, title, body, extra_css=""):
+    return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+            + store._META_MOBILE
+            + f"<title>{store._html_escape(title)}</title>"
+            + f"<style>{store._BASE_CSS}{extra_css}</style></head><body><main>"
+            + body + "</main></body></html>")
+
+
+def index_html(store, gals, created=None):
+    """Gallery index: create form + listed galleries."""
     e = store._html_escape
+    rows = "".join(
+        f"<div class=gl><a href='{store.PREFIX}/pics/g/{gid}'>{e(g.get('name') or gid)}</a>"
+        f"<span class=meta>{n} Bilder</span></div>"
+        for gid, g, n in gals)
+    created_html = ""
+    if created:
+        gid, g = created
+        pub = f"{store.PUBLIC_BASE}/pics/g/{gid}"
+        adm = f"{pub}/{g['token']}"
+        created_html = (
+            "<div class=secret><b>Galerie erstellt!</b><br>"
+            f"\xd6ffentliche URL:<br><code>{e(pub)}</code><br><br>"
+            "<b>Dein Admin-Link (nur jetzt sichtbar — bitte jetzt speichern!):</b><br>"
+            f"<code>{e(adm)}</code><br><br>"
+            "<span class=meta>Mit dem Admin-Link verwaltest du die Galerie: "
+            "verbergen, l\xf6schen, neu sortieren. Er wird nirgends angezeigt — "
+            "weg ist weg.</span></div>")
+    days = max(1, PICS_TTL // 86400)
+    return _page(store, "pics — galerien",
+                 "<h1>pics</h1>"
+                 + f"<p class=meta>Eigene Bildgalerie anlegen — Bilder laufen nach {days} Tagen ab, "
+                 + f"max {_fmt(PICS_MAX_FILE)} pro Bild. Du bekommst einen Admin-Link f\xfcr "
+                 + "verbergen / l\xf6schen / sortieren.</p>"
+                 + "<form class=cnew method=post action='" + store.PREFIX + "/pics?create=1'>"
+                 + "<input type=text name=name placeholder='Name der Galerie (z.B. Hochzeit M\u00fcnchen)'>"
+                 + "<label><input type=checkbox name=listed value=1> \xf6ffentlich gelistet</label>"
+                 + "<button>Galerie anlegen</button></form>"
+                 + created_html
+                 + f"<h2>Galerien</h2>{rows or '<p class=meta>Noch keine \xf6ffentlichen Galerien.</p>'}"
+                 + store._agent_hint(
+                     f"curl -X POST '{store.PUBLIC_BASE}/pics?create=1&name=party'  # new gallery (JSON incl. admin token)",
+                     f"curl -A curl {store.PUBLIC_BASE}/pics                        # this index as JSON",
+                 ),
+                 _GALLERY_CSS)
+
+
+def gallery_html(store, gid, g, items, page, pages, total):
+    """One public gallery: grid, uploader, pagination."""
+    e = store._html_escape
+    title = g.get("name") or gid
     cells = "".join(
         f"<a href='{store.PREFIX}/pics/i/{pid}'>"
         f"<img loading=lazy decoding=async alt='' "
@@ -368,27 +596,23 @@ def gallery_html(store, items, page, pages, total):
     if page < pages:
         pgn.append(f"<a class=btn href='?p={page+1}'>&#228;lter &#8250;</a>")
     days = max(1, PICS_TTL // 86400)
-    js = _UP_JS.replace("__P__", store.PREFIX)
-    return (
-        "<!doctype html><html lang=en><head><meta charset=utf-8>"
-        + store._META_MOBILE
-        + "<title>pics — event gallery</title>"
-        + f"<style>{store._BASE_CSS}{_GALLERY_CSS}</style></head><body><main>"
-        + "<h1>pics</h1>"
-        + f"<p class=meta>{total} Bilder &#183; l&#228;uft nach {days} Tagen ab"
-        + f" &#183; max {_fmt(PICS_MAX_FILE)} pro Bild</p>"
-        + "<div class=up><input id=f type=file accept='image/*' multiple>"
-        + "<div class=meta id=upstat>Bilder w&#228;hlen — sie werden der Reihe nach "
-        + "hochgeladen (auch 1000 auf einmal).</div></div>"
-        + f"<div class=grid>{cells}</div>"
-        + f"<div class=pgn>{''.join(pgn)}</div>"
-        + store._agent_hint(
-            f"curl {store.PUBLIC_BASE}/pics?name=photo.jpg --data-binary @photo.jpg  # upload",
-            f"curl -A curl {store.PUBLIC_BASE}/pics                                  # listing as JSON",
-        )
-        + f"<script>{js}</script>"
-        + "</main></body></html>"
-    )
+    js = _UP_JS.replace("__P__", store.PREFIX).replace("__GID__", gid)
+    return _page(store, f"pics — {title}",
+                 f"<h1>{e(title)}</h1>"
+                 + f"<p class=meta>{total} Bilder &#183; l&auml;uft nach {days} Tagen ab"
+                 + f" &#183; max {_fmt(PICS_MAX_FILE)} pro Bild &#183; "
+                 + f"<a href='{store.PREFIX}/pics'>alle Galerien</a></p>"
+                 + "<div class=up><input id=f type=file accept='image/*' multiple>"
+                 + "<div class=meta id=upstat>Bilder w&auml;hlen — sie werden der Reihe nach "
+                 + "hochgeladen (auch 1000 auf einmal).</div></div>"
+                 + f"<div class=grid>{cells}</div>"
+                 + f"<div class=pgn>{''.join(pgn)}</div>"
+                 + store._agent_hint(
+                     f"curl {store.PUBLIC_BASE}/pics/g/{gid}?name=photo.jpg --data-binary @photo.jpg  # upload",
+                     f"curl -A curl {store.PUBLIC_BASE}/pics/g/{gid}                        # listing as JSON",
+                 )
+                 + f"<script>{js}</script>",
+                 _GALLERY_CSS)
 
 
 _ADMIN_CSS = (
@@ -409,27 +633,29 @@ _ADMIN_CSS = (
 )
 
 
-def _admin_card(store, secret, pid, m, page, ops):
+def _admin_card(store, gid, secret, pid, page, ops):
     btns = "".join(
         f"<button name=action value={a}>{lab}</button>" for a, lab in ops)
     return (
-        f"<div class=card><a href='{store.PREFIX}/pics/{secret}/i/{pid}'>"
+        f"<div class=card><a href='{store.PREFIX}/pics/g/{gid}/{secret}/i/{pid}'>"
         f"<img loading=lazy decoding=async alt='' "
-        f"src='{store.PREFIX}/pics/{secret}/i/{pid}?thumb=1'></a>"
-        f"<form class=ops method=post action='{store.PREFIX}/pics/{secret}'>"
+        f"src='{store.PREFIX}/pics/g/{gid}/{secret}/i/{pid}?thumb=1'></a>"
+        f"<form class=ops method=post action='{store.PREFIX}/pics/g/{gid}/{secret}'>"
         f"<input type=hidden name=id value='{pid}'>"
         f"<input type=hidden name=p value='{page}'>{btns}</form></div>"
     )
 
 
-def admin_html(store, secret, vis, hid, page, pages, used):
-    """Admin page: pool bar, visible grid with ops, hidden section."""
+def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
+    """Admin page of ONE gallery: pool bar, ops grid, hidden section."""
+    e = store._html_escape
+    title = g.get("name") or gid
     pct = min(100.0, used * 100.0 / PICS_POOL)
-    cards = "".join(_admin_card(store, secret, pid, m, page,
+    cards = "".join(_admin_card(store, gid, secret, pid, page,
                                 [("up", "&#8593;"), ("down", "&#8595;"),
                                  ("hide", "verbergen"), ("delete", "l&#246;schen")])
                     for pid, m in vis)
-    hcards = "".join(_admin_card(store, secret, pid, m, page,
+    hcards = "".join(_admin_card(store, gid, secret, pid, page,
                                  [("unhide", "einblenden"), ("delete", "l&#246;schen")])
                      for pid, m in hid)
     pgn = []
@@ -438,22 +664,17 @@ def admin_html(store, secret, vis, hid, page, pages, used):
     pgn.append(f"<span class=meta>Seite {page} / {pages}</span>")
     if page < pages:
         pgn.append(f"<a class=btn href='?p={page+1}'>&#8250;</a>")
-    return (
-        "<!doctype html><html lang=en><head><meta charset=utf-8>"
-        + store._META_MOBILE
-        + "<title>pics — admin</title>"
-        + f"<style>{store._BASE_CSS}{_ADMIN_CSS}</style></head><body><main>"
-        + "<h1>pics &#183; admin</h1>"
-        + f"<p class=meta>{_fmt(used)} von {_fmt(PICS_POOL)} belegt</p>"
-        + f"<div class=bar><i style='width:{pct:.1f}%'></i></div>"
-        + f"<h2>Sichtbar ({len(vis)}{('…' if page < pages else '')})</h2>"
-        + f"<div class=grid>{cards}</div>"
-        + f"<div class=pgn>{''.join(pgn)}</div>"
-        + f"<h2 class=hidden-sec>Verborgen ({len(hid)})</h2>"
-        + f"<div class='grid hidden-sec'>{hcards}</div>"
-        + "<a class=back href='" + store.PREFIX + "/pics'>&#8592; &#246;ffentliche Galerie</a>"
-        + "</main></body></html>"
-    )
+    return _page(store, "pics — admin",
+                 f"<h1>{e(title)} &#183; admin</h1>"
+                 + f"<p class=meta>{_fmt(used)} von {_fmt(PICS_POOL)} belegt (pool geteilt zwischen allen Galerien)</p>"
+                 + f"<div class=bar><i style='width:{pct:.1f}%'></i></div>"
+                 + f"<h2>Sichtbar ({len(vis)}{('…' if page < pages else '')})</h2>"
+                 + f"<div class=grid>{cards}</div>"
+                 + f"<div class=pgn>{''.join(pgn)}</div>"
+                 + f"<h2 class=hidden-sec>Verborgen ({len(hid)})</h2>"
+                 + f"<div class='grid hidden-sec'>{hcards}</div>"
+                 + f"<a class=back href='{store.PREFIX}/pics/g/{gid}'>&#8592; zur Galerie</a>",
+                 _ADMIN_CSS)
 
 
 # --- HTTP adapters (thin glue over the domain) ------------------------------
@@ -463,37 +684,49 @@ def get(h, rest, query):
     from urllib.parse import unquote
     import store
     root = store.ROOT
-    if not rest or rest == [""]:
-        return _get_gallery(h, store, root, query)
+    if not rest or rest == [""] or rest == ["create"]:
+        return _get_index(h, store, root, query)
     if rest[0] == "i" and len(rest) == 2 and rest[1]:
         return _serve(h, store, root, unquote(rest[1]), admin=False, query=query)
-    secret = unquote(rest[0])
-    if len(rest) == 1:
-        if admin_ok(secret):
-            return _get_admin(h, store, root, secret, query)
-        return h._send(404, "not found\n")
-    if len(rest) == 2 and rest[1] == "json":
-        if admin_ok(secret):
-            return _admin_json(h, store, root)
-        return h._send(404, "not found\n")
-    if len(rest) == 3 and rest[1] == "i" and rest[2]:
-        if admin_ok(secret):
-            return _serve(h, store, root, unquote(rest[2]), admin=True, query=query)
-        return h._send(404, "not found\n")
+    if rest[0] == "g":
+        if len(rest) == 2 and rest[1]:
+            return _get_gallery(h, store, root, unquote(rest[1]), query)
+        if len(rest) >= 3:
+            gid, secret = unquote(rest[1]), unquote(rest[2])
+            if not gallery_admin_ok(root, gid, secret):
+                return h._send(404, "not found\n")
+            tail = rest[3:]
+            if not tail:
+                return _get_admin(h, store, root, gid, secret, query)
+            if tail == ["json"]:
+                return _admin_json(h, store, root, gid)
+            if len(tail) == 2 and tail[0] == "i" and tail[1]:
+                return _serve(h, store, root, unquote(tail[1]), admin=True,
+                              query=query, gid=gid)
     return h._send(404, "not found\n")
 
 
 def post(h, rest, qp):
-    """Dispatch POST /pics/… — upload (public) and admin actions."""
+    """Dispatch POST /pics/… — create / upload / admin actions."""
     from urllib.parse import unquote
     import store
+    root = store.ROOT
     if not rest or rest == [""]:
-        return _upload(h, store, qp)
-    if len(rest) == 1:
-        secret = unquote(rest[0])
-        if admin_ok(secret):
-            return _admin_action(h, store, store.ROOT, secret)
-        return h._send(404, "not found\n")
+        if "create=1" in (qp or {}) or "create" in (qp or {}):
+            return _create(h, store, root, qp)
+        return h._send(400, json.dumps(
+            {"error": "nothing to do — use ?create=1 to create a gallery, "
+                      "or POST /pics/g/<gid> to upload"}), "application/json")
+    if rest == ["create"]:
+        return _create(h, store, root, qp)
+    if rest[0] == "g":
+        if len(rest) == 2 and rest[1]:
+            return _upload(h, store, root, unquote(rest[1]), qp)
+        if len(rest) == 3:
+            gid, secret = unquote(rest[1]), unquote(rest[2])
+            if not gallery_admin_ok(root, gid, secret):
+                return h._send(404, "not found\n")
+            return _admin_action(h, store, root, gid, secret)
     return h._send(404, "not found\n")
 
 
@@ -505,54 +738,137 @@ def _page_of(query, default=1):
         return default
 
 
-def _get_gallery(h, store, root, query):
-    items = _sorted_visible(all_pics(root))
-    if h._is_agent() or "json=1" in query:
-        cap = items[:PICS_JSON_CAP]
+def _form_value(body_qp, key, default=""):
+    return (body_qp.get(key) or [default])[0]
+
+
+def _read_form(h):
+    """Parse an urlencoded form body (admin actions, create fallback)."""
+    from urllib.parse import parse_qs
+    length = h.headers.get("Content-Length")
+    body = h.rfile.read(int(length)) if length else b""
+    return parse_qs(body.decode("utf-8", "replace"))
+
+
+# --- GET views ---------------------------------------------------------------
+
+def _get_index(h, store, root, query):
+    gals = all_galleries(root, listed_only=True)
+    if h._is_agent() and "html=1" not in query:
+        out = []
+        for gid, g in gals[:PICS_JSON_CAP]:
+            n = len([1 for _, m in all_pics(root, gid) if not m.get("hidden")])
+            out.append(gallery_public_meta(store, gid, g, n))
         return h._send(200, json.dumps({
-            "gallery": True,
-            "count": len(items),
-            "images": [public_meta(store, pid, m) for pid, m in cap],
+            "galleries": out,
+            "create": {"method": "POST",
+                       "url": f"{store.PUBLIC_BASE}/pics?create=1",
+                       "note": "optional &name=<display name> &listed=1; "
+                               "response includes the one-time admin token"},
+        }, indent=2), "application/json")
+    gals_html = []
+    for gid, g in gals[:200]:
+        n = len([1 for _, m in all_pics(root, gid) if not m.get("hidden")])
+        gals_html.append((gid, g, n))
+    h._send(200, index_html(store, gals_html), "text/html")
+
+
+def _create(h, store, root, qp):
+    """POST /pics?create=1 — new gallery. Parameters come from the query
+    string (agents, curl) or an urlencoded form body (browser form);
+    query wins, body fills in the rest."""
+    qp = qp or {}
+    name = ((qp.get("name") or [""])[0]).strip()
+    listed = bool((qp.get("listed") or [""])[0])
+    if not name and "name" not in qp and h.headers.get("Content-Type", "").startswith(
+            "application/x-www-form-urlencoded"):
+        form = _read_form(h)
+        name = _form_value(form, "name").strip()
+        listed = listed or bool(_form_value(form, "listed"))
+    key = (store._safe_name(name) or "")[:80] or None
+    gid, g, existed = create_gallery(root, key, listed, h._client_ip())
+    pub = f"{store.PUBLIC_BASE}/pics/g/{gid}"
+    if existed:
+        # create-or-get on an existing named gallery: public info only —
+        # the admin token stays with whoever created it
+        if h._is_agent():
+            return h._send(200, json.dumps({
+                "id": gid, "url": pub, "name": g.get("name") or gid,
+                "existed": True,
+                "note": "gallery already exists — the admin token was shown "
+                        "only at creation and is not re-issued",
+            }, indent=2), "application/json")
+        return h._send(200, _page(store, "pics — galerie existiert",
+            "<h1>Galerie existiert schon</h1>"
+            + f"<p><a class=btn href='{store.PREFIX}/pics/g/{gid}'>Zur Galerie</a></p>"
+            + "<p class=meta>Der Admin-Link wurde nur beim Anlegen gezeigt.",
+            _GALLERY_CSS), "text/html")
+    adm = f"{pub}/{g['token']}"
+    if h._is_agent():
+        return h._send(200, json.dumps({
+            "id": gid, "url": pub, "admin_url": adm, "token": g["token"],
+            "name": g["name"], "listed": g["listed"],
+            "expires_at": _iso(g["expires"]),
+            "note": "the admin token is shown exactly once — store it now",
+        }, indent=2), "application/json")
+    # browser: one-time page that shows the admin link
+    h._send(200, index_html(store, [], created=(gid, g)), "text/html")
+
+
+def _get_gallery(h, store, root, gid, query):
+    g = load_gallery(root, gid)
+    if not g:
+        return h._send(404, "not found\n")
+    items = _sorted_visible(all_pics(root, gid))
+    if h._is_agent() and "html=1" not in query:
+        return h._send(200, json.dumps({
+            "gallery": gallery_public_meta(store, gid, g, len(items)),
+            "images": [public_meta(store, pid, m)
+                       for pid, m in items[:PICS_JSON_CAP]],
             "pool": {"used": pics_size(root), "bytes": PICS_POOL},
             "limits": {"max_file_bytes": PICS_MAX_FILE, "ttl_seconds": PICS_TTL,
                        "edge_px": PICS_EDGE},
+            "upload": {"method": "POST",
+                       "url": f"{store.PUBLIC_BASE}/pics/g/{gid}?name=<filename>"},
         }, indent=2), "application/json")
     total = len(items)
     pages = max(1, (total + PICS_PAGE - 1) // PICS_PAGE)
     page = min(_page_of(query), pages)
     chunk = items[(page - 1) * PICS_PAGE: page * PICS_PAGE]
-    h._send(200, gallery_html(store, chunk, page, pages, total), "text/html")
+    h._send(200, gallery_html(store, gid, g, chunk, page, pages, total), "text/html")
 
 
-def _get_admin(h, store, root, secret, query):
-    items = all_pics(root)
+def _get_admin(h, store, root, gid, secret, query):
+    items = all_pics(root, gid)
     vis = _sorted_visible(items)
     hid = sorted([t for t in items if t[1].get("hidden")],
                  key=lambda t: -t[1].get("created", 0))[:500]
+    g = load_gallery(root, gid)
     if h._is_agent():
-        return _admin_json(h, store, root)
+        return _admin_json(h, store, root, gid)
     pages = max(1, (len(vis) + PICS_ADMIN_PAGE - 1) // PICS_ADMIN_PAGE)
     page = min(_page_of(query), pages)
     chunk = vis[(page - 1) * PICS_ADMIN_PAGE: page * PICS_ADMIN_PAGE]
-    h._send(200, admin_html(store, secret, chunk, hid, page, pages,
+    h._send(200, admin_html(store, gid, g, secret, chunk, hid, page, pages,
                             pics_size(root)), "text/html")
 
 
-def _admin_json(h, store, root):
-    items = all_pics(root)
+def _admin_json(h, store, root, gid):
+    items = all_pics(root, gid)
     vis = _sorted_visible(items)
     hid = [t for t in items if t[1].get("hidden")]
+    g = load_gallery(root, gid)
     h._send(200, json.dumps({
-        "gallery": True, "admin": True,
+        "gallery": gallery_public_meta(store, gid, g, len(vis)) if g else None,
+        "admin": True,
         "visible": [public_meta(store, pid, m) for pid, m in vis[:PICS_JSON_CAP]],
         "hidden": [public_meta(store, pid, m) for pid, m in hid[:PICS_JSON_CAP]],
         "pool": {"used": pics_size(root), "bytes": PICS_POOL},
     }, indent=2), "application/json")
 
 
-def _serve(h, store, root, pid, admin, query):
+def _serve(h, store, root, pid, admin, query, gid=None):
     """Serve one image (or its thumb). Hidden -> 404 unless admin."""
-    import store
     if not _HEX.match(pid or ""):
         return h._send(404, "not found\n")
     sweep(root)
@@ -565,15 +881,24 @@ def _serve(h, store, root, pid, admin, query):
         return h._send(404, "not found\n")
     if m.get("hidden") and not admin:
         return h._send(404, "not found\n")
+    if admin and gid is not None and m.get("gid") != gid:
+        return h._send(404, "not found\n")     # admin of another gallery
     ctype = m.get("ctype") or "image/webp"
     if "thumb=1" in query:
         return h._serve_thumb(fp, ctype)
     h._serve_file(fp, ctype, m.get("name"), "download=1" in query, pid)
 
 
-def _upload(h, store, qp):
-    """Public upload: raw body (agents, JS queue) or multipart (form)."""
-    root, ip = store.ROOT, h._client_ip()
+# --- POST actions ------------------------------------------------------------
+
+def _upload(h, store, root, gid, qp):
+    """Public upload into one gallery: raw body (agents, JS queue) or
+    multipart (browser form / batch)."""
+    ip = h._client_ip()
+    g = load_gallery(root, gid)
+    if not g:
+        return h._send(404, json.dumps({"error": "gallery not found"}),
+                       "application/json")
     name = ((qp.get("name") or [""])[0] or "").strip() or "image"
     ctype = h.headers.get("Content-Type", "")
     if ctype.startswith("multipart/form-data"):
@@ -591,7 +916,7 @@ def _upload(h, store, qp):
         added, errors = [], []
         for n, d, _c in files:
             try:
-                pid, m = store_pic(root, d, store._safe_name(n)[:128], ip)
+                pid, m = store_pic(root, d, store._safe_name(n)[:128], ip, gid)
                 added.append(public_meta(store, pid, m))
             except PicError as ex:
                 errors.append(f"{store._safe_name(n)[:64]}: {ex.msg}")
@@ -600,7 +925,7 @@ def _upload(h, store, qp):
                 "pool" in e for e in errors) and not added else 207)
             return h._send(code, json.dumps(
                 {"added": added, "errors": errors}, indent=2), "application/json")
-        return h._send(303, b"", extra={"Location": f"{store.PREFIX}/pics"})
+        return h._send(303, b"", extra={"Location": f"{store.PREFIX}/pics/g/{gid}"})
     # raw body: one image per request (JS queue + agents)
     length = h.headers.get("Content-Length")
     if length is None:
@@ -618,28 +943,26 @@ def _upload(h, store, qp):
             {"error": f"too large (max {_fmt(PICS_MAX_FILE)})"}), "application/json")
     data = h.rfile.read(length)
     try:
-        pid, m = store_pic(root, data, store._safe_name(name)[:128], ip)
+        pid, m = store_pic(root, data, store._safe_name(name)[:128], ip, gid)
     except PicError as ex:
         return h._send(ex.code, json.dumps({"error": ex.msg}), "application/json")
     h._send(200, json.dumps(public_meta(store, pid, m), indent=2), "application/json")
 
 
-def _admin_action(h, store, root, secret):
-    """POST /pics/<secret> with urlencoded form: id, action, p."""
-    from urllib.parse import parse_qs
-    length = h.headers.get("Content-Length")
-    body = h.rfile.read(int(length)) if length else b""
-    form = parse_qs(body.decode("utf-8", "replace"))
-    pid = (form.get("id") or [""])[0]
-    action = (form.get("action") or [""])[0]
-    page = (form.get("p") or ["1"])[0]
+def _admin_action(h, store, root, gid, secret):
+    """POST /pics/g/<gid>/<secret> with urlencoded form: id, action, p."""
+    form = _read_form(h)
+    pid = _form_value(form, "id")
+    action = _form_value(form, "action")
+    page = _form_value(form, "p", "1")
     if action in ("up", "down"):
-        reorder(root, pid, -1 if action == "up" else 1)
+        reorder(root, pid, -1 if action == "up" else 1, gid=gid)
     elif action in ("hide", "unhide", "delete"):
-        moderate(root, pid, action)
+        moderate(root, pid, action, gid=gid)
     else:
         return h._send(400, "unknown action\n")
-    h._send(303, b"", extra={"Location": f"{store.PREFIX}/pics/{secret}?p={page}"})
+    h._send(303, b"", extra={
+        "Location": f"{store.PREFIX}/pics/g/{gid}/{secret}?p={page}"})
 
 
 # --- self-service surfaces (merged into store's /api and /help) -------------
@@ -647,28 +970,45 @@ def _admin_action(h, store, root, secret):
 def api_endpoints(store_base):
     """Entries for the /api contract. store_base = PUBLIC_BASE."""
     return {
-        "pics_upload": {
+        "pics_create": {
             "method": "POST",
-            "url": store_base + "/pics?name=<filename>",
-            "body": "raw image bytes (or multipart/form-data for batches)",
-            "note": f"event gallery: free upload, public instantly. Recompressed "
-                    f"server-side to max {PICS_EDGE}px WebP q{PICS_QUALITY} "
-                    f"(GIFs pass through); original discarded. Fixed lifetime "
-                    f"{PICS_TTL // 86400}d, own pool "
-                    f"({PICS_POOL // 1024**3} GB — full pool rejects with 507, "
-                    f"never evicts). Max {PICS_MAX_FILE // 1024**2} MB per upload. "
-                    f"Accepts jpeg/png/webp/gif"
-                    + ("/heic." if pillow_heif else " (heic needs pillow-heif on the server)."),
-            "response": {"id": "str", "url": "str", "thumb": "str", "size": "int",
-                         "width": "int", "height": "int", "expires_at": "str",
-                         "persistence": {"type": "pics", "extendable_by": "none"}},
+            "url": store_base + "/pics?create=1[&name=<name>][&listed=1]",
+            "note": "create a gallery: you become its admin via a per-gallery "
+                    "token (returned once — store it!). A dir-style name "
+                    "(5-32 chars [a-z0-9-], >=1 letter, not reserved) becomes "
+                    "the gallery's key at /pics/g/<name> (create-or-get, "
+                    "idempotent; an existing named gallery is returned WITHOUT "
+                    "its token). Anything else is a display name on a fresh "
+                    "hex id. Unlisted by default; &listed=1 puts it in GET /pics.",
+            "response": {"id": "str", "url": "str", "admin_url": "str",
+                         "token": "str", "existed?": "bool",
+                         "expires_at": "str"},
+        },
+        "pics_index": {
+            "method": "GET",
+            "url": store_base + "/pics",
+            "note": "gallery index: JSON for agents (listed galleries only), "
+                    "HTML with create form for browsers",
         },
         "pics_gallery": {
             "method": "GET",
-            "url": store_base + "/pics",
-            "note": "public gallery: HTML grid for browsers (paginated ?p=N), "
-                    "JSON listing for agents (count, images[], pool, limits). "
+            "url": store_base + "/pics/g/<gid>",
+            "note": "one gallery: HTML grid for browsers (paginated ?p=N), "
+                    "JSON for agents (images[], pool, limits, upload how-to). "
                     "Hidden images never appear.",
+        },
+        "pics_upload": {
+            "method": "POST",
+            "url": store_base + "/pics/g/<gid>?name=<filename>",
+            "body": "raw image bytes (or multipart/form-data for batches)",
+            "note": f"free upload into a gallery, public instantly. Recompressed "
+                    f"server-side to max {PICS_EDGE}px WebP q{PICS_QUALITY} "
+                    f"(GIFs pass through); original discarded. Fixed lifetime "
+                    f"{PICS_TTL // 86400}d (slides the gallery's lifetime), "
+                    f"shared pool {PICS_POOL // 1024**3} GB — full pool rejects "
+                    f"with 507, never evicts. Max {PICS_MAX_FILE // 1024**2} MB "
+                    f"per upload. Accepts jpeg/png/webp/gif"
+                    + ("/heic." if pillow_heif else " (heic needs pillow-heif on the server)."),
         },
         "pics_image": {
             "method": "GET",
@@ -678,46 +1018,57 @@ def api_endpoints(store_base):
         },
         "pics_admin": {
             "method": "GET/POST",
-            "url": store_base + "/pics/<secret>",
-            "note": "admin surface; the secret is a long-lived token from the "
-                    "server env (THROWAWAY_PICS_ADMIN_TOKEN), passed as a path "
-                    "segment (never a query param). GET: admin page (or /json "
-                    "listing incl. hidden). POST form (id, action): hide | "
-                    "unhide | delete | up | down. Wrong secret -> 404.",
+            "url": store_base + "/pics/g/<gid>/<secret>",
+            "note": "admin of ONE gallery: the per-gallery token from creation "
+                    "(path segment, never a query param) or the server-wide "
+                    "superadmin token (env THROWAWAY_PICS_ADMIN_TOKEN). GET: "
+                    "admin page (/json for listing incl. hidden). POST form "
+                    "(id, action): hide | unhide | delete | up | down. Wrong "
+                    "secret -> 404.",
         },
     }
 
 
 HELP_TOPICS = {
     "pics": {
-        "title": "Pics — event gallery",
-        "summary": "Curated image gallery: free upload, 90-day lifetime, admin curation",
+        "title": "Pics — event galleries",
+        "summary": "Per-user image galleries: create, free upload, per-gallery admin token",
         "body": """WHAT IT IS
-A long-lived image gallery inside throway, under {PUBLIC_BASE}/pics,
-for event photos: visitors upload freely, everyone can view, one admin
-curates (hide / delete / reorder).
+Image galleries inside throway, under {PUBLIC_BASE}/pics, for event
+photos: anyone can create a gallery and becomes its admin via a
+per-gallery secret token. Visitors upload freely, everyone views.
 
-DIFFERENCES FROM THROWAY FILES
-- Fixed lifetime: {PICS_DAYS} days (no &ttl=). Expiry is the cleanup.
-- Own pool: {PICS_GB} GB. When full, uploads are REJECTED (507) —
-  existing images are never evicted to make room.
-- Uploads are recompressed to max {PICS_EDGE}px WebP q{PICS_QUALITY}
-  (GIFs pass through; originals are discarded).
-- Images are only removed by expiry or the admin — anyone-with-URL
-  cannot delete gallery images (unlike throway files).
+CREATE (like dirs: create-or-get for dir-style names)
+   POST {PUBLIC_BASE}/pics?create=1&name=hochzeit-2026
+   -> JSON: id, url (public), admin_url, token (shown exactly once!)
+   A name like "hochzeit-2026" ([a-z0-9-], 5-32 chars) becomes the
+   gallery's key: {PUBLIC_BASE}/pics/g/hochzeit-2026 (create-or-get,
+   idempotent). Re-creating an existing named gallery returns it WITHOUT
+   the token. Any other name is a display name on a fresh hex id.
 
-UPLOAD
-   POST {PUBLIC_BASE}/pics?name=photo.jpg    (raw bytes)
-   POST {PUBLIC_BASE}/pics                   (multipart, batch)
+The gallery admin link is {PUBLIC_BASE}/pics/g/<gid>/<token>. With it
+you can hide, unhide, delete and reorder images. Galleries are unlisted
+by default; &listed=1 puts them in the public index at GET /pics.
+
+UPLOAD (public, no auth)
+   POST {PUBLIC_BASE}/pics/g/<gid>?name=photo.jpg    (raw bytes)
+   POST {PUBLIC_BASE}/pics/g/<gid>                   (multipart, batch)
+
+Recompressed server-side to max {PICS_EDGE}px WebP q{PICS_QUALITY}
+(GIFs pass through; originals discarded). Fixed lifetime: {PICS_DAYS}
+days per image — an upload also slides the gallery's lifetime. Own
+pool: {PICS_GB} GB shared across galleries. Full pool REJECTS uploads
+(507) — existing images are never evicted.
 
 VIEW
-   GET {PUBLIC_BASE}/pics            gallery (HTML browsers, JSON agents)
-   GET {PUBLIC_BASE}/pics/i/<id>     one image (?thumb=1 for preview)
+   GET {PUBLIC_BASE}/pics              index (listed galleries)
+   GET {PUBLIC_BASE}/pics/g/<gid>      one gallery
+   GET {PUBLIC_BASE}/pics/i/<id>       one image (?thumb=1 for preview)
 
-ADMIN (secret from server env, path segment)
-   GET  {PUBLIC_BASE}/pics/<secret>          admin page
-   GET  {PUBLIC_BASE}/pics/<secret>/json     listing incl. hidden
-   POST {PUBLIC_BASE}/pics/<secret>          form: id, action=hide|unhide|delete|up|down
+ADMIN (per-gallery token or the server superadmin token, as path segment)
+   GET  {PUBLIC_BASE}/pics/g/<gid>/<secret>          admin page
+   GET  {PUBLIC_BASE}/pics/g/<gid>/<secret>/json     listing incl. hidden
+   POST {PUBLIC_BASE}/pics/g/<gid>/<secret>          form: id, action=hide|unhide|delete|up|down
 
 Hidden images: 404 for everyone but the admin. Deleted images: gone
 for good (bytes + meta).""",

@@ -92,10 +92,12 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | `PUT` | `/throway/<id>` | replace text (text only) |
 | `PATCH` | `/throway/<id>` | append text (text only) |
 | `DELETE` | `/throway/<id>` | delete file / bundle / dir |
-| `GET` | `/throway/pics` | **pics gallery** (HTML grid for browsers, JSON for agents) |
-| `POST` | `/throway/pics?name=<file>` | upload an image to the gallery (raw or multipart batch) |
+| `POST` | `/throway/pics?create=1[&name=][&listed=1]` | **create a gallery** → per-gallery admin token (shown once) |
+| `GET` | `/throway/pics` | gallery index (listed galleries; HTML + create form) |
+| `GET` | `/throway/pics/g/<gid>` | one gallery (HTML grid / JSON) |
+| `POST` | `/throway/pics/g/<gid>?name=<file>` | upload an image (raw or multipart batch) |
 | `GET` | `/throway/pics/i/<id>` | serve one gallery image (`?thumb=1` for preview) |
-| `GET`/`POST` | `/throway/pics/<secret>` | admin: page / `/json` / actions (`hide`,`unhide`,`delete`,`up`,`down`) |
+| `GET`/`POST` | `/throway/pics/g/<gid>/<secret>` | gallery admin: page / `/json` / actions (`hide`,`unhide`,`delete`,`up`,`down`) |
 | `GET` | `/throway/api` | machine-readable contract (JSON) |
 | `GET` | `/throway/help` | modular help index (JSON for agents, HTML for browsers) |
 | `GET` | `/throway/help/<topic>` | one help topic (plain text for agents) |
@@ -112,7 +114,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |
 | Rate limit | **100 req/min** per IP |
-| **pics gallery** | own pool **20 GB** (full = uploads rejected with 507, never evicted), fixed lifetime **90 days**, max **30 MB** per image, recompressed to ≤ 2048 px WebP (GIFs pass through, HEIC supported) |
+| **pics galleries** | shared pool **20 GB** (full = uploads rejected with 507, never evicted), images fixed **90 days** (gallery slides on upload), max **30 MB** per image, recompressed to ≤ 2048 px WebP (GIFs pass through, HEIC supported) |
 
 ## 🖼️ Behavior
 

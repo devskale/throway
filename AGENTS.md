@@ -455,32 +455,41 @@ curl -X DELETE "https://skale.dev/throway/d/<key>/<file>"  # one file from a dir
 
 ---
 
-## Pics — event gallery (seit 1.19.0, Details: `GET /help/pics`)
+## Pics — event galleries (seit 1.20.0, Details: `GET /help/pics`)
 
-Eine kuratierte Bildgalerie unter `/pics` — eigenes Budget (20 GB), eigene
-Lifetime (fest 90 Tage), unabhängig vom 4h-Werfen-Pool. Uploads werden
-server-seitig auf max 2048px WebP recompress (GIFs pass through, HEIC via
-pillow-heif), Originale verworfen. Volle Pool → Uploads abgelehnt (507),
-nie Eviction bestehender Bilder.
+Beliebig viele Bildgalerien unter `/pics` — dirs-artig: wer anlegt, wird
+über einen **per-Galerie-Token** Admin. Eigenes Budget (20 GB geteilt),
+eigene Lifetime (fest 90 Tage pro Bild, Galerie sliding ab letztem
+Upload), unabhängig vom 4h-Werfen-Pool. Uploads werden server-seitig auf
+max 2048px WebP recompress (GIFs pass through, HEIC via pillow-heif),
+Originale verworfen. Voller Pool → Uploads abgelehnt (507), nie Eviction.
 
 ```bash
 BASE=https://skale.dev/throway
 
-# upload (roh oder multipart für Batches; sofort öffentlich)
-curl --data-binary @photo.jpg "$BASE/pics?name=photo.jpg"
+# Galerie anlegen (create-or-get bei dir-style Namen; token genau einmal!)
+curl -X POST "$BASE/pics?create=1&name=hochzeit-2026"
+# -> {"id":"hochzeit-2026", "url":"…/pics/g/hochzeit-2026",
+#     "admin_url":"…/pics/g/hochzeit-2026/<token>", "token":"…"}
 
-# Galerie (JSON für Agenten, HTML-Grid für Browser)
-curl -A curl "$BASE/pics"
+# Upload (roh oder multipart für Batches; sofort öffentlich)
+curl --data-binary @photo.jpg "$BASE/pics/g/hochzeit-2026?name=photo.jpg"
+
+# Galerie / Index (JSON für Agenten, HTML für Browser)
+curl -A curl "$BASE/pics/g/hochzeit-2026"
+curl -A curl "$BASE/pics"                # nur listed=1-Galerien
 
 # ein Bild / Thumbnail
 curl "$BASE/pics/i/<id>"
 curl "$BASE/pics/i/<id>?thumb=1"
 ```
 
-**Admin** (nur mit Secret aus der Server-Env, nie in der Query): GET
-`/pics/<secret>` (Admin-Page bzw. `/json`), POST-Form `id` + `action=`
-`hide` | `unhide` | `delete` | `up` | `down`. Verborgene Bilder: 404 für
-alle außer dem Admin. Falsches Secret: 404.
+**Admin** (per-Galerie-Token aus dem Anlegen oder Superadmin-Env-Token,
+nie in der Query): GET `/pics/g/<gid>/<secret>` (Admin-Page bzw. `/json`),
+POST-Form `id` + `action=` `hide` | `unhide` | `delete` | `up` | `down`.
+Verborgene Bilder: 404 für alle außer dem Admin. Falsches Token: 404.
+Existierende benannte Galerie neu anlegen → zurück ohne Token
+(`existed:true`) — Name erraten ist keine Admin-Übernahme.
 
 ---
 
