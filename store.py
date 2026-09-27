@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.31.0"
+VERSION = "1.32.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -2797,6 +2797,39 @@ _INDEX_JS = r"""(function () {
   galDrop.addEventListener('drop', function (e) { queueImages(e.dataTransfer.files); });
   galFile.addEventListener('change', function () { queueImages(this.files); this.value = ''; });
 
+  /* Create an empty gallery now — no images needed yet (name reserves the
+     key create-or-get; admin link is shown exactly once). */
+  $('galCreate').addEventListener('click', function () {
+    var q = 'create=1';
+    if (galName.value.trim()) q += '&name=' + encodeURIComponent(galName.value.trim());
+    if (galListed.checked) q += '&listed=1';
+    this.disabled = true;
+    var btn = this;
+    fetch(PREFIX + '/pics?' + q, { method: 'POST' })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (d) {
+        btn.disabled = false;
+        if (d && d.id && d.token) {                 /* freshly created */
+          gal.gid = d.id;
+          showGalCreated(d);
+        } else if (d && d.id && d.existed) {        /* create-or-get hit */
+          galResult.style.display = 'block';
+          galResult.innerHTML = '<h3>Gallery exists</h3>'
+            + row('Gallery', '<div class=urlbox><input readonly value="' + esc(d.url) + '"><button class=btn data-copy>copy</button></div>')
+            + '<div class=hint>This name is taken — the admin link was shown only at creation.</div>';
+          [].forEach.call(galResult.querySelectorAll('[data-copy]'), function (b) {
+            b.addEventListener('click', function () {
+              navigator.clipboard.writeText(this.previousElementSibling.value);
+              this.textContent = 'copied \u2713';
+            });
+          });
+        } else {
+          setStatus('Error: ' + ((d && d.error) || 'create failed'), true);
+        }
+      })
+      .catch(function (e) { btn.disabled = false; setStatus('Error: ' + e, true); });
+  });
+
   function galRow(name, st, cls) {
     var d = document.createElement('div');
     d.className = 'grow';
@@ -3229,6 +3262,7 @@ def _index(self):
          "<div class='galbar'>"
          "<input id='galName' type='text' placeholder='gallery name, e.g. hochzeit-2026' maxlength=80>"
          "<label class='mode'><input type='checkbox' id='galListed'> listed</label>"
+         "<button type=button id='galCreate' title='create the gallery now — you can add images any time'>Create gallery</button>"
          "<a class='mode' href='" + PREFIX + "/pics' style='color:var(--accent);text-decoration:none'>all galleries &#8594;</a>"
          "</div>"
          "<div id='galDrop' class='minidrop'>"

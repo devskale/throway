@@ -708,12 +708,47 @@ _LB_HTML = (
 )
 
 
-def _lb_script(imgs):
+def _lb_script(imgs, admin_post=None):
     """Lightbox JS with the (page-local) image list baked in. imgs = [(url, name)].
     Flip via on-screen buttons, arrow keys, or touch swipe; esc / backdrop
     click closes. Without JS the thumbs stay plain links (progressive
-    enhancement)."""
-    data = json.dumps([{"u": u, "n": n} for u, n in imgs]).replace("</", "<\\/")
+    enhancement).
+
+    admin_post: when given (the gallery admin action URL), SPACE toggles
+    the current image between visible (+) and hidden (\u2212): admins flip
+    through with < > and curate without leaving the viewer. The card
+    behind dims live; the caption shows the new state."""
+    items = []
+    for entry in imgs:
+        u, n = entry[0], entry[1]
+        it = {"u": u, "n": n}
+        if len(entry) > 2:                      # admin: (url, name, pid, hidden)
+            it["i"] = entry[2]
+            it["h"] = bool(entry[3])
+        items.append(it)
+    data = json.dumps(items).replace("</", "<\\/")
+    admin_js = ""
+    if admin_post:
+        admin_js = (
+            "var AP=" + json.dumps(admin_post) + ";"
+            "function lbState(){return LB[lbi].h?'\u2212 hidden':'\u002b visible';}"
+            "function lbCap(){lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'')+'  ['+lbState()+']';}"
+            "lb.addEventListener('keydown',function(e){"
+            "if(e.key===' '&&lbi>=0){e.preventDefault();"
+            "var act=LB[lbi].h?'unhide':'hide',id=LB[lbi].i;"
+            "fetch(AP,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+            "body:'id='+encodeURIComponent(id)+'&action='+act+'&p=1'})"
+            ".then(function(r){if(!r.ok)throw 0;LB[lbi].h=!LB[lbi].h;lbCap();"
+            "var card=document.querySelectorAll('.grid .card')[lbi];"
+            "if(card)card.style.opacity=LB[lbi].h?'.45':'';})"
+            ".catch(function(){});}"
+            "if(e.key==='ArrowLeft'){e.preventDefault();nav(-1);}"
+            "if(e.key==='ArrowRight'){e.preventDefault();nav(1);}"
+            "if(e.key==='Escape')close();});"
+            "lb.tabIndex=0;"
+            "lb.addEventListener('focus',function(){},true);"
+            "document.addEventListener('focusin',function(){if(!lb.hidden&&lbi>=0)lb.focus();});"
+        )
     return (
         "<script>(function(){"
         "var LB=" + data + ";"
@@ -722,9 +757,11 @@ def _lb_script(imgs):
         "function open(i){if(!LB.length)return;lbi=(i%LB.length+LB.length)%LB.length;"
         "lb.hidden=false;document.body.style.overflow='hidden';"
         "lbimg.src=LB[lbi].u;"
-        "lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'');"
+        + ("lbCap();" if admin_post else
+           "lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'');") +
         "[lbi+1,lbi-1].forEach(function(j){var k=(j%LB.length+LB.length)%LB.length;"
-        "var im=new Image();im.src=LB[k].u;});}"
+        "var im=new Image();im.src=LB[k].u;});"
+        + ("lb.focus();" if admin_post else "") + "}"
         "function close(){lb.hidden=true;document.body.style.overflow='';lbimg.src='';lbi=-1;}"
         "function nav(d){if(lbi<0)return;open(lbi+d);}"
         "[].forEach.call(document.querySelectorAll('.grid a'),function(a,i){"
@@ -733,9 +770,10 @@ def _lb_script(imgs):
         "document.getElementById('lbprev').addEventListener('click',function(e){e.stopPropagation();nav(-1);});"
         "document.getElementById('lbnext').addEventListener('click',function(e){e.stopPropagation();nav(1);});"
         "lb.addEventListener('click',function(e){if(e.target===lb)close();});"
-        "document.addEventListener('keydown',function(e){if(lbi<0)return;"
+        "document.addEventListener('keydown',function(e){if(lbi<0||!lb.hidden&&e.target===lb)return;"
         "if(e.key==='Escape')close();"
         "if(e.key==='ArrowLeft')nav(-1);if(e.key==='ArrowRight')nav(1);});"
+        + admin_js +
         "var tx=null;"
         "lb.addEventListener('touchstart',function(e){tx=e.touches[0].clientX;},{passive:true});"
         "lb.addEventListener('touchend',function(e){if(tx===null)return;"
@@ -835,7 +873,8 @@ def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
     hcards = "".join(_admin_card(store, gid, secret, pid, page,
                                  [("unhide", "einblenden"), ("delete", "l&#246;schen")])
                      for pid, m in hid)
-    lb_imgs = [(f"{store.PREFIX}/pics/g/{gid}/{secret}/i/{pid}", m.get("name", pid))
+    lb_imgs = [(f"{store.PREFIX}/pics/g/{gid}/{secret}/i/{pid}", m.get("name", pid),
+                pid, bool(m.get("hidden")))
                for pid, m in list(vis) + list(hid)]
     pgn = []
     if page > 1:
@@ -854,7 +893,8 @@ def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
                  + f"<div class='grid hidden-sec'>{hcards}</div>"
                  + f"<a class=back href='{store.PREFIX}/pics/g/{gid}'>&#8592; zur Galerie</a>"
                  + _LB_HTML
-                 + _lb_script(lb_imgs),
+                 + _lb_script(lb_imgs,
+                              admin_post=f"{store.PREFIX}/pics/g/{gid}/{secret}"),
                  _ADMIN_CSS + _LB_CSS)
 
 

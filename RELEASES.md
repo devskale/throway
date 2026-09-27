@@ -1,9 +1,28 @@
 # throway — Releases
 
-**Current version:** `1.31.0`
+**Current version:** `1.32.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.32.0 — 2026-09-27
+
+### Galerie-UX: leere Galerie anlegen + Admin-Tastatur-Kuration
+
+- **„Create gallery"-Button** im Homepage-Gallery-Tab: Galerie ohne
+  einziges Bild anlegen (Event morgen vorbereiten, Bilder später).
+  Create-or-get wie immer — existiert der Name, erscheint der
+  öffentliche Link mit Hinweis (Admin-Token nur beim Anlegen). Später
+  hochgeladene Bilder landen automatisch in der angelegten Galerie.
+- **Space-Kuration im Admin-Lightbox**: Admin blättert mit < > durch
+  die Galerie und toggelt mit **Space** das aktuelle Bild zwischen
+  sichtbar (+) und verborgen (−) — ohne den Viewer zu verlassen. Die
+  Karte dahinter dimmt live, die Caption zeigt den Zustand
+  („[+ visible] / [− hidden]"), Pfeil-Scroll wird unterbunden.
+- Admin-Lightbox-JS nur auf Admin-Seiten ausgeliefert (public bleibt
+  schlank); beide per node --check validiert. 61 Tests grün.
 
 ---
 
