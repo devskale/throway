@@ -1,9 +1,36 @@
 # throway — Releases
 
-**Current version:** `1.30.0`
+**Current version:** `1.31.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.31.0 — 2026-09-27
+
+### Homepage-UX-Pass (Vision-Review, improve-ux-Skill)
+
+Screenshot-gestützter Review des `#text`-Zustands (User-Feedback:
+„textfeld wirkt old style") — 5 Fixes, 3 Befunde ins Ledger verschoben:
+
+- **Textarea war ungestylt** (Wurzel: `#createBox`-Selektor verwaist seit
+  dem 1.22er-Tab-Umbau → Browser-Default). Jetzt: volle Panel-Breite,
+  min-height 220px, Mono-Typo .95rem/1.6, 3px-Focus-Ring — statt
+  180×110px-Stub in 790px Panel.
+- **Feature-Grid**: 4. Karte (Pics) stand als Waisen-Karte in Reihe 2
+  (minmax 220px) → `minmax(180px,1fr)`, vier Karten in einer Reihe.
+- **Stats**: „1 FILES"-Plural-Bug → dynamisch; Pool-Meter unter 2%
+  Belegung unsichtbar (0,06% real) → Mindestfüllung 2% + Title-Tooltip
+  „pool: X of Y".
+- **Agent-Info** (40 Zeilen Raw-Dump) begrub die Homepage → jetzt
+  default zugeklappt.
+- **„once"-Checkbox** kryptisch → „download once" + Tooltip; Share-Hint
+  rutschte gequetscht neben das Input → eigene Zeile.
+
+Verzögert (Ledger F6–F8): Casing-System, PUBLIC_BASE-Dokumentation,
+Char-Counter im Text-Tab. Messtechnisch verifiziert via Headless-Chrome
+(Textarea 761×225px, 4 Karten/Reihe, agents collapsed). 61 Tests grün.
 
 ---
 
