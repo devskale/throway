@@ -1,9 +1,33 @@
 # throway — Releases
 
-**Current version:** `1.23.0`
+**Current version:** `1.24.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.24.0 — 2026-09-27
+
+### Schöneres Upload-Feld (Galerie + Homepage-Gallery-Tab)
+
+Das rohe File-Input („No file chosen") ist weg — beide Upload-Felder sind
+jetzt Dropzones im Stil der Hauptseite (aktuelle Upload-UX-Patterns):
+
+- **Icon + zweizeilige Beschriftung**: „Bilder hierher ziehen oder
+  klicken" + Constraints **vor der Auswahl** (Formate JPG/PNG/WebP/GIF/
+  HEIC, max 30 MB, 1000+ auf einmal).
+- **Drag-over-Feedback**: Rahmen + Hintergrund wechseln, sobald eine Datei
+  über dem Feld schwebt (drop-zones-müssen-antworten-Regel).
+- **Status statt „No file chosen"**: „3 ausgewählt — Upload startet…",
+  dann Live-Zähler (X hochgeladen · Y ausstehend).
+- **Drag & Drop jetzt auch auf der Galerie-Seite** (vorher nur Klick).
+- Screenreader-freundlich: Input sr-only im Label-Wrapper
+  (Klick überall im Feld öffnet den Picker, `:focus-within`-Outline).
+- Homepage-Gallery-Tab: gleiche Optik (Icon, Sub-Line mit Formaten/Limit).
+
+Reiner Frontend-Polish, API unverändert. Gerendertes JS per node --check
+validiert, 41 Tests grün.
 
 ---
 

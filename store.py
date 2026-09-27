@@ -72,7 +72,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.23.0"
+VERSION = "1.24.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -2964,8 +2964,12 @@ def _index(self):
          ".galbar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.55rem}"
          ".galbar input[type=text]{flex:1;min-width:180px;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:.4rem .8rem;font-size:1rem}"
          ".galbar label{color:var(--muted);font-size:.9rem;display:flex;gap:.35rem;align-items:center}"
-         ".minidrop{border:2px dashed #d1d5db;border-radius:10px;padding:1.3rem 1rem;text-align:center;cursor:pointer;color:var(--muted);background:#fff;font-size:.95rem;transition:border-color .15s,background .15s}"
+         ".minidrop{border:2px dashed #d1d5db;border-radius:10px;padding:1.4rem 1rem;text-align:center;cursor:pointer;color:var(--muted);background:#fff;font-size:.95rem;transition:border-color .15s,background .15s;margin-bottom:.6rem}"
          ".minidrop:hover,.minidrop.hover{border-color:var(--accent);background:#eff6ff;color:var(--accent)}"
+         ".minidrop:focus-within{outline:2px solid var(--accent);outline-offset:2px}"
+         ".minidrop .big{font-weight:600;font-size:1rem;color:var(--ink)}"
+         ".minidrop .sub{font-size:.83rem;margin-top:.15rem}"
+         ".srinput{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0)}"
          ".grow{display:flex;justify-content:space-between;gap:.6rem;align-items:center;background:#fff;border:1px solid var(--line);border-radius:8px;padding:.35rem .6rem;margin-top:.35rem;font-size:.85rem}"
          ".grow .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
          ".grow .st{color:var(--muted);white-space:nowrap}"
@@ -3069,8 +3073,14 @@ def _index(self):
          "<label class='mode'><input type='checkbox' id='galListed'> listed</label>"
          "<a class='mode' href='" + PREFIX + "/pics' style='color:var(--accent);text-decoration:none'>all galleries &#8594;</a>"
          "</div>"
-         "<div id='galDrop' class='minidrop'>Drop images here, click to choose — or just paste (⌘/Ctrl+V)</div>"
-         "<input id='galFile' type='file' accept='image/*' multiple hidden>"
+         "<div id='galDrop' class='minidrop'>"
+         "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true' style='width:32px;height:32px;display:block;margin:0 auto .35rem;color:var(--accent)'>"
+         "<rect x='3' y='3' width='18' height='18' rx='2'/><circle cx='8.5' cy='8.5' r='1.5'/>"
+         "<path d='M21 15l-5-5L5 21'/></svg>"
+         "<div class=big>Drop images here, or click to choose</div>"
+         "<div class=sub>JPG · PNG · WebP · GIF · HEIC — max 30 MB, downscaled to 2048 px · or just paste (⌘/Ctrl+V)</div>"
+         "</div>"
+         "<input id='galFile' type='file' accept='image/*' multiple class=srinput>"
          "<div id='galRows'></div>"
          "<div id='galResult'></div>"
          "<div class='limits'>max 30 MB per image, downscaled in your browser to &#8804; 2048 px &#183; images live 90 days &#183; you get a private admin link (hide / delete / reorder)</div>"
