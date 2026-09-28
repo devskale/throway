@@ -1068,6 +1068,8 @@ _SOCIAL_CSS = (
 
 _EMBED_CSS = (
     "*{box-sizing:border-box}"
+    "html{scrollbar-width:none}"            # auto-height: kein Scrollen nötig -
+    "::-webkit-scrollbar{display:none}"     # nur die helle Leiste im Dunkel-Host verstecken
     "body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
     "background:transparent;color:#111827;line-height:1.5}"
     "main{padding:.6rem}"

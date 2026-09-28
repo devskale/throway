@@ -1,9 +1,20 @@
 # throway — Releases
 
-**Current version:** `1.38.0`
+**Current version:** `1.38.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.38.1 — 2026-09-28
+
+### Embed: helle Scrollbar im Dunkel-Host versteckt
+
+Das Embed passt seine Höhe per postMessage an — eine Scrollleiste ist
+dort nie nötig, aber Chrome zeichnet sie trotzdem (weiß auf dunklem
+Host, sah unpoliert aus). `scrollbar-width:none` + Webkit-Pendant im
+Embed-CSS. Scrollen (No-JS-Fallback) geht weiter per Rad/Geste.
 
 ---
 
