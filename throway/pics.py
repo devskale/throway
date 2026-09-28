@@ -11,6 +11,8 @@ Layout (all inside ROOT/pics/ — one namespace, one 20 GB pool, fixed
     ROOT/pics/<pid>            image bytes (+ <pid>.meta, <pid>.thumb)
     ROOT/pics/g/<gid>.json     gallery meta: {id, token, name, listed, ip,
                                created, expires}
+    ROOT/pics/g/<gid>.likes.json     image like counters (+ visitor fps)
+    ROOT/pics/g/<gid>.comments.json  guestbook comments (+ their likes)
 
 Interface (the whole surface store.py needs to know):
 
@@ -32,6 +34,11 @@ Routes:
     POST /pics/g/<gid>/<secret>                actions: hide|unhide|delete|up|down
     GET  /pics/g/<gid>/<secret>/i/<pid>        admin view of hidden images
     GET  /pics/i/<pid>                         public image (?thumb=1)
+    POST /pics/i/<pid>?like=1                  toggle image like (pseudonymous)
+    POST /pics/g/<gid>?comment=1               add comment (form/JSON: name, text)
+    POST /pics/g/<gid>?clike=<cid>             toggle comment like
+    GET  /pics/g/<gid>?likes=1                 cheap counts (poll for live ranking)
+    GET  /pics/g/<gid>[&sort=likes]            gallery view (sort=likes: ranking)
 
 Hidden images: 404 for everyone except via the owning gallery's admin route.
 Everything below the interface line is implementation; tests drive it
@@ -60,6 +67,11 @@ PICS_ADMIN_TOKEN = os.environ.get("THROWAWAY_PICS_ADMIN_TOKEN", "")  # superadmi
 PICS_PAGE = 60          # gallery thumbs per page
 PICS_ADMIN_PAGE = 48    # admin thumbs per page
 PICS_JSON_CAP = 2000    # max images in agent JSON listings
+PICS_MAX_COMMENTS = int(os.environ.get("THROWAWAY_PICS_MAX_COMMENTS", "") or 500)
+PICS_COMMENT_COOLDOWN = int(os.environ.get("THROWAWAY_PICS_COMMENT_COOLDOWN", "") or 20)
+PICS_COMMENT_MAX_LEN = 500            # chars after strip
+PICS_NAME_MAX_LEN = 40                # display name cap
+PICS_LIKE_FP_CAP = 500                # visitor fingerprints kept per object
 
 # HEIC/HEIF/AVIF brand codes — decode support depends on pillow-heif
 try:
@@ -307,9 +319,13 @@ def all_pics(root, gid=None):
     return out
 
 
-def _sorted_visible(items):
+def _sorted_visible(items, likes=None):
     vis = [(pid, m) for pid, m in items if not m.get("hidden")]
-    vis.sort(key=lambda t: (t[1].get("order", 0), -t[1].get("created", 0)))
+    if likes is None:
+        vis.sort(key=lambda t: (t[1].get("order", 0), -t[1].get("created", 0)))
+    else:          # &sort=likes — most liked first, curated order ties
+        vis.sort(key=lambda t: (-likes.get(t[0], 0), t[1].get("order", 0),
+                                -t[1].get("created", 0)))
     return vis
 
 
@@ -404,6 +420,10 @@ def reorder(root, pid, delta, gid=None):
 
 # --- domain: galleries ------------------------------------------------------
 
+# files in g/ that are engagement sidecars, never gallery metas
+_SIDECAR_SUFFIXES = (".likes.json", ".comments.json")
+
+
 def g_dir(root):
     return os.path.join(root, NS, "g")
 
@@ -433,10 +453,13 @@ def save_gallery(root, g):
 
 
 def remove_gallery(root, gid):
-    try:
-        os.remove(g_meta_path(root, gid))
-    except OSError:
-        pass
+    for p in (g_meta_path(root, gid),
+              _likes_path(root, gid), _likes_path(root, gid) + ".part",
+              _comments_path(root, gid), _comments_path(root, gid) + ".part"):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 
 def create_gallery(root, name, listed, ip):
@@ -465,6 +488,167 @@ def create_gallery(root, name, listed, ip):
     return gid, g, False
 
 
+# --- domain: likes & comments (sidecars per gallery) ------------------------
+
+def _likes_path(root, gid):
+    return os.path.join(g_dir(root), gid + ".likes.json")
+
+
+def _comments_path(root, gid):
+    return os.path.join(g_dir(root), gid + ".comments.json")
+
+
+def load_likes(root, gid):
+    """Image like counters + visitor fingerprints, one sidecar per gallery."""
+    try:
+        lk = json.load(open(_likes_path(root, gid)))
+    except Exception:
+        return {"v": 1, "imgs": {}}
+    if not isinstance(lk.get("imgs"), dict):
+        return {"v": 1, "imgs": {}}
+    return lk
+
+
+def save_likes(root, gid, lk):
+    os.makedirs(g_dir(root), exist_ok=True)
+    tmp = _likes_path(root, gid) + ".part"
+    with open(tmp, "w") as f:
+        json.dump(lk, f)
+    os.replace(tmp, _likes_path(root, gid))
+
+
+def load_comments(root, gid):
+    try:
+        cl = json.load(open(_comments_path(root, gid)))
+    except Exception:
+        return {"v": 1, "list": []}
+    if not isinstance(cl.get("list"), list):
+        return {"v": 1, "list": []}
+    return cl
+
+
+def save_comments(root, gid, cl):
+    os.makedirs(g_dir(root), exist_ok=True)
+    tmp = _comments_path(root, gid) + ".part"
+    with open(tmp, "w") as f:
+        json.dump(cl, f)
+    os.replace(tmp, _comments_path(root, gid))
+
+
+def likes_map(root, gid):
+    """{pid: n} for one gallery (public counters only)."""
+    return {p: e.get("n", 0) for p, e in load_likes(root, gid)["imgs"].items()}
+
+
+def _fp(g, ip, ua):
+    """Pseudonymous visitor fingerprint — keyed by the gallery's own secret
+    token, never exposed in any response."""
+    basis = "|".join((g.get("id", ""), g.get("token", ""), ip or "",
+                      (ua or "")[:120]))
+    return hashlib.sha256(basis.encode()).hexdigest()[:16]
+
+
+def _toggle_obj_like(entry, fp):
+    """Flip one like on an {n, fp} entry; returns (likes, liked) after."""
+    fps = entry.get("fp") or []
+    if fp in fps:
+        fps.remove(fp)
+        entry["n"] = max(0, entry.get("n", 0) - 1)
+        liked = False
+    else:
+        fps.append(fp)
+        entry["n"] = entry.get("n", 0) + 1
+        liked = True
+    entry["fp"] = fps[-PICS_LIKE_FP_CAP:]      # keep the newest for dedup
+    return entry["n"], liked
+
+
+def toggle_image_like(root, pid, ip, ua):
+    """Like/unlike one image (toggle per visitor fingerprint). Same
+    visibility rules as _serve: hidden/expired/gone -> None."""
+    if not _HEX.match(pid or ""):
+        return None
+    sweep(root)
+    m = load_meta(root, pid)
+    if not m or not os.path.isfile(_path(root, pid)):
+        return None
+    if m.get("expires", 0) < time.time():
+        remove_pic(root, pid)
+        return None
+    if m.get("hidden"):
+        return None
+    gid = m.get("gid")
+    g = load_gallery(root, gid) if gid else None
+    if not g:
+        return None
+    lk = load_likes(root, gid)
+    entry = lk["imgs"].setdefault(pid, {"n": 0, "fp": []})
+    n, liked = _toggle_obj_like(entry, _fp(g, ip, ua))
+    save_likes(root, gid, lk)
+    return n, liked
+
+
+def toggle_comment_like(root, gid, cid, ip, ua):
+    g = load_gallery(root, gid)
+    if not g or not _HEX.match(cid or ""):
+        return None
+    cl = load_comments(root, gid)
+    for c in cl["list"]:
+        if c.get("id") == cid:
+            n, liked = _toggle_obj_like(c, _fp(g, ip, ua))
+            save_comments(root, gid, cl)
+            return n, liked
+    return None
+
+
+_cmt_last = {}                       # ip -> ts (spam cooldown, RAM only)
+
+
+def add_comment(root, gid, name, text, ip):
+    """Append a guestbook comment. Returns (comment, None) on success or
+    (None, (http_code, message)). The cooldown lives in process RAM — a
+    restart simply clears it, nothing personal is persisted with the
+    comment (no IP, no fingerprint)."""
+    g = load_gallery(root, gid)
+    if not g:
+        return None, (404, "gallery not found")
+    name = " ".join((name or "").split())[:PICS_NAME_MAX_LEN]
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = "\n".join(ln.strip() for ln in text.split("\n")).strip()
+    text = text[:PICS_COMMENT_MAX_LEN]
+    if not text:
+        return None, (400, "comment text required")
+    now = time.time()
+    if now - _cmt_last.get(ip or "", 0) < PICS_COMMENT_COOLDOWN:
+        return None, (429, f"one comment per {PICS_COMMENT_COOLDOWN}s per "
+                           "visitor — gleich nochmal versuchen")
+    cl = load_comments(root, gid)
+    if len(cl["list"]) >= PICS_MAX_COMMENTS:
+        return None, (400, f"comment limit reached ({PICS_MAX_COMMENTS})")
+    c = {"id": secrets.token_hex(4), "name": name or "Gast", "text": text,
+         "ts": now, "n": 0, "fp": []}
+    cl["list"].append(c)
+    save_comments(root, gid, cl)
+    _cmt_last[ip or ""] = now
+    return c, None
+
+
+def del_comment(root, gid, cid):
+    cl = load_comments(root, gid)
+    keep = [c for c in cl["list"] if c.get("id") != cid]
+    if len(keep) == len(cl["list"]):
+        return False
+    cl["list"] = keep
+    save_comments(root, gid, cl)
+    return True
+
+
+def public_comment(c):
+    return {"id": c["id"], "name": c.get("name", "Gast"),
+            "text": c.get("text", ""), "ts": c.get("ts"),
+            "likes": c.get("n", 0)}
+
+
 def touch_gallery(root, gid, now=None):
     """Slide the gallery lifetime forward on uploads."""
     g = load_gallery(root, gid)
@@ -483,8 +667,8 @@ def gallery_sweep(root, now=None):
     except OSError:
         return
     for f in names:
-        if not f.endswith(".json"):
-            continue
+        if not f.endswith(".json") or f.endswith(_SIDECAR_SUFFIXES):
+            continue    # likes/comments sidecars are not gallery metas
         try:
             g = json.load(open(os.path.join(d, f)))
             if g.get("expires", 0) < now:
@@ -502,7 +686,7 @@ def all_galleries(root, listed_only=False):
     except OSError:
         return []
     for f in names:
-        if not f.endswith(".json"):
+        if not f.endswith(".json") or f.endswith(_SIDECAR_SUFFIXES):
             continue
         gid = f[:-len(".json")]
         g = load_gallery(root, gid)
@@ -540,7 +724,7 @@ def _iso(ts):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def public_meta(store, pid, m):
+def public_meta(store, pid, m, likes=0):
     base = store.PUBLIC_BASE
     iso = _iso(m["expires"])
     return {
@@ -549,6 +733,7 @@ def public_meta(store, pid, m):
         "url": f"{base}/pics/i/{pid}",
         "thumb": f"{base}/pics/i/{pid}?thumb=1",
         "name": m.get("name", pid),
+        "likes": likes,
         "size": m.get("size"),
         "orig_size": m.get("orig_size"),
         "width": m.get("w"), "height": m.get("h"),
@@ -717,6 +902,11 @@ def index_html(store, gals, created=None):
                  _GALLERY_CSS)
 
 
+_HEART_SVG = ("<svg viewBox='0 0 24 24' aria-hidden='true'>"
+               "<path d='M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 "
+               "5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 "
+               "5.5 0 0 0 0-7.78z'/></svg>")
+
 _LB_CSS = (
     "#lb{position:fixed;inset:0;background:rgba(17,24,39,.93);display:flex;flex-direction:column;"
     "align-items:center;justify-content:center;z-index:50;padding:2.5rem 3.2rem 1rem}"
@@ -732,6 +922,12 @@ _LB_CSS = (
     "#lb .lbcap{color:#e5e7eb;font-size:.85rem;margin-top:.6rem;text-align:center;max-width:92vw;"
     "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
     "@media(max-width:560px){#lb{padding:1rem 2.8rem .8rem}}"
+    "#lb .lblk{display:inline-flex;align-items:center;gap:6px;margin-top:.55rem;"
+    "background:rgba(255,255,255,.12);color:#fff;border:0;border-radius:999px;"
+    "padding:8px 15px;font:600 14px/1 system-ui,-apple-system,sans-serif;cursor:pointer}"
+    "#lb .lblk svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2}"
+    "#lb .lblk.on{background:#f43f5e}"
+    "#lb .lblk.on svg{fill:#fff}"
 )
 
 _LB_HTML = (
@@ -741,33 +937,43 @@ _LB_HTML = (
     "<img id=lbimg alt=''>"
     "<button type=button class='lbnav lbnext' id=lbnext aria-label='next'>&#8250;</button>"
     "<div class=lbcap id=lbcap></div>"
+    "<button type=button class='lblk lk' id=lblk hidden aria-pressed=false aria-label='Bild liken'>" + _HEART_SVG + "<span class=n></span></button>"
     "</div>"
 )
 
 
 def _lb_script(imgs, admin_post=None):
-    """Lightbox JS with the (page-local) image list baked in. imgs = [(url, name)].
-    Flip via on-screen buttons, arrow keys, or touch swipe; esc / backdrop
-    click closes. Without JS the thumbs stay plain links (progressive
-    enhancement).
+    """Lightbox JS with the (page-local) image list baked in.
+    imgs = [(url, name)] | [(url, name, pid, likes)] (public) or
+    [(url, name, pid, likes, hidden)] (admin). Flip via on-screen buttons,
+    arrow keys, or touch swipe; esc / backdrop click closes. Without JS the
+    thumbs stay plain links (progressive enhancement).
 
     admin_post: when given (the gallery admin action URL), SPACE toggles
     the current image between visible (+) and hidden (\u2212): admins flip
     through with < > and curate without leaving the viewer. The card
-    behind dims live; the caption shows the new state."""
+    behind dims live; the caption shows the new state.
+
+    public: a heart button (#lblk, class lk) mirrors the grid like state;
+    it is kept in sync by the page's social script via window.__tyLbSync,
+    which open() calls on every image change. Clicks bubble to the
+    document-level delegation of the social script."""
     items = []
     for entry in imgs:
-        u, n = entry[0], entry[1]
-        it = {"u": u, "n": n}
-        if len(entry) > 2:                      # admin: (url, name, pid, hidden)
+        it = {"u": entry[0], "n": entry[1]}
+        if len(entry) > 2 and entry[2]:
             it["i"] = entry[2]
-            it["h"] = bool(entry[3])
+        if len(entry) > 3 and isinstance(entry[3], int):
+            it["l"] = entry[3]                  # public: like count
+        if len(entry) > 4:
+            it["h"] = bool(entry[4])            # admin: hidden flag
         items.append(it)
     data = json.dumps(items).replace("</", "<\\/")
     admin_js = ""
     if admin_post:
         admin_js = (
             "var AP=" + json.dumps(admin_post) + ";"
+            "var _lk=document.getElementById('lblk');if(_lk)_lk.hidden=true;"
             "function lbState(){return LB[lbi].h?'\u2212 hidden':'\u002b visible';}"
             "function lbCap(){lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'')+'  ['+lbState()+']';}"
             "lb.addEventListener('keydown',function(e){"
@@ -795,14 +1001,18 @@ def _lb_script(imgs, admin_post=None):
         "lb.hidden=false;document.body.style.overflow='hidden';"
         "lbimg.src=LB[lbi].u;"
         + ("lbCap();" if admin_post else
-           "lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'');") +
+           "lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'');"
+           "if(window.__tyLbSync)window.__tyLbSync(LB,lbi);") +
         "[lbi+1,lbi-1].forEach(function(j){var k=(j%LB.length+LB.length)%LB.length;"
         "var im=new Image();im.src=LB[k].u;});"
         + ("lb.focus();" if admin_post else "") + "}"
-        "function close(){lb.hidden=true;document.body.style.overflow='';lbimg.src='';lbi=-1;}"
+        "function close(){lb.hidden=true;document.body.style.overflow='';lbimg.src='';lbi=-1;"
+        "var lk=document.getElementById('lblk');if(lk)lk.hidden=true;}"
         "function nav(d){if(lbi<0)return;open(lbi+d);}"
         "[].forEach.call(document.querySelectorAll('.grid a'),function(a,i){"
-        "a.addEventListener('click',function(e){e.preventDefault();open(i);});});"
+        "a.addEventListener('click',function(e){"
+        "if(e.target&&e.target.closest&&e.target.closest('.lk'))return;"
+        "e.preventDefault();open(i);});});"
         "document.getElementById('lbx').addEventListener('click',close);"
         "document.getElementById('lbprev').addEventListener('click',function(e){e.stopPropagation();nav(-1);});"
         "document.getElementById('lbnext').addEventListener('click',function(e){e.stopPropagation();nav(1);});"
@@ -819,6 +1029,43 @@ def _lb_script(imgs, admin_post=None):
     )
 
 
+_SOCIAL_CSS = (
+    ".grid a{position:relative}"
+    ".lk,.clk{display:inline-flex;align-items:center;gap:4px;border:0;border-radius:999px;"
+    "padding:4px 9px 4px 7px;font:600 12px/1.1 system-ui,-apple-system,sans-serif;"
+    "background:rgba(17,24,39,.62);color:#fff;cursor:pointer;backdrop-filter:blur(3px)}"
+    ".lk svg,.clk svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2}"
+    ".lk.on,.clk.on{background:#f43f5e}"
+    ".lk.on svg,.clk.on svg{fill:#fff}"
+    ".grid .lk{position:absolute;left:6px;bottom:6px}"
+    "@media(prefers-reduced-motion:no-preference){"
+    "@keyframes typop{0%{transform:scale(1)}40%{transform:scale(1.28)}100%{transform:scale(1)}}"
+    ".lk.on svg,.clk.on svg{animation:typop .35s}}"
+    ".lk .n:empty,.clk .n:empty{display:none}"
+    ".ccmts{max-width:760px;margin:1.1rem auto;padding:1rem 1.1rem;background:#fff;"
+    "color:#111827;border-radius:12px;box-shadow:0 1px 10px rgba(0,0,0,.25)}"
+    ".ccmts .ch2{font-size:1.05rem;margin:0 0 .6rem}"
+    ".ccmts .cnum{color:#6b7280;font-weight:600;font-size:.85rem}"
+    ".cform{display:flex;flex-direction:column;gap:.5rem}"
+    ".cform input,.cform textarea{border:1px solid #d1d5db;border-radius:8px;"
+    "padding:.55rem .7rem;font:inherit;width:100%;box-sizing:border-box;"
+    "background:#fff;color:#111827}"
+    ".cform textarea{min-height:72px;resize:vertical}"
+    ".cform button{align-self:flex-end;min-height:44px;background:#2563eb;color:#fff;"
+    "border:0;border-radius:8px;font-weight:600;padding:.5rem 1.2rem;cursor:pointer}"
+    ".cstat{color:#b91c1c;font-size:.85rem;margin:.3rem 0 0}"
+    ".clist{margin-top:.8rem}"
+    ".cmt{border-top:1px solid #f0f0f2;padding:.65rem 0}"
+    ".cmt:first-child{border-top:0}"
+    ".cmt .ch{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}"
+    ".cmt .ch b{font-size:.92rem}"
+    ".cmt .ts{color:#6b7280;font-size:.78rem;margin-right:auto}"
+    ".clk{background:#f3f4f6;color:#374151;padding:3px 8px 3px 6px}"
+    ".clk.on{background:#f43f5e;color:#fff}"
+    ".cmtx{margin:.35rem 0 0;font-size:.95rem;overflow-wrap:anywhere}"
+    ".cfp{color:#6b7280;font-size:.78rem;margin:.8rem 0 0}"
+)
+
 _EMBED_CSS = (
     "*{box-sizing:border-box}"
     "body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
@@ -830,45 +1077,267 @@ _EMBED_CSS = (
     ".pgn{display:flex;align-items:center;justify-content:center;gap:.7rem;margin:.6rem 0 0;"
     "font-size:.8rem;color:#6b7280}"
     ".pgn a{color:#2563eb;text-decoration:none}"
-) + _LB_CSS
+) + _LB_CSS + _SOCIAL_CSS
 
 
 EMBED_PAGE = 24   # initial images per embed page; more load on scroll
 
 
-def embed_html(store, gid, g, items, page, pages, total):
-    """Minimal, chrome-less gallery view for <iframe> embedding: just the
-    grid, the lightbox and a scroll sentinel — no header, no uploader,
-    transparent background so the host page shines through.
+_SOCIAL_JS = (
+    "<script>(function(){"
+    "var P='__P__',GID='__GID__',SORT=__SORT__,HASOWN=Object.prototype.hasOwnProperty;"
+    "function qsa(s){return [].slice.call(document.querySelectorAll(s))}"
+    "function mine(){try{return JSON.parse(localStorage.getItem('ty_likes_'+GID))||{}}"
+    "catch(e){return{}}}"
+    "function setMine(id,v){var m=mine();if(v)m[id]=1;else delete m[id];"
+    "try{localStorage.setItem('ty_likes_'+GID,JSON.stringify(m))}catch(e){}}"
+    "function paintBtn(b,on){b.classList.toggle('on',on);"
+    "b.setAttribute('aria-pressed',on?'true':'false')}"
+    "function setN(b,n){var s=b.querySelector('.n');if(!s)return;"
+    "s.setAttribute('data-n',n);s.textContent=n>0?n:''}"
+    "function paintAll(){"
+    "qsa('.lk').forEach(function(b){var pid=b.getAttribute('data-pid');"
+    "if(pid)paintBtn(b,!!mine()[pid])});"
+    "qsa('.clk').forEach(function(b){var cid=b.getAttribute('data-cid');"
+    "if(cid)paintBtn(b,!!mine()[cid])});}"
+    "function likePid(pid){if(!pid)return;"
+    "fetch(P+'/pics/i/'+pid+'?like=1',{method:'POST',headers:{'Accept':'application/json'}})"
+    ".then(function(r){return r.json()})"
+    ".then(function(d){if(!d||d.id===undefined)return;"
+    "setMine(pid,d.liked);"
+    "qsa('.lk[data-pid=\"'+pid+'\"]').forEach(function(b){setN(b,d.likes);paintBtn(b,d.liked)});"
+    "resort();})"
+    ".catch(function(){});}"
+    "function clike(cid){if(!cid)return;"
+    "fetch(P+'/pics/g/'+GID+'?clike='+encodeURIComponent(cid),"
+    "{method:'POST',headers:{'Accept':'application/json'}})"
+    ".then(function(r){return r.json()})"
+    ".then(function(d){if(!d||d.id===undefined)return;"
+    "setMine(cid,d.liked);"
+    "qsa('.clk[data-cid=\"'+cid+'\"]').forEach(function(b){setN(b,d.likes);paintBtn(b,d.liked)});})"
+    ".catch(function(){});}"
+    "document.addEventListener('click',function(e){"
+    "if(!e.target||!e.target.closest)return;"
+    "var lk=e.target.closest('.lk');"
+    "if(lk){e.preventDefault();e.stopPropagation();likePid(lk.getAttribute('data-pid'));return;}"
+    "var clk=e.target.closest('.clk');"
+    "if(clk){e.preventDefault();e.stopPropagation();clike(clk.getAttribute('data-cid'));}});"
+    "function cellN(a){var s=a.querySelector('.lk .n');if(!s)return 0;"
+    "return parseInt(s.getAttribute('data-n')||'0',10)||0}"
+    "function sortCells(){var grid=document.querySelector('.grid');if(!grid)return;"
+    "var cs=[].slice.call(grid.children);"
+    "cs.sort(function(a,b){return cellN(b)-cellN(a)});"
+    "cs.forEach(function(c){grid.appendChild(c)});}"
+    "function resort(){"
+    "if(!SORT)return;"
+    "var grid=document.querySelector('.grid');"
+    "if(!grid||!grid.children.length)return;"
+    "var rm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;"
+    "var cs=[].slice.call(grid.children),pos=new Map();"
+    "if(!rm){cs.forEach(function(c){pos.set(c,c.getBoundingClientRect())})}"
+    "sortCells();"
+    "if(rm)return;"
+    "requestAnimationFrame(function(){cs.forEach(function(c){"
+    "var p0=pos.get(c);if(!p0)return;var p1=c.getBoundingClientRect();"
+    "var dx=p0.left-p1.left,dy=p0.top-p1.top;"
+    "if(dx||dy){c.style.transition='none';c.style.transform='translate('+dx+'px,'+dy+'px)';"
+    "requestAnimationFrame(function(){"
+    "c.style.transition='transform .5s cubic-bezier(.22,.9,.26,1)';c.style.transform='';});}})})"
+    "}"
+    "function fmtTs(ts){if(!ts)return'';var d=new Date(ts*1000);"
+    "function p(n){return (n<10?'0':'')+n}"
+    "return p(d.getDate())+'.'+p(d.getMonth()+1)+'. '+p(d.getHours())+':'+p(d.getMinutes())}"
+    "var HEART=\"" + _HEART_SVG.replace("</", "<\\/") + "\";"
+    "function cmtNode(c){"
+    "var d=document.createElement('div');d.className='cmt';d.setAttribute('data-cid',c.id);"
+    "var h=document.createElement('div');h.className='ch';"
+    "var b=document.createElement('b');b.textContent=c.name||'Gast';"
+    "var ts=document.createElement('span');ts.className='ts';ts.textContent=fmtTs(c.ts);"
+    "var bt=document.createElement('button');bt.type='button';bt.className='clk';"
+    "bt.setAttribute('data-cid',c.id);bt.setAttribute('aria-pressed','false');"
+    "bt.setAttribute('aria-label','Kommentar liken');bt.innerHTML=HEART;"
+    "var sp=document.createElement('span');sp.className='n';bt.appendChild(sp);"
+    "h.appendChild(b);h.appendChild(ts);h.appendChild(bt);"
+    "var p=document.createElement('p');p.className='cmtx';p.textContent=c.text;"
+    "d.appendChild(h);d.appendChild(p);return d;}"
+    "var cf=document.getElementById('cform');"
+    "if(cf){cf.addEventListener('submit',function(e){"
+    "e.preventDefault();"
+    "var fd=new FormData(cf),body=new URLSearchParams();"
+    "body.set('name',fd.get('name')||'');body.set('text',fd.get('text')||'');"
+    "var bt=cf.querySelector('button');if(bt)bt.disabled=true;"
+    "fetch(P+'/pics/g/'+GID+'?comment=1',{method:'POST',"
+    "headers:{'Accept':'application/json',"
+    "'Content-Type':'application/x-www-form-urlencoded'},"
+    "body:body.toString()})"
+    ".then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})"
+    ".then(function(x){"
+    "if(bt)bt.disabled=false;"
+    "if(x.ok&&x.d&&x.d.id){"
+    "var list=document.querySelector('.clist');"
+    "if(list){var em=list.querySelector('.cempty');if(em)em.remove();"
+    "list.insertBefore(cmtNode(x.d),list.firstChild);}"
+    "cf.reset();"
+    "qsa('.cnum').forEach(function(s){"
+    "var n=(parseInt(s.getAttribute('data-n')||'0',10)||0)+1;"
+    "s.setAttribute('data-n',n);s.textContent=n;});"
+    "cstat('');}"
+    "else cstat((x.d&&x.d.error)||'konnte nicht gespeichert werden');})"
+    ".catch(function(){if(bt)bt.disabled=false;cstat('Netzwerkfehler');});});}"
+    "function cstat(t){var s=document.getElementById('cstat');"
+    "if(!s){s=document.createElement('p');s.id='cstat';s.className='cstat';"
+    "var f=document.getElementById('cform');if(!f)return;"
+    "f.parentNode.insertBefore(s,f.nextSibling);}"
+    "s.textContent=t;}"
+    "window.__tyLbSync=function(LB,i){"
+    "var lb=document.getElementById('lblk'),it=LB&&LB[i];"
+    "if(!lb)return;"
+    "if(!it||!it.i){lb.hidden=true;return;}"
+    "lb.hidden=false;lb.setAttribute('data-pid',it.i);"
+    "setN(lb,it.l||0);paintBtn(lb,!!mine()[it.i]);};"
+    "function poll(){"
+    "if(document.hidden)return;"
+    "fetch(P+'/pics/g/'+GID+'?likes=1',{headers:{'Accept':'application/json'}})"
+    ".then(function(r){return r.json()})"
+    ".then(function(d){if(!d)return;"
+    "var L=d.likes||{};"
+    "qsa('.lk').forEach(function(b){var pid=b.getAttribute('data-pid');"
+    "if(pid&&HASOWN.call(L,pid))setN(b,L[pid]);"
+    "if(pid)paintBtn(b,!!mine()[pid]);});"
+    "var C=d.cl||{};"
+    "qsa('.clk').forEach(function(b){var cid=b.getAttribute('data-cid');"
+    "if(cid&&HASOWN.call(C,cid))setN(b,C[cid]);"
+    "if(cid)paintBtn(b,!!mine()[cid]);});"
+    "if(d.comments!=null)qsa('.cnum').forEach(function(s){"
+    "if(String(s.getAttribute('data-n')||'0')!==String(d.comments)){"
+    "s.setAttribute('data-n',d.comments);s.textContent=d.comments;}});"
+    "resort();})"
+    ".catch(function(){});}"
+    "paintAll();"
+    "setInterval(poll,30000);setTimeout(poll,2000);"
+    "})();</script>"
+)
 
-    Smart bits: (1) infinite scroll — an IntersectionObserver on the
-    sentinel fetches the next embed page and appends its grid (paging
-    links stay as the no-JS fallback); (2) auto-height — the page reports
-    its content height to the embedding parent via postMessage, so the
-    shipped iframe snippet can resize itself (no double scrollbars)."""
-    cells = "".join(
-        f"<a href='{store.PREFIX}/pics/i/{pid}'>"
-        f"<img loading=lazy decoding=async alt='' "
-        f"src='{store.PREFIX}/pics/i/{pid}?thumb=1'></a>"
-        for pid, m in items)
+
+def _social_js(store, gid, sort_likes=False):
+    return (_SOCIAL_JS.replace("__P__", store.PREFIX)
+            .replace("__GID__", gid)
+            .replace("__SORT__", "true" if sort_likes else "false"))
+
+
+def _thumb_cell(store, pid, m, likes=0):
+    """One grid cell: thumb + like button (delegated clicks, no-JS = link)."""
+    n = f"<span class=n data-n={likes}>{likes or ''}</span>"
+    return (f"<a href='{store.PREFIX}/pics/i/{pid}'>"
+            f"<img loading=lazy decoding=async alt='' "
+            f"src='{store.PREFIX}/pics/i/{pid}?thumb=1'>"
+            f"<button type=button class=lk data-pid={pid} aria-pressed=false "
+            f"aria-label='Bild liken'>{_HEART_SVG}{n}</button></a>")
+
+
+def _cmt_date(ts):
+    try:
+        return time.strftime("%d.%m. %H:%M", time.localtime(ts))
+    except Exception:
+        return ""
+
+
+def _comments_html(store, gid, cmts):
+    """Guestbook section: form + newest-first list. Solid white card so it
+    reads on any host page (embeds live on dark sites)."""
+    e = store._html_escape
+    rows = []
+    for c in reversed(cmts):
+        n = c.get("n", 0)
+        rows.append(
+            "<div class=cmt data-cid=" + c["id"] + ">"
+            "<div class=ch><b>" + e(c.get("name", "Gast")) + "</b>"
+            "<span class=ts>" + e(_cmt_date(c.get("ts"))) + "</span>"
+            "<button type=button class=clk data-cid=" + c["id"] +
+            " aria-pressed=false aria-label='Kommentar liken'>" + _HEART_SVG +
+            "<span class=n data-n=" + str(n) + ">" + (str(n) if n else "") +
+            "</span></button></div>"
+            "<p class=cmtx>" + e(c.get("text", "")).replace("\n", "<br>") + "</p>"
+            "</div>")
+    return (
+        "<section id=comments class=ccmts aria-label=Kommentare>"
+        "<h2 class=ch2>Kommentare <span class=cnum data-n=" + str(len(cmts)) +
+        ">" + str(len(cmts)) + "</span></h2>"
+        "<form id=cform class=cform method=post action='" + store.PREFIX +
+        "/pics/g/" + gid + "?comment=1'>"
+        "<input type=text name=name maxlength=" + str(PICS_NAME_MAX_LEN) +
+        " placeholder='Dein Name (optional)' autocomplete=name>"
+        "<textarea name=text required maxlength=" + str(PICS_COMMENT_MAX_LEN) +
+        " rows=3 placeholder='Danke, Lob, Erinnerung an den Abend &hellip;'>"
+        "</textarea>"
+        "<button type=submit>Abschicken</button></form>"
+        "<div class=clist>" + ("".join(rows) or
+        "<p class=cempty>Noch keine Kommentare &mdash; schreib den ersten!</p>") +
+        "</div>"
+        "<p class=cfp>Ohne Anmeldung. Name + Kommentar bleiben so lange online "
+        "wie die Galerie. Seid nett zueinander.</p>"
+        "</section>")
+
+
+def _admin_comments_html(store, root, gid, secret, page):
+    """Moderation list on the admin page: delete button per comment."""
+    e = store._html_escape
+    cmts = load_comments(root, gid)["list"]
+    if not cmts:
+        return "<h2>Kommentare (0)</h2><p class=meta>noch keine</p>"
+    rows = "".join(
+        "<div class=cmt><div class=ch><b>" + e(c.get("name", "Gast")) + "</b>"
+        "<span class=ts>" + e(_cmt_date(c.get("ts"))) + "</span>"
+        "<span class=meta>" + str(c.get("n", 0)) + " &#9829;</span>"
+        "<form class=ops method=post action='" + store.PREFIX + "/pics/g/" +
+        gid + "/" + secret + "'>"
+        "<input type=hidden name=id value=" + c["id"] + ">"
+        "<input type=hidden name=action value=cdel>"
+        "<input type=hidden name=p value=" + str(page) + ">"
+        "<button class=danger>l&#246;schen</button></form></div>"
+        "<p class=cmtx>" + e(c.get("text", "")).replace("\n", "<br>") + "</p></div>"
+        for c in reversed(cmts))
+    return ("<h2>Kommentare (" + str(len(cmts)) + ")</h2>"
+            "<div class=clist>" + rows + "</div>")
+
+
+def embed_html(store, gid, g, items, page, pages, total,
+               likes=None, comments=None, sort_likes=False):
+    """Minimal, chrome-less gallery view for <iframe> embedding: grid with
+    like buttons, guestbook comments, the lightbox and a scroll sentinel —
+    no header, no uploader, transparent background so the host page shines
+    through.
+
+    Smart bits: (1) infinite scroll — interval polling fetches the next
+    embed page and appends its grid (paging links stay as the no-JS
+    fallback); (2) auto-height — the page reports its content height to
+    the embedding parent via postMessage; (3) social — likes toggle
+    instantly (optimistic, pseudonymous), with sort=likes liked images
+    FLIP-climb and a 30 s poll keeps counts fresh without reload."""
+    likes = likes or {}
+    sq = "&sort=likes" if sort_likes else ""
+    cells = "".join(_thumb_cell(store, pid, m, likes.get(pid, 0))
+                    for pid, m in items)
     pgn = []
     if page > 1:
-        pgn.append(f"<a href='?embed=1&p={page-1}'>&#8249;</a>")
+        pgn.append(f"<a href='?embed=1{sq}&p={page-1}'>&#8249;</a>")
     pgn.append(f"<span>{page} / {pages}</span>")
     if page < pages:
-        pgn.append(f"<a href='?embed=1&p={page+1}'>&#8250;</a>")
-    lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid)) for pid, m in items]
+        pgn.append(f"<a href='?embed=1{sq}&p={page+1}'>&#8250;</a>")
+    lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid), pid,
+                likes.get(pid, 0)) for pid, m in items]
     inf = (
         "<div id=sent></div>"
         "<script>(function(){"
         "var page=" + str(page) + ",pages=" + str(pages) + ",busy=false,"
+        "SQ=" + json.dumps(sq) + ","
         "grid=document.querySelector('.grid'),sent=document.getElementById('sent');"
         "var post=function(){try{parent.postMessage({type:'throway:pics:height',"
         "height:Math.max(280,document.body.scrollHeight)},'*');}catch(e){}};"
         "function more(){"
         "if(busy||page>=pages){if(page>=pages&&sent)sent.remove();return;}"
         "busy=true;if(sent)sent.textContent='\u2026';"
-        "fetch('?embed=1&p='+(page+1)).then(function(r){return r.text();})"
+        "fetch('?embed=1'+SQ+'&p='+(page+1)).then(function(r){return r.text();})"
         ".then(function(html){"
         "var doc=new DOMParser().parseFromString(html,'text/html');"
         "var g=doc.querySelector('.grid');"
@@ -893,36 +1362,45 @@ def embed_html(store, gid, g, items, page, pages, total):
             + f"<div class=pgn>{''.join(pgn)}</div>"
             + _LB_HTML
             + _lb_script(lb_imgs)
+            + _comments_html(store, gid, comments or [])
+            + _social_js(store, gid, sort_likes)
             + inf
             + "</main></body></html>")
 
 
-def gallery_html(store, gid, g, items, page, pages, total):
-    """One public gallery: grid, uploader, pagination."""
+def gallery_html(store, gid, g, items, page, pages, total,
+                 likes=None, comments=None, sort_likes=False):
+    """One public gallery: grid (with like buttons), uploader, guestbook
+    comments, pagination. sort=likes ranks by likes — liked images
+    FLIP-climb in the browser."""
     e = store._html_escape
+    likes = likes or {}
+    sp = "&sort=likes" if sort_likes else ""
     title = g.get("name") or gid
-    cells = "".join(
-        f"<a href='{store.PREFIX}/pics/i/{pid}'>"
-        f"<img loading=lazy decoding=async alt='' "
-        f"src='{store.PREFIX}/pics/i/{pid}?thumb=1'></a>"
-        for pid, m in items)
+    cells = "".join(_thumb_cell(store, pid, m, likes.get(pid, 0))
+                    for pid, m in items)
     pgn = []
     if page > 1:
-        pgn.append(f"<a class=btn href='?p={page-1}'>&#8249; neuer</a>")
+        pgn.append(f"<a class=btn href='?p={page-1}{sp}'>&#8249; neuer</a>")
     pgn.append(f"<span class=meta>Seite {page} / {pages}</span>")
     if page < pages:
-        pgn.append(f"<a class=btn href='?p={page+1}'>&#228;lter &#8250;</a>")
+        pgn.append(f"<a class=btn href='?p={page+1}{sp}'>&#228;lter &#8250;</a>")
     days = max(1, PICS_TTL // 86400)
     js = _UP_JS.replace("__P__", store.PREFIX).replace("__GID__", gid)
-    lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid)) for pid, m in items]
+    lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid), pid,
+                likes.get(pid, 0)) for pid, m in items]
     _DROP_ICON = ("<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' "
                   "stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'>"
                   "<rect x='3' y='3' width='18' height='18' rx='2'/>"
                   "<circle cx='8.5' cy='8.5' r='1.5'/>"
                   "<path d='M21 15l-5-5L5 21'/></svg>")
+    sort_note = ("sortiert nach <b>Likes</b> &#8212; die beliebtesten Bilder "
+                 "stehen oben" if sort_likes else
+                 f"kuratierte Reihenfolge &#8212; <a href='?sort=likes'>nach "
+                 "Likes sortieren</a>")
     return _page(store, f"pics — {title}",
                  f"<h1>{e(title)}</h1>"
-                 + f"<p class=meta>{total} Bilder &#183; l&auml;uft nach {days} Tagen ab"
+                 + f"<p class=meta>{total} Bilder &#183; {sort_note} &#183; l&auml;uft nach {days} Tagen ab"
                  + f" &#183; max {_fmt(PICS_MAX_FILE)} pro Bild &#183; "
                  + f"<a href='{store.PREFIX}/pics'>alle Galerien</a></p>"
                  + "<label class=drop id=upDrop for=f>"
@@ -935,10 +1413,11 @@ def gallery_html(store, gid, g, items, page, pages, total):
                  + "</label>"
                  + f"<div class=grid>{cells}</div>"
                  + f"<div class=pgn>{''.join(pgn)}</div>"
+                 + _comments_html(store, gid, comments or [])
                  + "<details class=embedbox><summary>diese Galerie einbetten (embed)</summary>"
-                 + "<p class=meta>Auto-H\u00f6he + Nachladen beim Scrollen — einfach beide Zeilen \u00fcbernehmen:</p>"
+                 + "<p class=meta>Auto-Höhe + Nachladen beim Scrollen — einfach beide Zeilen übernehmen:</p>"
                  + "<input readonly onclick='this.select()' value='"
-                 + e(f'<iframe id="ty-{gid}" src="{store.PUBLIC_BASE}/pics/g/{gid}?embed=1" '
+                 + e(f'<iframe id="ty-{gid}" src="{store.PUBLIC_BASE}/pics/g/{gid}?embed=1&sort=likes" '
                      f'style="width:100%;height:640px;border:0;border-radius:8px" '
                      f'loading="lazy" title="{g.get("name") or gid}"></iframe>'
                      f'<script>window.addEventListener("message",function(e){{'
@@ -952,8 +1431,9 @@ def gallery_html(store, gid, g, items, page, pages, total):
                  )
                  + f"<script>{js}</script>"
                  + _LB_HTML
-                 + _lb_script(lb_imgs),
-                 _GALLERY_CSS + _LB_CSS)
+                 + _lb_script(lb_imgs)
+                 + _social_js(store, gid, sort_likes),
+                 _GALLERY_CSS + _LB_CSS + _SOCIAL_CSS)
 
 
 _ADMIN_CSS = (
@@ -1017,11 +1497,12 @@ def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
                  + f"<div class=pgn>{''.join(pgn)}</div>"
                  + f"<h2 class=hidden-sec>Verborgen ({len(hid)})</h2>"
                  + f"<div class='grid hidden-sec'>{hcards}</div>"
+                 + _admin_comments_html(store, store.ROOT, gid, secret, page)
                  + f"<a class=back href='{store.PREFIX}/pics/g/{gid}'>&#8592; zur Galerie</a>"
                  + _LB_HTML
                  + _lb_script(lb_imgs,
                               admin_post=f"{store.PREFIX}/pics/g/{gid}/{secret}"),
-                 _ADMIN_CSS + _LB_CSS)
+                 _ADMIN_CSS + _LB_CSS + _SOCIAL_CSS)
 
 
 # --- HTTP adapters (thin glue over the domain) ------------------------------
@@ -1058,6 +1539,8 @@ def post(h, rest, qp):
     from urllib.parse import unquote
     import store
     root = store.ROOT
+    if rest and rest[0] == "i" and len(rest) == 2 and rest[1] and "like" in (qp or {}):
+        return _like_image(h, store, root, unquote(rest[1]))
     if not rest or rest == [""]:
         if "create=1" in (qp or {}) or "create" in (qp or {}):
             return _create(h, store, root, qp)
@@ -1068,6 +1551,10 @@ def post(h, rest, qp):
         return _create(h, store, root, qp)
     if rest[0] == "g":
         if len(rest) == 2 and rest[1]:
+            if "clike" in (qp or {}):
+                return _comment_like(h, store, root, unquote(rest[1]), qp)
+            if "comment" in (qp or {}):
+                return _comment_create(h, store, root, unquote(rest[1]))
             if "url" in (qp or {}):
                 return _url_import(h, store, root, unquote(rest[1]), qp)
             return _upload(h, store, root, unquote(rest[1]), qp)
@@ -1171,12 +1658,50 @@ def _get_gallery(h, store, root, gid, query):
     g = load_gallery(root, gid)
     if not g:
         return h._send(404, "not found\n")
-    items = _sorted_visible(all_pics(root, gid))
+    if "likes=1" in query:                      # cheap counters for polling
+        lk = load_likes(root, gid)
+        cl = load_comments(root, gid)
+        return h._send(200, json.dumps({
+            "likes": {p: e.get("n", 0) for p, e in lk["imgs"].items()
+                      if e.get("n")},
+            "cl": {c["id"]: c.get("n", 0) for c in cl["list"] if c.get("n")},
+            "comments": len(cl["list"]),
+        }), "application/json")
+    sort_likes = "sort=likes" in query
+    lm = likes_map(root, gid)
+    items = _sorted_visible(all_pics(root, gid), likes=lm if sort_likes else None)
+    cmts = load_comments(root, gid)["list"]
     if h._is_agent() and "html=1" not in query:
         return h._send(200, json.dumps({
             "gallery": gallery_public_meta(store, gid, g, len(items)),
-            "images": [public_meta(store, pid, m)
+            "images": [public_meta(store, pid, m, lm.get(pid, 0))
                        for pid, m in items[:PICS_JSON_CAP]],
+            "comments": [public_comment(c) for c in reversed(cmts)],
+            "social": {
+                "like_image": {
+                    "method": "POST",
+                    "url": f"{store.PUBLIC_BASE}/pics/i/<id>?like=1",
+                    "note": "toggle per visitor (pseudonymous fingerprint); "
+                            "response {id, likes, liked}"},
+                "likes_poll": {
+                    "method": "GET",
+                    "url": f"{store.PUBLIC_BASE}/pics/g/<gid>?likes=1",
+                    "note": "cheap counts for live ranking: "
+                            "{likes: {id: n}, cl: {cid: n}, comments: m}"},
+                "comment": {
+                    "method": "POST",
+                    "url": f"{store.PUBLIC_BASE}/pics/g/<gid>?comment=1",
+                    "body": f"urlencoded form (or JSON): name (<={PICS_NAME_MAX_LEN} chars, "
+                            f"optional), text (<={PICS_COMMENT_MAX_LEN} chars); "
+                            f"cooldown {PICS_COMMENT_COOLDOWN}s per visitor, "
+                            f"max {PICS_MAX_COMMENTS} per gallery"},
+                "comment_like": {
+                    "method": "POST",
+                    "url": f"{store.PUBLIC_BASE}/pics/g/<gid>?clike=<cid>",
+                    "note": "toggle — same fingerprint model as image likes"},
+                "sort": "&sort=likes orders images by likes (ties keep the "
+                        "curated order); browsers FLIP-climb live on sort pages",
+            },
             "pool": {"used": pics_size(root), "bytes": PICS_POOL},
             "limits": {"max_file_bytes": PICS_MAX_FILE, "ttl_seconds": PICS_TTL,
                        "edge_px": PICS_EDGE},
@@ -1188,12 +1713,16 @@ def _get_gallery(h, store, root, gid, query):
         pages = max(1, (total + EMBED_PAGE - 1) // EMBED_PAGE)
         page = min(_page_of(query), pages)
         chunk = items[(page - 1) * EMBED_PAGE: page * EMBED_PAGE]
-        return h._send(200, embed_html(store, gid, g, chunk, page, pages, total), "text/html")
+        return h._send(200, embed_html(store, gid, g, chunk, page, pages, total,
+                                       likes=lm, comments=cmts,
+                                       sort_likes=sort_likes), "text/html")
     total = len(items)
     pages = max(1, (total + PICS_PAGE - 1) // PICS_PAGE)
     page = min(_page_of(query), pages)
     chunk = items[(page - 1) * PICS_PAGE: page * PICS_PAGE]
-    h._send(200, gallery_html(store, gid, g, chunk, page, pages, total), "text/html")
+    h._send(200, gallery_html(store, gid, g, chunk, page, pages, total,
+                              likes=lm, comments=cmts,
+                              sort_likes=sort_likes), "text/html")
 
 
 def _get_admin(h, store, root, gid, secret, query):
@@ -1216,11 +1745,16 @@ def _admin_json(h, store, root, gid):
     vis = _sorted_visible(items)
     hid = [t for t in items if t[1].get("hidden")]
     g = load_gallery(root, gid)
+    lm = likes_map(root, gid)
     h._send(200, json.dumps({
         "gallery": gallery_public_meta(store, gid, g, len(vis)) if g else None,
         "admin": True,
-        "visible": [public_meta(store, pid, m) for pid, m in vis[:PICS_JSON_CAP]],
-        "hidden": [public_meta(store, pid, m) for pid, m in hid[:PICS_JSON_CAP]],
+        "visible": [public_meta(store, pid, m, lm.get(pid, 0))
+                    for pid, m in vis[:PICS_JSON_CAP]],
+        "hidden": [public_meta(store, pid, m, lm.get(pid, 0))
+                   for pid, m in hid[:PICS_JSON_CAP]],
+        "comments": [public_comment(c)
+                     for c in reversed(load_comments(root, gid)["list"])],
         "pool": {"used": pics_size(root), "bytes": PICS_POOL},
     }, indent=2), "application/json")
 
@@ -1438,12 +1972,66 @@ def _admin_action(h, store, root, gid, secret):
     page = _form_value(form, "p", "1")
     if action in ("up", "down"):
         reorder(root, pid, -1 if action == "up" else 1, gid=gid)
+    elif action == "cdel":
+        del_comment(root, gid, pid)            # pid holds the comment id here
     elif action in ("hide", "unhide", "delete"):
         moderate(root, pid, action, gid=gid)
     else:
         return h._send(400, "unknown action\n")
     h._send(303, b"", extra={
         "Location": f"{store.PREFIX}/pics/g/{gid}/{secret}?p={page}"})
+
+
+def _like_image(h, store, root, pid):
+    """POST /pics/i/<pid>?like=1 — toggle, JSON {id, likes, liked}."""
+    res = toggle_image_like(root, pid, h._client_ip(),
+                            h.headers.get("User-Agent", ""))
+    if res is None:
+        return h._send(404, json.dumps({"error": "image not found"}),
+                       "application/json")
+    n, liked = res
+    h._send(200, json.dumps({"id": pid, "likes": n, "liked": liked}),
+            "application/json")
+
+
+def _comment_like(h, store, root, gid, qp):
+    """POST /pics/g/<gid>?clike=<cid> — toggle, JSON {id, likes, liked}."""
+    from urllib.parse import unquote
+    cid = unquote((qp.get("clike") or [""])[0]).strip()
+    res = toggle_comment_like(root, gid, cid, h._client_ip(),
+                              h.headers.get("User-Agent", ""))
+    if res is None:
+        return h._send(404, json.dumps({"error": "comment not found"}),
+                       "application/json")
+    n, liked = res
+    h._send(200, json.dumps({"id": cid, "likes": n, "liked": liked}),
+            "application/json")
+
+
+def _comment_create(h, store, root, gid):
+    """POST /pics/g/<gid>?comment=1 — urlencoded form (browser) or JSON."""
+    ctype = h.headers.get("Content-Type", "")
+    if ctype.startswith("application/json"):
+        try:
+            length = int(h.headers.get("Content-Length") or 0)
+            doc = json.loads(
+                h.rfile.read(length).decode("utf-8", "replace") or "{}")
+        except Exception:
+            doc = {}
+        name, text = str(doc.get("name", "")), str(doc.get("text", ""))
+    else:
+        form = _read_form(h)
+        name, text = _form_value(form, "name"), _form_value(form, "text")
+    c, err = add_comment(root, gid, name, text, h._client_ip())
+    if err:
+        return h._send(err[0], json.dumps({"error": err[1]}),
+                       "application/json")
+    if (h._is_agent()
+            or "application/json" in (h.headers.get("Accept") or "")):
+        return h._send(200, json.dumps(public_comment(c), indent=2),
+                       "application/json")
+    h._send(303, b"",
+            extra={"Location": f"{store.PREFIX}/pics/g/{gid}#comments"})
 
 
 # --- self-service surfaces (merged into store's /api and /help) -------------
@@ -1512,6 +2100,43 @@ def api_endpoints(store_base):
             "note": "serve one image inline; ?thumb=1 for a small cached WebP "
                     "preview. Hidden or expired images -> 404.",
         },
+        "pics_like": {
+            "method": "POST",
+            "url": store_base + "/pics/i/<id>?like=1",
+            "note": "toggle an image like. One like per visitor "
+                    "(pseudonymous fingerprint from IP+UA, keyed by the "
+                    "gallery's secret — the same visitor toggles off). "
+                    "Hidden/expired images -> 404.",
+            "response": {"id": "str", "likes": "int", "liked": "bool"},
+        },
+        "pics_likes_json": {
+            "method": "GET",
+            "url": store_base + "/pics/g/<gid>?likes=1",
+            "note": "cheap counters for polling / live ranking: image likes, "
+                    "comment likes, comment count — no image payloads.",
+            "response": {"likes": {"<id>": "int"}, "cl": {"<cid>": "int"},
+                         "comments": "int"},
+        },
+        "pics_comment": {
+            "method": "POST",
+            "url": store_base + "/pics/g/<gid>?comment=1",
+            "body": "urlencoded form (or JSON): name (<=40 chars, optional — "
+                    "defaults to Gast), text (<=500 chars)",
+            "note": f"guestbook comment, no login. Cooldown "
+                    f"{PICS_COMMENT_COOLDOWN}s per visitor, max "
+                    f"{PICS_MAX_COMMENTS} per gallery (env-tunable). Browsers "
+                    f"posting the form get redirected back to #comments; JSON "
+                    f"clients get the created comment.",
+            "response": {"id": "str", "name": "str", "text": "str",
+                         "ts": "float", "likes": "int"},
+        },
+        "pics_comment_like": {
+            "method": "POST",
+            "url": store_base + "/pics/g/<gid>?clike=<cid>",
+            "note": "toggle a comment like — same fingerprint model as "
+                    "pics_like.",
+            "response": {"id": "str", "likes": "int", "liked": "bool"},
+        },
         "pics_admin": {
             "method": "GET/POST",
             "url": store_base + "/pics/g/<gid>/<secret>",
@@ -1519,7 +2144,8 @@ def api_endpoints(store_base):
                     "(path segment, never a query param) or the server-wide "
                     "superadmin token (env THROWAWAY_PICS_ADMIN_TOKEN). GET: "
                     "admin page (/json for listing incl. hidden). POST form "
-                    "(id, action): hide | unhide | delete | up | down. Wrong "
+                    "(id, action): hide | unhide | delete | up | down | "
+                    "cdel (delete a comment). Wrong "
                     "secret -> 404.",
         },
     }
@@ -1567,6 +2193,25 @@ VIEW
    GET {PUBLIC_BASE}/pics/g/<gid>      one gallery
    GET {PUBLIC_BASE}/pics/g/<gid>?embed=1   minimal view for <iframe> embedding
    GET {PUBLIC_BASE}/pics/i/<id>       one image (?thumb=1 for preview)
+
+LIKES & COMMENTS (guestbook, no login; since 1.38.0)
+   POST {PUBLIC_BASE}/pics/i/<pid>?like=1        toggle image like
+        -> {{id, likes, liked}}; one like per visitor (pseudonymous
+        fingerprint from IP+UA, keyed by the gallery's secret token —
+        same visitor, same button: toggles off)
+   POST {PUBLIC_BASE}/pics/g/<gid>?comment=1     add a comment
+        body: urlencoded form or JSON {{name, text}} — name <= 40 chars
+        (optional, defaults to "Gast"), text <= 500 chars;
+        20 s cooldown per visitor, max 500 per gallery
+   POST {PUBLIC_BASE}/pics/g/<gid>?clike=<cid>   toggle comment like
+   GET  {PUBLIC_BASE}/pics/g/<gid>?likes=1       cheap counters for
+        polling: {{likes: {{pid: n}}, cl: {{cid: n}}, comments: m}}
+   GET  {PUBLIC_BASE}/pics/g/<gid>?sort=likes    images ranked by likes
+        (ties keep the curated order; ?embed=1 keeps it). In browsers
+        liked images FLIP-climb live and a 30 s poll keeps counts fresh.
+Comments render newest first; the gallery admin (or the superadmin
+token) deletes them (admin action cdel). Nothing personal is persisted
+with a comment — no IP, no fingerprint.
 
 ADMIN (per-gallery token or the server superadmin token, as path segment)
    GET  {PUBLIC_BASE}/pics/g/<gid>/<secret>          admin page

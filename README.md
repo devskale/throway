@@ -97,6 +97,11 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | `GET` | `/throway/pics/g/<gid>` | one gallery (HTML grid / JSON) |
 | `POST` | `/throway/pics/g/<gid>?name=<file>` | upload an image (raw or multipart batch) |
 | `GET` | `/throway/pics/i/<id>` | serve one gallery image (`?thumb=1` for preview) |
+| `POST` | `/throway/pics/i/<id>?like=1` | **toggle an image like** → `{id, likes, liked}` |
+| `POST` | `/throway/pics/g/<gid>?comment=1` | **add a comment** (form/JSON: `name`, `text`) |
+| `POST` | `/throway/pics/g/<gid>?clike=<cid>` | toggle a comment like |
+| `GET` | `/throway/pics/g/<gid>?likes=1` | cheap like/comment counters (polling) |
+| `GET` | `/throway/pics/g/<gid>?sort=likes` | gallery ranked by likes |
 | `GET`/`POST` | `/throway/pics/g/<gid>/<secret>` | gallery admin: page / `/json` / actions (`hide`,`unhide`,`delete`,`up`,`down`) |
 | `GET` | `/throway/api` | machine-readable contract (JSON) |
 | `GET` | `/throway/help` | modular help index (JSON for agents, HTML for browsers) |

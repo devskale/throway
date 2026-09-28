@@ -1,11 +1,46 @@
 # throway — Releases
 
-**Current version:** `1.37.1`
+**Current version:** `1.38.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.38.0 — 2026-09-28
+
+### Likes & Kommentare für Event-Galerien (Gästebuch, ohne Login)
+
+Bilder liken, die beliebtesten wandern hoch; Galerie-Kommentare mit
+eigenen Likes. Alles serverseitig gezählt, ohne Konto — Pseudonym per
+Fingerprint (IP+UA, keyed mit dem Gallery-Token, nie exponiert).
+
+- **Likes (Bilder)**: `POST /pics/i/<id>?like=1` — Toggle pro Besucher,
+  Antwort `{id, likes, liked}`. Zähler + Fingerprints im Sidecar
+  `g/<gid>.likes.json` (neueste 500 fps, RAM-schonend).
+- **Kommentare**: `POST /pics/g/<gid>?comment=1` (Form oder JSON:
+  name ≤ 40 optional, text ≤ 500) — 20 s Cooldown/Besucher (nur RAM,
+  es wird keine IP persistiert), max 500/Galerie (env-tunbar).
+  Browser-Form → 303 zurück zu `#comments`.
+- **Kommentar-Likes**: `POST /pics/g/<gid>?clike=<cid>` — gleiches Modell.
+- **Ranking**: `GET /pics/g/<gid>?sort=likes` — Likes zuerst, kuratierte
+  Ordnung bricht Gleichstand; `?embed=1` behält es bei. Browser:
+  gelikte Bilder FLIP-climben live, 30-s-Poll hält Zähler frisch
+  (`GET ?likes=1` — Zähler ohne Bild-Payloads).
+- **UI**: Herz-Button auf jedem Thumb + im Lightbox (synchronisiert),
+  Kommentarformular + Neueste-zuerst-Liste auf Galerie & Embed; No-JS =
+  Form-POST + Links (progressive enhancement). XSS-fest escaped,
+  user content nur via textContent im JS.
+- **Moderation**: Admin-Seite listet Kommentare mit Löschen-Button
+  (`action=cdel`); Superadmin inklusive.
+- **Bugfix nebenbei**: `gallery_sweep`/`all_galleries` behandeln die
+  neuen Sidecars (`*.likes.json`, `*.comments.json`) nicht mehr als
+  Gallery-Metas (wären sonst als „abgelaufen" gelöscht worden).
+- Docs-Sweep: /api (4 neue Endpunkte), help `pics`, API.md, README.
+  Tests: 77 grün (11 neu: Toggle/Fingerprint, Sortierung, Cooldown,
+  Caps/Trim, Escaping, Admin-Delete, UI-Marker) + Browser-Flow via
+  rodney (Klick-Like mit FLIP, Lightbox, AJAX-Kommentar) verifiziert.
+
 
 ## 1.37.1 — 2026-09-27
 

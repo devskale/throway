@@ -630,3 +630,227 @@ def test_duplicate_detection(srv):
                           headers={"Content-Type": ctype, **AGENT})
     res = json.loads(out)
     assert res["added"] == [] and res["duplicates"] == 2
+
+
+# --- 1.38.0: likes & comments ------------------------------------------------
+
+def _mk_gal(srv, name):
+    st, _, b = srv.post("/pics?create=1&name=" + name, headers=AGENT)
+    assert st == 200, b
+    return json.loads(b)
+
+
+def _up(srv, gid, fn="a.jpg", color=(120, 40, 200)):
+    st, _, b = srv.post(f"/pics/g/{gid}?name={fn}", data=jpeg(color=color),
+                        headers=AGENT)
+    assert st == 200, b
+    return json.loads(b)
+
+
+def _cform(name, text):
+    return urlencode({"name": name, "text": text})
+
+
+def _browser_form(extra=None):
+    h = {**BROWSER, "Content-Type": "application/x-www-form-urlencoded"}
+    h.update(extra or {})
+    return h
+
+
+def test_image_like_toggle_and_fingerprint(srv):
+    g = _mk_gal(srv, "likes1")
+    pid = _up(srv, g["id"])["id"]
+    st, _, b = srv.post(f"/pics/i/{pid}?like=1", headers=BROWSER)
+    d = json.loads(b)
+    assert st == 200 and d == {"id": pid, "likes": 1, "liked": True}
+    # same visitor toggles OFF
+    st, _, b = srv.post(f"/pics/i/{pid}?like=1", headers=BROWSER)
+    d = json.loads(b)
+    assert d["likes"] == 0 and d["liked"] is False
+    # a second visitor (different X-Forwarded-For) adds a like
+    v2 = {**BROWSER, "X-Forwarded-For": "203.0.113.7"}
+    srv.post(f"/pics/i/{pid}?like=1", headers=BROWSER)
+    st, _, b = srv.post(f"/pics/i/{pid}?like=1", headers=v2)
+    assert json.loads(b)["likes"] == 2
+    st, _, b = srv.post(f"/pics/i/{pid}?like=1", headers=BROWSER)
+    assert json.loads(b)["likes"] == 1
+
+
+def test_likes_in_json_poll_and_sort(srv):
+    g = _mk_gal(srv, "likes2")
+    a = _up(srv, g["id"], "a.jpg", (120, 40, 200))["id"]
+    bb = _up(srv, g["id"], "b.jpg", (10, 200, 30))["id"]
+    for ip in ("198.51.100.1", "198.51.100.2"):
+        srv.post(f"/pics/i/{a}?like=1",
+                 headers={**BROWSER, "X-Forwarded-For": ip})
+    srv.post(f"/pics/i/{bb}?like=1",
+             headers={**BROWSER, "X-Forwarded-For": "198.51.100.3"})
+    st, _, body = srv.get(f"/pics/g/{g['id']}", headers=AGENT)
+    d = json.loads(body)
+    lm = {i["id"]: i["likes"] for i in d["images"]}
+    assert lm == {a: 2, bb: 1}
+    assert d["images"][0]["id"] == bb            # default: newest first
+    st, _, body = srv.get(f"/pics/g/{g['id']}?sort=likes", headers=AGENT)
+    d2 = json.loads(body)
+    assert d2["images"][0]["id"] == a            # like ranking wins
+    st, _, body = srv.get(f"/pics/g/{g['id']}?likes=1", headers=BROWSER)
+    p = json.loads(body)
+    assert p["likes"] == {a: 2, bb: 1}
+    assert p["cl"] == {} and p["comments"] == 0
+    # social how-to is advertised to agents
+    assert "like_image" in d["social"] and "comment" in d["social"]
+
+
+def test_comment_browser_form_and_redirect(srv):
+    g = _mk_gal(srv, "cmt1")
+    st, hd, _ = srv.post(f"/pics/g/{g['id']}?comment=1",
+                         data=_cform("Anna", "War schön!"),
+                         headers=_browser_form())
+    assert st == 303 and hd.get("Location", "").endswith("#comments")
+    st, _, body = srv.get(f"/pics/g/{g['id']}", headers=AGENT)
+    d = json.loads(body)
+    c = d["comments"][0]
+    assert c["name"] == "Anna" and c["text"] == "War schön!" and c["likes"] == 0
+
+
+def test_comment_json_body_and_defaults(srv):
+    g = _mk_gal(srv, "cmt2")
+    st, _, b = srv.post(f"/pics/g/{g['id']}?comment=1",
+                        data=json.dumps({"text": "hi"}).encode(),
+                        headers={**AGENT, "Content-Type": "application/json"})
+    assert st == 200
+    c = json.loads(b)
+    assert c["name"] == "Gast" and c["text"] == "hi"
+    # empty text rejected
+    st, _, b = srv.post(f"/pics/g/{g['id']}?comment=1",
+                        data=json.dumps({"name": "x", "text": "  "}).encode(),
+                        headers={**AGENT, "Content-Type": "application/json"})
+    assert st == 400
+
+
+def test_comment_html_escaped(srv):
+    g = _mk_gal(srv, "cmtx")
+    srv.post(f"/pics/g/{g['id']}?comment=1",
+             data=_cform("<b>X", "hi <script>alert(1)</script>\nsecond"),
+             headers=_browser_form())
+    for view in (f"/pics/g/{g['id']}", f"/pics/g/{g['id']}?embed=1"):
+        st, _, html = srv.get(view, headers=BROWSER)
+        h = html.decode()
+        assert st == 200
+        assert "&lt;b&gt;X" in h, view
+        assert "<script>alert" not in h, view
+        assert "&lt;script&gt;" in h, view
+
+
+def test_comment_like_and_admin_delete(srv):
+    g = _mk_gal(srv, "cl")
+    srv.post(f"/pics/g/{g['id']}?comment=1", data=_cform("N", "t"),
+             headers=_browser_form())
+    st, _, body = srv.get(f"/pics/g/{g['id']}", headers=AGENT)
+    cid = json.loads(body)["comments"][0]["id"]
+    st, _, b = srv.post(f"/pics/g/{g['id']}?clike={cid}", headers=BROWSER)
+    assert json.loads(b) == {"id": cid, "likes": 1, "liked": True}
+    st, _, b = srv.post(f"/pics/g/{g['id']}?clike={cid}",
+                        headers={**BROWSER, "X-Forwarded-For": "203.0.113.9"})
+    assert json.loads(b)["likes"] == 2
+    st, _, b = srv.post(f"/pics/g/{g['id']}?clike=deadbeef", headers=BROWSER)
+    assert st == 404
+    # admin moderation: cdel removes the comment
+    st, _, _ = srv.post(f"/pics/g/{g['id']}/{SUPER}",
+                        data=urlencode({"id": cid, "action": "cdel", "p": "1"}),
+                        headers=_browser_form())
+    assert st == 303
+    st, _, body = srv.get(f"/pics/g/{g['id']}", headers=AGENT)
+    assert json.loads(body)["comments"] == []
+
+
+def test_comment_cooldown(srv):
+    g = _mk_gal(srv, "cool")
+    st, _, _ = srv.post(f"/pics/g/{g['id']}?comment=1",
+                        data=_cform("a", "eins"), headers=_browser_form())
+    assert st == 303
+    st, _, b = srv.post(f"/pics/g/{g['id']}?comment=1",
+                        data=_cform("a", "zwei"), headers=_browser_form())
+    assert st == 429
+    # a different visitor is not throttled
+    st, _, _ = srv.post(f"/pics/g/{g['id']}?comment=1",
+                        data=_cform("b", "drei"),
+                        headers=_browser_form({"X-Forwarded-For": "203.0.113.4"}))
+    assert st == 303
+
+
+@pytest.fixture
+def cmt_srv(tmp_path):
+    s = Server(tmp_path / "cmt",
+               env_extra={"THROWAWAY_PICS_MAX_COMMENTS": "2",
+                          "THROWAWAY_PICS_COMMENT_COOLDOWN": "0"})
+    yield s
+    s.stop()
+
+
+def test_comment_caps_and_length_trims(cmt_srv):
+    g = _mk_gal(cmt_srv, "caps")
+    long_text = "x" * 600
+    st, _, _ = cmt_srv.post(f"/pics/g/{g['id']}?comment=1",
+                            data=_cform("n" * 60, long_text),
+                            headers=_browser_form())
+    assert st == 303
+    st, _, b = cmt_srv.post(f"/pics/g/{g['id']}?comment=1",
+                            data=_cform("zwei", "ok"),
+                            headers=_browser_form())
+    assert st == 303
+    st, _, b = cmt_srv.post(f"/pics/g/{g['id']}?comment=1",
+                            data=_cform("drei", "nope"),
+                            headers=_browser_form())
+    assert st == 400 and "limit" in json.loads(b)["error"]
+    st, _, body = cmt_srv.get(f"/pics/g/{g['id']}", headers=AGENT)
+    cmts = json.loads(body)["comments"]
+    assert len(cmts) == 2
+    assert cmts[0]["name"] == "zwei"              # newest first
+    assert len(cmts[1]["name"]) == 40             # trimmed to the cap
+    assert len(cmts[1]["text"]) == 500
+
+
+def test_like_hidden_and_missing_404(srv):
+    g = _mk_gal(srv, "hid")
+    pid = _up(srv, g["id"])["id"]
+    st, _, _ = srv.post(f"/pics/g/{g['id']}/{SUPER}",
+                        data=urlencode({"id": pid, "action": "hide", "p": "1"}),
+                        headers=_browser_form())
+    assert st == 303
+    st, _, _ = srv.post(f"/pics/i/{pid}?like=1", headers=BROWSER)
+    assert st == 404
+    st, _, _ = srv.post("/pics/i/deadbeef12?like=1", headers=BROWSER)
+    assert st == 404
+
+
+def test_embed_and_page_carry_social_ui(srv):
+    g = _mk_gal(srv, "ui")
+    _up(srv, g["id"])
+    st, _, html = srv.get(f"/pics/g/{g['id']}?embed=1&sort=likes",
+                          headers=BROWSER)
+    h = html.decode()
+    assert st == 200
+    for frag in ("class=lk", "id=comments", "id=cform", "?comment=1",
+                 "sort=likes", "aria-pressed"):
+        assert frag in h, frag
+    st, _, html = srv.get(f"/pics/g/{g['id']}", headers=BROWSER)
+    h2 = html.decode()
+    assert "class=lk" in h2 and "id=cform" in h2 and "lblk" in h2
+    st, _, body = srv.get("/api", headers=AGENT)
+    eps = json.loads(body)["endpoints"]
+    for k in ("pics_like", "pics_likes_json", "pics_comment",
+              "pics_comment_like"):
+        assert k in eps, k
+
+
+def test_admin_json_and_page_show_comments(srv):
+    g = _mk_gal(srv, "adm")
+    srv.post(f"/pics/g/{g['id']}?comment=1", data=_cform("Q", "text"),
+             headers=_browser_form())
+    adm = f"/pics/g/{g['id']}/{SUPER}"
+    st, _, body = srv.get(adm + "/json", headers=AGENT)
+    d = json.loads(body)
+    assert d["comments"][0]["text"] == "text"
+    st, _, html = srv.get(adm, headers=BROWSER)
+    assert "cdel" in html.decode()

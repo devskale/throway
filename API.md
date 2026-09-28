@@ -53,6 +53,36 @@ curl "$BASE/pics/i/<id>"
 curl "$BASE/pics/i/<id>?thumb=1"
 ```
 
+### Likes & comments (since 1.38.0)
+
+No login: likes toggle per visitor (pseudonymous fingerprint from IP+UA,
+keyed by the gallery's secret — never exposed). Comments are a guestbook:
+name optional, nothing personal persisted.
+
+```bash
+# like / unlike an image (toggle) -> {id, likes, liked}
+curl -X POST "$BASE/pics/i/<id>?like=1"
+
+# add a comment (form or JSON: name <=40 optional, text <=500)
+curl -X POST "$BASE/pics/g/hochzeit-2026?comment=1" \
+     -d "name=Anna&text=War%20sch%C3%B6n!"
+
+# like a comment (toggle)
+curl -X POST "$BASE/pics/g/hochzeit-2026?clike=<cid>"
+
+# cheap counters for polling / live ranking (no image payloads)
+curl "$BASE/pics/g/hochzeit-2026?likes=1"
+
+# rank images by likes (ties keep curated order; ?embed=1 keeps it too)
+curl -A curl "$BASE/pics/g/hochzeit-2026?sort=likes"
+```
+
+Cooldown 20 s per visitor (RAM only — restarts clear it), max 500
+comments per gallery (`THROWAWAY_PICS_MAX_COMMENTS`). Browsers get heart
+buttons on every thumb + in the lightbox, an AJAX comment form, and on
+`sort=likes` pages liked images FLIP-climb live (30 s poll). Admins
+delete comments via the admin page (action `cdel`).
+
 Behavior: uploads are recompressed server-side to max 2048 px WebP q80
 (EXIF rotation respected; GIFs pass through untouched; HEIC/AVIF decoded
 via pillow-heif). The original bytes are discarded. Images live a fixed
@@ -69,7 +99,8 @@ env token — always a **path segment**, never a query param; wrong token
 # admin page (HTML) or JSON listing incl. hidden images
 curl -A curl "$BASE/pics/g/<gid>/<secret>/json"
 
-# actions: hide | unhide | delete | up | down  (form-encoded id + action)
+# actions: hide | unhide | delete | up | down | cdel  (form-encoded id + action;
+# cdel removes a comment, id carries the comment id)
 curl -A "Mozilla" -d "id=<id>&action=hide&p=1" "$BASE/pics/g/<gid>/<secret>"
 ```
 
@@ -147,6 +178,10 @@ schlägt beim Push an.)
 | pics_upload | [Pics](#pics--event-galleries-pics-since-1200) |
 | pics_import_url | [Pics](#pics--event-galleries-pics-since-1200) |
 | pics_image | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_like | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_likes_json | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_comment | [Pics](#pics--event-galleries-pics-since-1200) |
+| pics_comment_like | [Pics](#pics--event-galleries-pics-since-1200) |
 | pics_admin | [Pics](#pics--event-galleries-pics-since-1200) |
 
 ## Contract endpoint
