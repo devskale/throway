@@ -908,10 +908,15 @@ _HEART_SVG = ("<svg viewBox='0 0 24 24' aria-hidden='true'>"
                "5.5 0 0 0 0-7.78z'/></svg>")
 
 _LB_CSS = (
-    "#lb{position:fixed;inset:0;background:rgba(17,24,39,.93);display:flex;flex-direction:column;"
+    # 1.38.2: top/left/right + explicit height instead of inset:0 — in an
+    # auto-height iframe inset:0 spans the WHOLE iframe height (thousands of
+    # px). The height is driven by _lb_script (host viewport, else fallback).
+    "#lb{position:fixed;top:0;left:0;right:0;height:100vh;background:rgba(17,24,39,.93);"
+    "display:flex;flex-direction:column;"
     "align-items:center;justify-content:center;z-index:50;padding:2.5rem 3.2rem 1rem}"
     "#lb[hidden]{display:none}"
-    "#lb img{max-width:100%;max-height:80vh;object-fit:contain;border-radius:6px}"
+    # 1.38.2: % not vh — vh is the iframe's full height inside an embed
+    "#lb img{max-width:100%;max-height:80%;object-fit:contain;border-radius:6px}"
     "#lb .lbx{position:absolute;top:.5rem;right:.7rem;background:none;border:0;color:#e5e7eb;"
     "font-size:1.5rem;cursor:pointer;min-height:44px;min-width:44px}"
     "#lb .lbnav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.08);"
@@ -997,8 +1002,26 @@ def _lb_script(imgs, admin_post=None):
         "var LB=" + data + ";"
         "var lb=document.getElementById('lb'),lbimg=document.getElementById('lbimg'),"
         "lbcap=document.getElementById('lbcap'),lbi=-1;"
+        # 1.38.2: size the lightbox to the VISIBLE area, not the frame. A host
+        # can post its real viewport (throway:pics:viewport); without one we
+        # cap at screen.height — innerHeight inside an auto-height iframe is
+        # the whole content height and would put every control off-screen.
+        "var VH=0;"
+        "function lbH(){var h=innerHeight;"
+        "if(VH>0)h=VH;else h=Math.min(h,screen.height||h);"
+        "return Math.max(200,h);}"
+        "function lbFit(){lb.style.height=lbH()+'px';}"
+        "window.addEventListener('message',function(e){"
+        "if(e.data&&e.data.type==='throway:pics:viewport'&&e.data.height>0){"
+        "VH=e.data.height;lbFit();}});"
+        # handshake: tell the host the listener is live — its first viewport
+        # post (setTimeout 250) can otherwise race a slow-loading embed and
+        # get lost with no retry.
+        "try{parent.postMessage({type:'throway:pics:ready'},'*');}catch(e){}"
+        "window.addEventListener('resize',lbFit);"
+        "window.addEventListener('orientationchange',lbFit);"
         "function open(i){if(!LB.length)return;lbi=(i%LB.length+LB.length)%LB.length;"
-        "lb.hidden=false;document.body.style.overflow='hidden';"
+        "lbFit();lb.hidden=false;document.body.style.overflow='hidden';"
         "lbimg.src=LB[lbi].u;"
         + ("lbCap();" if admin_post else
            "lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'');"
@@ -1370,6 +1393,26 @@ def embed_html(store, gid, g, items, page, pages, total,
             + "</main></body></html>")
 
 
+def _embed_snippet(store, gid, title):
+    """Copy-paste embed for a gallery: auto-height + (1.38.2) the host tells
+    the iframe its visible viewport, so the lightbox inside the auto-height
+    iframe can size itself to the screen instead of the frame."""
+    return (
+        f'<iframe id="ty-{gid}" src="{store.PUBLIC_BASE}/pics/g/{gid}?embed=1&sort=likes" '
+        f'style="width:100%;height:640px;border:0;border-radius:8px" '
+        f'loading="lazy" title="{title}"></iframe>'
+        f'<script>(function(){{'
+        f'var f=document.getElementById("ty-{gid}"),last=0;'
+        f'function vp(){{var h=window.innerHeight;if(h===last)return;last=h;try{{'
+        f'f.contentWindow.postMessage({{type:"throway:pics:viewport",height:h}},"*");'
+        f'}}catch(e){{}}}}'
+        f'window.addEventListener("message",function(e){{'
+        f'if(e.data&&e.data.type==="throway:pics:height"){{f.style.height=e.data.height+"px";vp();}}'
+        f'if(e.data&&e.data.type==="throway:pics:ready"){{last=0;vp();}}}});'
+        f'window.addEventListener("resize",vp);window.addEventListener("scroll",vp,true);'
+        f'setTimeout(vp,250);}})();</script>')
+
+
 def gallery_html(store, gid, g, items, page, pages, total,
                  likes=None, comments=None, sort_likes=False):
     """One public gallery: grid (with like buttons), uploader, guestbook
@@ -1419,13 +1462,7 @@ def gallery_html(store, gid, g, items, page, pages, total,
                  + "<details class=embedbox><summary>diese Galerie einbetten (embed)</summary>"
                  + "<p class=meta>Auto-Höhe + Nachladen beim Scrollen — einfach beide Zeilen übernehmen:</p>"
                  + "<input readonly onclick='this.select()' value='"
-                 + e(f'<iframe id="ty-{gid}" src="{store.PUBLIC_BASE}/pics/g/{gid}?embed=1&sort=likes" '
-                     f'style="width:100%;height:640px;border:0;border-radius:8px" '
-                     f'loading="lazy" title="{g.get("name") or gid}"></iframe>'
-                     f'<script>window.addEventListener("message",function(e){{'
-                     f'if(e.data&&e.data.type==="throway:pics:height")'
-                     f'document.getElementById("ty-{gid}").style.height=e.data.height+"px";}});'
-                     f'</script>')
+                 + e(_embed_snippet(store, gid, g.get("name") or gid))
                  + "'></details>"
                  + store._agent_hint(
                      f"curl {store.PUBLIC_BASE}/pics/g/{gid}?name=photo.jpg --data-binary @photo.jpg  # upload",
@@ -2194,6 +2231,9 @@ VIEW
    GET {PUBLIC_BASE}/pics              index (listed galleries)
    GET {PUBLIC_BASE}/pics/g/<gid>      one gallery
    GET {PUBLIC_BASE}/pics/g/<gid>?embed=1   minimal view for <iframe> embedding
+        lightbox sizes itself to the host viewport (postMessage
+        handshake: host -> throway:pics:viewport, iframe acks
+        throway:pics:ready); fallback caps at screen.height
    GET {PUBLIC_BASE}/pics/i/<id>       one image (?thumb=1 for preview)
 
 LIKES & COMMENTS (guestbook, no login; since 1.38.0)

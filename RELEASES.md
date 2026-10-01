@@ -1,9 +1,45 @@
 # throway — Releases
 
-**Current version:** `1.38.1`
+**Current version:** `1.38.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.38.2 — 2026-10-01
+
+### Pics: Lightbox im Embed auf den sichtbaren Viewport fixiert
+
+Die Lightbox in `?embed=1`-Galerien war auf Mobile unbenutzbar: Das
+Auto-Height-iframe (`throway:pics:height` an den Host) macht den
+iframe-Viewport so hoch wie den ganzen Inhalt (gemessen 2717 px,
+live 8826 px). `position:fixed;inset:0` spannte die Lightbox über die
+ganze Höhe, das Bild kollabierte auf 0×0 (`max-height:80vh` = 80 %
+davon, aber `max-width:100%` deckelt), Vor/Zurück/Caption/Like lagen
+~1300 px unterhalb des sichtbaren Screens — nur das Close-X war
+erreichbar.
+
+Zweistufiger Fix:
+
+1. **Host-Handshake:** Das Embed-Snippet postet
+   `{type:"throway:pics:viewport", height: window.innerHeight}` an das
+   iframe — auf `resize`, `scroll` und nach dem Auto-Height-Update,
+   dedupliziert. Das iframe meldet `throway:pics:ready`, sobald sein
+   Listener lebt (verhindert das verlorene erste Post bei langsamem
+   Laden). Lightbox-Höhe = exakt die sichtbare Viewport-Höhe.
+2. **Self-contained Fallback** für alte, bereits kopierte Snippets:
+   ohne Host-Nachricht kappingt die Lightbox auf
+   `min(innerHeight, screen.height)` — nie wieder Tausende Pixel.
+   Dazu `inset:0` → `top/left/right + height`, Bild `max-height:80vh`
+   → `80%` (relativ zur Box), alle Controls hängen an der Box statt
+   am iframe-Viewport.
+
+Browser-Nachweis (rodney + CDP, 390×844 Mobile-Emulation gegen ein
+2717-px-Auto-Height-iframe): Legacy-Snippet → `#lb` 844 px, Bild
+300×200, alle Controls im Sichtbereich. Neues Snippet → `#lb` =
+Host-`innerHeight` (Handshake), per postMessage exakt steuerbar
+(500-px-Test). Rendered JS `node --check` grün; Suite: 78 Tests grün.
 
 ---
 

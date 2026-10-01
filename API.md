@@ -44,6 +44,10 @@ curl -A curl "$BASE/pics/g/hochzeit-2026"
 # embed a gallery anywhere (minimal view, transparent bg, no uploader):
 #   <iframe src="$BASE/pics/g/hochzeit-2026?embed=1"
 #           style="width:100%;height:640px;border:0" loading="lazy"></iframe>
+#   full copy-paste snippet (auto-height + lightbox viewport handshake)
+#   sits on each gallery page ("diese Galerie einbetten"): the host
+#   posts {type:"throway:pics:viewport",height} to the iframe, which
+#   acks with {type:"throway:pics:ready"} once its listener is live.
 
 # index (only listed=1 galleries)
 curl -A curl "$BASE/pics"

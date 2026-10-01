@@ -340,6 +340,31 @@ def test_gallery_lightbox(srv):
     assert f"/pics/g/{g['id']}/{g['token']}/i/{a}" in page
 
 
+def test_lightbox_visible_viewport(srv):
+    """1.38.2: lightbox sized to the VISIBLE area, not the auto-height
+    iframe. Host posts throway:pics:viewport (acked via pics:ready);
+    without one the box caps at screen.height. Rodney flow (390x844
+    viewport, 2717px auto-height iframe): legacy snippet -> #lb 844px,
+    img 300x200, prev/next/cap/like/close all inside [0,844]."""
+    _, g = create(srv)
+    up(srv, g["id"])
+    st, _, page = srv.get(f"/pics/g/{g['id']}?embed=1", headers=BROWSER)
+    assert st == 200
+    p = page.decode()
+    assert "inset:0" not in p                        # no more full-frame box
+    assert "height:100vh" in p and "max-height:80%" in p
+    assert "screen.height" in p                      # self-contained fallback
+    assert "throway:pics:viewport" in p              # host viewport listener
+    assert "throway:pics:ready" in p                 # ... and its ack
+    # gallery page: copy-paste snippet posts the viewport + honors the ack
+    st, _, page = srv.get(f"/pics/g/{g['id']}", headers=BROWSER)
+    p2 = page.decode()
+    assert "throway:pics:viewport" in p2 and "throway:pics:ready" in p2
+    # admin view keeps the (now viewport-safe) lightbox too
+    st, _, page = srv.get(f"/pics/g/{g['id']}/{g['token']}", headers=BROWSER)
+    assert "throway:pics:viewport" in page.decode()
+
+
 def test_hq_size_cap_and_quality_floor(srv):
     """1.25.0: HQ first — noisy photo > 1 MB gets stepped down until it fits
     ~1 MB, stays 2048px."""
