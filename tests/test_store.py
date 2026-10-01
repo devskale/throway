@@ -65,6 +65,28 @@ def test_help_topics_all_served(srv):
         assert st2 == 200, f"topic {t} -> {st2}"
 
 
+def test_markdown_help_discoverable(srv):
+    """1.38.3: markdown publishing must be discoverable (session feedback:
+    an agent could not find how to publish a living .md doc and mistook an
+    uploaded kanban HTML for a throway feature)."""
+    st, _, body = srv.get("/help", headers=AGENT)
+    assert "markdown" in [t["id"] for t in json.loads(body)["help"]]
+    st, _, body = srv.get("/help/markdown", headers=AGENT)
+    assert st == 200
+    p = body.decode()
+    for marker in ("?name=notes.md", "?raw=1", "?dir=1&name=", "PUT",
+                   "history", "uploaded HTML file"):
+        assert marker in p, f"/help/markdown misses {marker!r}"
+    # agent homepage names markdown + points at the topic
+    st, _, body = srv.get("/", headers=AGENT)
+    home = body.decode()
+    assert "doc.md" in home and "/help/markdown" in home
+    # overview carries the rendering line + the not-an-app guard
+    st, _, body = srv.get("/help/overview", headers=AGENT)
+    ov = body.decode()
+    assert ".md" in ov and "uploaded HTML file" in ov
+
+
 # --- single files --------------------------------------------------------
 
 def test_upload_raw_and_download_roundtrip(srv):

@@ -200,8 +200,12 @@ Returns current limits + endpoint descriptions as JSON.
 curl -A "curl" "https://skale.dev/throway/help"
 
 # one topic as plain text
-curl -A "curl" "https://skale.dev/throway/help/named_dirs"
+curl -A "curl" "https://skale.dev/throway/help/markdown"
 ```
-Topics: `overview`, `files`, `bundles`, `dirs`, `named_dirs`, `view`,
+Topics: `overview`, `files`, `bundles`, `dirs`, `markdown`, `view`,
 `edit`, `delete`, `limits`, `contract`. Browsers get an HTML index / page;
 unknown topics return `404`. Pull only the topics you need.
+
+Markdown (`/help/markdown`): any `.md`/`.markdown` upload renders as a
+self-contained HTML page for browsers; agents and `?raw=1` get the raw
+text/markdown. Living docs: named dir + `PUT`/`PATCH` edits + history.

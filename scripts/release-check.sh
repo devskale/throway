@@ -35,6 +35,13 @@ kill $SRV 2>/dev/null; wait $SRV 2>/dev/null || true
 while read -r ep; do
   grep -q "$ep" API.md || { echo "FAIL: Endpunkt '$ep' fehlt in API.md (Docs-Drift)"; FAIL=1; }
 done < "$ROOT/endpoints.txt"
+
+# Help-Topics-Drift (Retro 1.38.3): API.md nannte 'named_dirs', das nie
+# existierte — jedes HELP-Order-Topic muss in API.md erwähnt sein.
+TOPICS=$(python3 -c "import re;s=open('store.py').read();m=re.search(r'HELP_ORDER = \[([^]]+)\]',s);print(' '.join(re.findall(r'\"(\w+)\"',m.group(1))))")
+for t in $TOPICS; do
+  grep -q "\`$t\`" API.md || { echo "FAIL: Help-Topic '$t' fehlt in API.md (Docs-Drift)"; FAIL=1; }
+done
 rm -rf "$ROOT"
 
 [ "$FAIL" = 0 ] && echo "release-check: OK (version=$V_STORE, docs aktuell)" || exit 1

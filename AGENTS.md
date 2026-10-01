@@ -131,7 +131,7 @@ GET https://skale.dev/throway/help          # JSON index of topics (agents)
 GET https://skale.dev/throway/help/<topic>  # one topic as plain text
 ```
 
-Topics: `overview`, `files`, `bundles`, `dirs`, `view`,
+Topics: `overview`, `files`, `bundles`, `dirs`, `markdown`, `view`,
 `edit`, `delete`, `limits`, `contract`. Fetch the index, pick the topics you
 need, and pull only those — no need to load the whole description.
 

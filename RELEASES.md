@@ -1,9 +1,35 @@
 # throway — Releases
 
-**Current version:** `1.38.2`
+**Current version:** `1.38.3`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.38.3 — 2026-10-01
+
+### Agent-Copy: Markdown-Publishing discoverable (Help-Topic `markdown`)
+
+Session-Feedback (soundspritzer-Session): Ein Agent fand nicht heraus,
+wie man ein lebendes Markdown-Dokument auf throway veröffentlicht, und
+hielt ein hochgeladenes Kanban-HTML für ein Service-Feature. Ursache:
+Das mdrender-Verhalten (seit 1.28: `.md` rendert als HTML-Seite für
+Browser, roh für Agenten/`?raw=1`) war in KEINER der Help-Topics und
+nicht in der Homepage-Agent-Beschreibung dokumentiert.
+
+- **Neues Topic `/help/markdown`**: Rendering-Verhalten, One-off- vs.
+  Living-Doc-Rezept (named dir + PUT/PATCH + history), Hinweis
+  "kein CMS" und "Boards auf throway = hochgeladene HTML-Dateien".
+- **overview**: Markdown als Zweck + "Not an app platform"-Guard.
+- **view**: `.md` in der Inline-Render-Liste; **dirs**: Rendering-Hinweis
+  bei `GET /d/<key>/<file>`; **files**: Pointer unter `?share=`.
+- **Homepage-Agent-Summary**: `?name=doc.md`-Usage-Zeile.
+- **Docs-Drift behoben**: API.md nannte Topic `named_dirs`, das nie
+  existierte. release-check.sh prüft jetzt zusätzlich, dass jedes
+  HELP_ORDER-Topic in API.md erwähnt ist (hätte den Drift gefangen).
+
+Suite: 79 Tests grün; release-check inkl. neuem Topics-Drift-Guard.
 
 ---
 

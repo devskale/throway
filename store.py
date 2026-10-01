@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.38.2"
+VERSION = "1.38.3"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -602,7 +602,7 @@ def _parse_tags(query_tags):
 # Bodies use .format() placeholders ({PUBLIC_BASE}, {TTL_HOURS}, …) resolved
 # at serve time against the live values.
 # ---------------------------------------------------------------------------
-HELP_ORDER = ["overview", "files", "bundles", "dirs", "view", "edit", "delete", "limits", "contract"]
+HELP_ORDER = ["overview", "files", "bundles", "dirs", "markdown", "view", "edit", "delete", "limits", "contract"]
 
 HELP = {
     "overview": {
@@ -616,11 +616,16 @@ HELP = {
   history. Addressable by an opaque id or a memorable name.
 - A scratchpad for text: create a note, append to it, rewrite it.
 - Passing data between agents / machines without setting up accounts.
+- Publishing markdown that renders for humans: any .md file renders as a
+  self-contained HTML page in a browser; agents get the raw markdown
+  (see /help/markdown).
 
 WHAT IT IS NOT
 - Not permanent storage. Files are automatically deleted after their TTL.
 - Not private. Anyone who has a URL can read, edit, or delete that file.
 - Not a database. It is a flat, throwaway store.
+- Not an app platform. State = files and dirs, nothing else: a "board" or
+  "dashboard" URL you find on throway is simply an uploaded HTML file.
 
 Base URL: {PUBLIC_BASE}""",
     },
@@ -642,7 +647,8 @@ SHARE NAME (optional):
    -> store the upload under a chosen, memorable name (create-or-get, like a
       named dir) at /d/my-note, instead of a random hex id. Rules: 5-32 chars
       [a-z0-9-], >=1 letter, not a reserved word. Sliding lifetime (default
-      7d, &ttl= clamped [4h,14d]).
+      7d, &ttl= clamped [4h,14d]). For markdown docs (rendering, edits,
+      history) see /help/markdown.
 
 DOWNLOAD ONCE (optional, single files only):
    POST {PUBLIC_BASE}/?once=1
@@ -698,7 +704,8 @@ require the token via the X-Throway-Write header or ?write=<token>
    Reach a dir at {PUBLIC_BASE}/d/<key> (key = id or name):
    POST {PUBLIC_BASE}/d/<key>          -> add files (multipart)
    GET  {PUBLIC_BASE}/d/<key>          -> JSON (agents) / HTML (browsers)
-   GET  {PUBLIC_BASE}/d/<key>/<file>   -> fetch one file
+   GET  {PUBLIC_BASE}/d/<key>/<file>   -> fetch one file (.md renders as
+                                          HTML for browsers, raw for agents)
    GET  {PUBLIC_BASE}/d/<key>?zip=1    -> whole dir as zip
    PUT  {PUBLIC_BASE}/d/<key>/<file>   -> replace text (bumps updated)
    PATCH {PUBLIC_BASE}/d/<key>/<file>  -> append text (bumps updated)
@@ -712,13 +719,45 @@ require the token via the X-Throway-Write header or ?write=<token>
    Filters: ?q=<substring over name or tag>, ?created_after/before=<ts>,
    ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.""",
     },
+    "markdown": {
+        "title": "Markdown (.md)",
+        "summary": ".md renders as an HTML page for browsers; raw for agents; living-doc recipe",
+        "body": """MARKDOWN (.md / .markdown):
+   Any .md upload renders as a self-contained HTML page in a browser.
+   Agents (curl UA) and ?raw=1 always get the raw text/markdown — same URL.
+
+   ONE-OFF DOC:
+   POST {PUBLIC_BASE}/?name=notes.md   (body = markdown bytes)
+   -> browsers see the rendered page (with a link to the raw file),
+      agents see raw markdown.
+
+   LIVING DOC (editable, with history) -> use a NAMED DIR:
+   POST {PUBLIC_BASE}/?dir=1&name=my-docs          # create-or-get, idempotent
+   curl -F "f=@notes.md;type=text/markdown" {PUBLIC_BASE}/d/my-docs
+   PUT   {PUBLIC_BASE}/d/my-docs/notes.md   # replace content
+   PATCH {PUBLIC_BASE}/d/my-docs/notes.md   # append content
+   -> the dir URL is the stable link; each edit slides the lifetime
+      forward; {PUBLIC_BASE}/d/my-docs/history shows what changed.
+   .md files INSIDE a dir render exactly like standalone ones.
+
+   RECIPE — publish an issue / spec / report an agent keeps updating:
+   named dir + .md file + PUT edits. Do NOT re-upload copies: the stable
+   URL only stays stable if you edit in place.
+
+   NOT A CMS: no auth, no access control — anyone with the URL can read
+   AND edit (use dir write-tokens if that matters, see /help/dirs).
+   Boards/dashboards found on throway are just uploaded HTML files;
+   throway itself has no state beyond files and dirs.""",
+    },
     "view": {
         "title": "Download / view",
         "summary": "Inline vs download; bundle/dir behavior",
         "body": """DOWNLOAD / VIEW a file:
    GET {PUBLIC_BASE}/<id>
    Images and text-like types (text, html, json, pdf, svg) render inline
-   in a browser; other files download.
+   in a browser; other files download. .md / .markdown files render as a
+   self-contained HTML page for browsers; agents and ?raw=1 get the raw
+   markdown (see /help/markdown).
    For a bundle, GET {PUBLIC_BASE}/<id> serves index.html inline (browser)
    or the whole bundle as a zip (agents). GET {PUBLIC_BASE}/<id>/<file>
    serves one file.
@@ -2367,6 +2406,8 @@ USAGE
   POST {PUBLIC_BASE}/?name=x&ttl=24h  upload with longer lifetime (max 14d)
   POST {PUBLIC_BASE}/?share=my-note   upload under a chosen name -> /d/my-note
   POST {PUBLIC_BASE}/?once=1          burn-after-reading (auto-delete after 1 download)
+  POST {PUBLIC_BASE}/?name=doc.md     upload markdown -> renders as an HTML
+                                      page for browsers (guide: /help/markdown)
   POST {PUBLIC_BASE}/                 upload a bundle (multipart, 2+ files)
   POST {PUBLIC_BASE}/?dir=1           create a dir (under /d/<key>)
   GET  {PUBLIC_BASE}/d/<key>          view a dir (listing / files / zip)
