@@ -1051,3 +1051,29 @@ def test_thumb_warmer_startup_backfill(srv):
         assert all(px == 320 for _, px in seen)
     finally:
         pics.set_thumb_maker(None)
+
+
+def test_sweep_throttle(tmp_path):
+    """1.40.1: der Auto-Sweep ist pro Prozess gedrosselt (SWEEP_INTERVAL) —
+    ein Bild-Request zahlt keinen Full-Directory-Scan mehr. Aufrufe mit
+    explizitem now= (Periodikum, Tests) umgehen die Drossel."""
+    import throway.pics as pics
+    root = str(tmp_path)
+    os.makedirs(os.path.join(root, "pics", "g"), exist_ok=True)
+    gid = "throttl"
+    with open(os.path.join(root, "pics", "g", gid + ".json"), "w") as f:
+        json.dump({"id": gid, "token": "t", "name": "throttle",
+                   "listed": False, "ip": "127.0.0.1",
+                   "created": time.time(), "expires": time.time() + 86400}, f)
+    pid, meta, _ = pics.store_pic(root, jpeg(200, 120), "t.jpg", "127.0.0.1", gid)
+    fp = os.path.join(root, "pics", pid)
+    # abgelaufen setzen
+    meta["expires"] = time.time() - 1
+    pics.save_meta(root, pid, meta)
+    # Drossel zu: Auto-Sweep überspringt, Bild bleibt liegen
+    pics._last_sweep = time.monotonic()
+    pics.sweep(root)
+    assert os.path.isfile(fp), "gedrosselter Sweep darf nicht loeschen"
+    # explizites now= umgeht die Drossel und raeumt ab
+    pics.sweep(root, now=time.time())
+    assert not os.path.isfile(fp), "expliziter Sweep muss loeschen"

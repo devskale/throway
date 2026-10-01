@@ -290,8 +290,23 @@ def remove_pic(root, pid):
             pass
 
 
+SWEEP_INTERVAL = float(os.environ.get("THROWAWAY_PICS_SWEEP_INTERVAL", "") or 30)
+_last_sweep = 0.0          # monotonic; pro Prozess gedrosselter Auto-Sweep
+
+
 def sweep(root, now=None):
-    """Delete expired images AND expired galleries (fixed PICS_TTL)."""
+    """Delete expired images AND expired galleries (fixed PICS_TTL).
+    1.40.1: gedrosselt — vorher lief dieser Full-Scan (listdir + je Bild
+    ein .meta-Read) bei JEDEM Bild- und Galerie-Request; auf der HDD
+    bedeutet das O(Pool)-Random-Reads pro geliefertem Thumb — messbar
+    als TTFB-Ausreißer bis Sekunden unter Last. Bei 90 Tagen TTL ist
+    eine Genauigkeit von SWEEP_INTERVAL Sekunden mehr als genug.
+    Aufrufer mit explizitem now= (Periodikum, Tests) umgehen die Drossel."""
+    global _last_sweep
+    if now is None:
+        if time.monotonic() - _last_sweep < SWEEP_INTERVAL:
+            return
+        _last_sweep = time.monotonic()
     now = now if now is not None else time.time()
     d = _dir(root)
     try:

@@ -1,9 +1,31 @@
 # throway — Releases
 
-**Current version:** `1.40.0`
+**Current version:** `1.40.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.40.1 — 2026-10-01
+
+### Perf: Auto-Sweep gedrosselt — kein Full-Directory-Scan pro Request
+
+Der eigentliche TTFB-Killer unter dem Warmer: `sweep()` lief bei JEDEM
+Bild- und Galerie-Request (`_serve`, `all_pics`) — ein Full-Scan über
+ROOT/pics (listdir + je Bild ein .meta-JSON-Read, aktuell ~800 Dateien
+auf der USB-HDD), multipliziert mit parallelen Browser-Requests.
+Gemessen: TTFB-Ausreißer bis 5,6 s bei 8 parallelen HEADs, obwohl alle
+Thumbs auf Platte lagen.
+
+- Auto-Sweep jetzt pro Prozess gedrosselt (`SWEEP_INTERVAL`, Default
+  30 s, env `THROWAWAY_PICS_SWEEP_INTERVAL`): erster Request swept,
+  weitere 30 s lang nicht. Bei 90 Tagen TTL ist das mehr als präzise.
+- Aufrufe mit explizitem `now=` (Store-Periodikum, Tests) umgehen die
+  Drossel — Verhalten für Ablauf/Expiry unverändert (Tests grün).
+- Unit-Test: gedrosselter Sweep löscht nicht, expliziter schon.
+- Gemessen nach Deploy: TTFB aller 306 Thumb-Kombos (102 Bilder × 3
+  Breiten, 8 parallel) bei ~RTT, keine Ausreißer mehr.
 
 ---
 
