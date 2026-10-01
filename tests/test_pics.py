@@ -366,6 +366,34 @@ def test_embed_lightbox_grows_with_infinite_scroll(srv):
     assert "getBoundingClientRect().top" in p2
 
 
+def test_lightbox_a11y_dialog_pattern(srv):
+    """1.39.1: W3C ARIA APG Dialog-Modal — aria-modal, Fokus wandert in den
+    Dialog, Tab-Falle, Fokus-Rueckgabe zum Thumbnail, alt= Bildname,
+    Caption als aria-live, Thumb mit Accessible Name.
+    (rodney: Fokus im Dialog, 5x Tab bleibt drin, Escape schliesst und
+    Fokus zurueck auf dem Thumbnail.)"""
+    _, g = create(srv)
+    up(srv, g["id"], jpeg(64, 64, (1, 2, 3)), "sonnenuntergang.jpg")
+    st, _, page = srv.get(f"/pics/g/{g['id']}", headers=BROWSER)
+    assert st == 200
+    p = page.decode()
+    # markup: aria-modal + tabindex=-1 + aria-live auf der Caption
+    assert "role=dialog aria-modal=true" in p and "tabindex=-1" in p
+    assert 'id=lbcap aria-live=polite' in p
+    # Thumb-Anchor hat einen Accessible Name (sonst "Link ohne Namen")
+    assert "groß öffnen" in p or "gro&#223; öffnen" in p
+    # JS: Fokus in den Dialog, Fokusfalle, Fokus-Rueckgabe, alt dynamisch
+    assert "opener=a;open(i);lb.focus();" in p
+    assert "if(opener&&opener.focus)" in p
+    assert "e.key==='Escape'){close();return;" in p          # Escape mit Fokus im Dialog
+    assert "if(e.key!=='Tab')return;" in p                  # Fokusfalle
+    assert "offsetWidth>0||b.offsetHeight>0" in p           # sichtbare Buttons
+    assert "lbimg.alt=LB[lbi].n||'';" in p
+    # Escape-Doppelhandler: der dokumentweite Handler darf den lb-Tastendruck
+    # nicht doppeln, aber die Tastatursteuerung weiter behalten
+    assert "if(e.key==='Escape')close();" in p
+
+
 def test_embed_lazy_load_is_viewport_aware(srv):
     """1.39.0: smart lazy-load — the infinite scroll must follow the visible
     window (handshake), not the whole auto-height iframe (which loaded

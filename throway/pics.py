@@ -935,13 +935,17 @@ _LB_CSS = (
     "#lb .lblk.on svg{fill:#fff}"
 )
 
+# 1.39.1 a11y (W3C ARIA APG Dialog-Modal): aria-modal=true, tabindex=-1
+# (programmatisch fokussierbar, nicht im Tab-Fluss), Caption als
+# aria-live=polite (Position "3 von 24" wird vorgelesen). Die Fokusfalle
+# + Fokus-Rueckgabe liegen in _lb_script.
 _LB_HTML = (
-    "<div id=lb hidden role=dialog aria-label='image viewer'>"
+    "<div id=lb hidden role=dialog aria-modal=true aria-label='image viewer' tabindex=-1>"
     "<button type=button class=lbx id=lbx aria-label='close'>&#10005;</button>"
     "<button type=button class='lbnav lbprev' id=lbprev aria-label='previous'>&#8249;</button>"
     "<img id=lbimg alt=''>"
     "<button type=button class='lbnav lbnext' id=lbnext aria-label='next'>&#8250;</button>"
-    "<div class=lbcap id=lbcap></div>"
+    "<div class=lbcap id=lbcap aria-live=polite></div>"
     "<button type=button class='lblk lk' id=lblk hidden aria-pressed=false aria-label='Bild liken'>" + _HEART_SVG + "<span class=n></span></button>"
     "</div>"
 )
@@ -1037,14 +1041,20 @@ def _lb_script(imgs, admin_post=None):
         "function open(i){if(!LB.length)return;lbi=(i%LB.length+LB.length)%LB.length;"
         "lbFit();lb.hidden=false;document.body.style.overflow='hidden';"
         "lbimg.src=LB[lbi].u;"
+        # 1.39.1: alt = Bildname (leeres alt waere bei einem Foto-Viewer falsch)
+        "lbimg.alt=LB[lbi].n||'';"
         + ("lbCap();" if admin_post else
            "lbcap.textContent=(lbi+1)+' / '+LB.length+' \u2014 '+(LB[lbi].n||'');"
            "if(window.__tyLbSync)window.__tyLbSync(LB,lbi);") +
         "[lbi+1,lbi-1].forEach(function(j){var k=(j%LB.length+LB.length)%LB.length;"
         "var im=new Image();im.src=LB[k].u;});"
         + ("lb.focus();" if admin_post else "") + "}"
+        # 1.39.1 a11y (W3C APG): Fokus wandert beim Oeffnen in den Dialog
+        # und kehrt beim Schliessen zum ausloesenden Thumbnail zurueck.
+        "var opener=null;"
         "function close(){lb.hidden=true;document.body.style.overflow='';lbimg.src='';lbi=-1;"
-        "var lk=document.getElementById('lblk');if(lk)lk.hidden=true;}"
+        "var lk=document.getElementById('lblk');if(lk)lk.hidden=true;"
+        "if(opener&&opener.focus){try{opener.focus();}catch(e){}}opener=null;}"
         # 1.39.0: naechste Seite an der Grenze nachladen (lazy load darf
         # das Weiterblaettern nicht abwruergen) — wartet kurz auf __tyMore.
         "function nav(d){if(lbi<0)return;var t=lbi+d;"
@@ -1061,8 +1071,23 @@ def _lb_script(imgs, admin_post=None):
         "if(!a)return;"
         "if(e.target.closest&&e.target.closest('.lk'))return;"
         "var as=document.querySelectorAll('.grid a');"
-        "for(var i=0;i<as.length;i++){if(as[i]===a){e.preventDefault();open(i);return;}}"
+        "for(var i=0;i<as.length;i++){if(as[i]===a){e.preventDefault();opener=a;open(i);lb.focus();return;}}"
         "},false);"
+        # 1.39.1: Fokusfalle — Tab/Shift-Tab bleiben im Dialog (W3C APG).
+        # Escape liegt hier, seit open() den Fokus auf lb setzt (der
+        # dokumentweite Handler ueberspringt dann Ziele innerhalb von lb).
+        "lb.addEventListener('keydown',function(e){"
+        "if(e.key==='Escape'){close();return;}"
+        "if(e.key!=='Tab')return;"
+        # Sichtbarkeit ueber Box-Groesse: das Like-Clear hat display:inline-flex
+        # und damit sichtbar, auch wenn hidden gesetzt ist.
+        "var f=[].slice.call(lb.querySelectorAll('button'))"
+        ".filter(function(b){return b.offsetWidth>0||b.offsetHeight>0;});"
+        "if(!f.length)return;var first=f[0],last=f[f.length-1];"
+        "if(e.shiftKey&&(document.activeElement===first||document.activeElement===lb)){"
+        "e.preventDefault();last.focus();}"
+        "else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}"
+        "});"
         "document.getElementById('lbx').addEventListener('click',close);"
         "document.getElementById('lbprev').addEventListener('click',function(e){e.stopPropagation();nav(-1);});"
         "document.getElementById('lbnext').addEventListener('click',function(e){e.stopPropagation();nav(1);});"
@@ -1278,9 +1303,12 @@ def _social_js(store, gid, sort_likes=False):
 
 
 def _thumb_cell(store, pid, m, likes=0):
-    """One grid cell: thumb + like button (delegated clicks, no-JS = link)."""
+    """One grid cell: thumb + like button (delegated clicks, no-JS = link).
+    1.39.1 a11y: the anchor gets a real accessible name (the thumb img is
+    decorative, alt=''), otherwise screen readers announce a nameless link."""
     n = f"<span class=n data-n={likes}>{likes or ''}</span>"
-    return (f"<a href='{store.PREFIX}/pics/i/{pid}'>"
+    name = store._html_escape(m.get("name") or pid)
+    return (f"<a href='{store.PREFIX}/pics/i/{pid}' aria-label='{name} – groß öffnen'>"
             f"<img loading=lazy decoding=async alt='' "
             f"src='{store.PREFIX}/pics/i/{pid}?thumb=1'>"
             f"<button type=button class=lk data-pid={pid} aria-pressed=false "

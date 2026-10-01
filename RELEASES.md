@@ -1,9 +1,43 @@
 # throway — Releases
 
-**Current version:** `1.39.0`
+**Current version:** `1.39.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.39.1 — 2026-10-01
+
+### Pics-Lightbox: W3C-ARIA-Dialog-Muster (a11y)
+
+Review gegen den W3C ARIA APG Dialog-Modal Pattern ergab sechs
+Lücken, die jetzt geschlossen sind:
+
+- **`aria-modal=true`** (Pflicht laut APG): Screenreader nehmen den
+  Hintergrund hinter dem Overlay jetzt als inaktiv wahr.
+- **Fokusfalle**: Tab/Shift-Tab bleiben im Dialog (zyklisch über die
+  sichtbaren Buttons) — vorher konnte die Tastatur aus der Lightbox in
+  die Galerie flüchten, die Modalität war nur optisch.
+- **Fokus-Rückgabe**: beim Schließen (Close, Esc, Backdrop) landet der
+  Fokus wieder auf dem Thumbnail, das den Dialog geöffnet hat
+  (APG-Kernregel).
+- **`alt` an `#lbimg`** = Bildname; ein leeres `alt` ist bei einem
+  Foto-Viewer falsch (es markiert das Bild als dekorativ).
+- **Caption als `aria-live=polite`**: „3 von 24" wird beim Blättern
+  vorgelesen.
+- **Thumb-Anchor mit Accessible Name** („<name> – groß öffnen"); das
+  Thumb-Bild ist dekorativ (`alt=''`), der Link hatte sonst keinen
+  Namen.
+
+Details: `open()` setzt den Fokus auf `#lb` (tabindex=-1), Escape liegt
+deshalb im `keydown` des Containers (der dokumentweite Handler
+überspringt Ziele innerhalb von `lb`), der Fokusfalle zählen sichtbare
+Buttons (das Like-Clear hat `display:inline-flex` und ist auch bei
+`hidden` sichtbar — ein `:not([hidden])`-Filter wäre falsch gewesen).
+
+Browser-Nachweis (rodney): Fokus im Dialog nach Öffnen, 5× Tab bleibt
+drin, Escape schließt, Fokus zurück auf dem Thumbnail. Suite: 82 Tests.
 
 ---
 
