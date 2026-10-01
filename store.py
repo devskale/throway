@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.39.1"
+VERSION = "1.39.2"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -868,8 +868,10 @@ def _is_thumbable(ctype):
     return bool(ctype) and ctype.startswith("image/") and ctype != "image/svg+xml"
 
 
-def _make_thumb(fpath, tpath):
+def _make_thumb(fpath, tpath, px=None):
     """Create a small WebP thumbnail for the image at fpath (Pillow).
+    px = longest edge (defaults to THUMB_PX; srcset candidates pass their
+    own width -> one cached file per width next to the original).
     Respects EXIF rotation (phone photos), flattens transparency onto white,
     and writes to a temp file + atomic replace so a concurrent request never
     sees a half-written thumb. Raises on failure — callers fall back to
@@ -888,7 +890,7 @@ def _make_thumb(fpath, tpath):
                 im = bg
             elif im.mode != "RGB":
                 im = im.convert("RGB")
-            im.thumbnail((THUMB_PX, THUMB_PX))
+            im.thumbnail((px or THUMB_PX, px or THUMB_PX))
             im.save(tmp, "WEBP", quality=THUMB_QUALITY, method=4)
         os.replace(tmp, tpath)
     except Exception:
@@ -1097,17 +1099,18 @@ class Handler(BaseHTTPRequestHandler):
                 while c := f.read(65536):
                     self.wfile.write(c)
 
-    def _serve_thumb(self, fpath, ctype):
-        """Serve ?thumb=1: a small cached WebP preview for images.
-        Generated lazily on first request, cached on disk as <file>.thumb so
-        the CPU cost is paid once per file, not per view. Falls back to the
-        original bytes if the type isn't thumbable (SVG) or generation fails,
-        so <img src='…?thumb=1'> always shows something."""
-        tp = fpath + ".thumb"
+    def _serve_thumb(self, fpath, ctype, px=None):
+        """Serve ?thumb[=N]: a small cached WebP preview for images.
+        Generated lazily on first request, cached on disk as <file>.thumb
+        (or <file>.thumb<N> for a srcset candidate width) so the CPU cost
+        is paid once per file+width, not per view. Falls back to the
+        original bytes if the type isn't thumbable (SVG) or generation
+        fails, so <img src='…?thumb=1'> always shows something."""
+        tp = fpath + (".thumb" if not px else f".thumb{int(px)}")
         usable = _is_thumbable(ctype) and os.path.isfile(tp)
         if _is_thumbable(ctype) and not usable:
             try:
-                _make_thumb(fpath, tp)
+                _make_thumb(fpath, tp, px)
                 usable = True
             except Exception:
                 usable = False

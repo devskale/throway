@@ -366,6 +366,31 @@ def test_embed_lightbox_grows_with_infinite_scroll(srv):
     assert "getBoundingClientRect().top" in p2
 
 
+def test_responsive_thumbs_srcset(srv):
+    """1.39.2: responsive Thumbnails — srcset/sizes auf den Grid-Thumbs,
+    ?thumb=N serviert die Kandidatenbreiten (Whitelist, Cache pro Breite).
+    src=640w ist der Chrome-lazy-Fallback (scharf statt 96px pixelig)."""
+    _, g = create(srv)
+    pid = up(srv, g["id"], jpeg(600, 400, (3, 5, 7)), "foto.jpg")["id"]
+    st, _, page = srv.get(f"/pics/g/{g['id']}", headers=BROWSER)
+    p = page.decode()
+    # srcset mit w-Deskriptoren + sizes
+    assert "srcset='" in p and "thumb=160 160w" in p and "thumb=640 640w" in p
+    assert "sizes='(max-width:420px) 46vw" in p
+    # src-Fallback = groesster Kandidat (Chrome+lazy nimmt src zuerst)
+    # src-Fallback: groesster Kandidat direkt vor srcset (Chrome+lazy)
+    assert "thumb=640' srcset='" in p
+    assert "loading=lazy decoding=async" in p
+    assert "<noscript>" in p
+    # Kandidatenbreiten werden serviert; Whitelist faellt auf Default
+    for w, exp_min in ((160, 100), (320, 250), (640, 500)):
+        st, hd, body = srv.get(f"/pics/i/{pid}?thumb={w}", headers=AGENT)
+        assert st == 200 and hd["Content-Type"] == "image/webp"
+        assert len(body) > 0 and exp_min // 2 <= len(body)   # plausibel skaliert
+    st, _, body = srv.get(f"/pics/i/{pid}?thumb=1", headers=AGENT)
+    assert st == 200 and len(body) > 0                       # Default unveraendert
+
+
 def test_lightbox_a11y_dialog_pattern(srv):
     """1.39.1: W3C ARIA APG Dialog-Modal — aria-modal, Fokus wandert in den
     Dialog, Tab-Falle, Fokus-Rueckgabe zum Thumbnail, alt= Bildname,

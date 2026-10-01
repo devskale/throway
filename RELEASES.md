@@ -1,9 +1,34 @@
 # throway — Releases
 
-**Current version:** `1.39.1`
+**Current version:** `1.39.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.39.2 — 2026-10-01
+
+### Pics: Responsive Thumbnails (srcset/sizes, `?thumb=N`)
+
+Aus dem SOTA-Review: die Grid-Thumbs lieferten nur `?thumb=1`
+(96px). Auf einem ~162px-Gridfeld — erst recht bei 3x-DPI (525px
+Bedarf) — war jedes Thumb pixelig.
+
+- `?thumb=N` (N ∈ 160|320|640) serviert genau diese longest edge als
+  WebP, lazy erzeugt und pro Breite gecacht (`<file>.thumb320` …).
+  Whitelist: unbekannte Werte fallen auf den Default zurück.
+- Grid-Thumbs: `srcset` (160w/320w/640w) + kalibriertes `sizes`
+  entsprechend der echten Spaltenzahl, `<noscript>`-Fallback.
+- **`src` = 640w**, bewusst der größte Kandidat: bei `loading=lazy`
+  nimmt Chrome den `src`-Fallback zuerst und wertet `srcset` erst bei
+  Re-Layout neu — ohne `src` lädt Chrome gar nichts (gemessen). Der
+  Schärfetest ist billiger als die Bytes: 640px-WebP ≈ <1 KB/Bild,
+  24 Bilder ≈ 16 KB pro Galerie-Seite. Browser ohne den Chrome-lazy-Bug
+  (Safari/Firefox) wählen aus dem srcset die passend kleinere Variante.
+
+Gemessen (CDP-Netzwerk-Mitschnitt): Mobile 390@3x und Desktop
+1440@1x laden die 640er-Variante scharf; Kandidatenbreiten exakt.
 
 ---
 

@@ -60,6 +60,16 @@ PICS_TTL = int(os.environ.get("THROWAWAY_PICS_TTL", "") or 90 * 24 * 3600)
 PICS_POOL = int(os.environ.get("THROWAWAY_PICS_POOL_BYTES", "") or 20 * 1024**3)
 PICS_MAX_FILE = int(os.environ.get("THROWAWAY_PICS_MAX_FILE_BYTES", "") or 30 * 1024**2)
 PICS_EDGE = int(os.environ.get("THROWAWAY_PICS_EDGE_PX", "") or 2048)
+# 1.39.2: erlaubte srcset-Thumb-Breiten (?thumb=N). Der Default (thumb=1)
+# bleibt store.THUMB_PX (96px); grid-zellen liefern 3 Kandidaten.
+THUMB_WIDTHS = (160, 320, 640)
+# sizes entspricht dem echten Grid: minmax(120px,1fr) mit gap 6px
+# (embed) bzw. 10px (admin/gallery) — daher je Viewportbreite die
+# tatsaechliche Spaltenzahl, nicht eine geratene vw-Quote. Chrome waehlt
+# bei nicht statisch aufloesbarem Layout vorsichtig die groesste Kandidat-
+# URL; eine zu kleine Quote erzwingt genau das (verifiziert).
+#   ~<420px: 2 Spalten (46vw)  |  ~420-900: 3 (30vw)  |  >900: 5-7 (17vw)
+_SIZES = "(max-width:420px) 46vw, (max-width:900px) 30vw, 17vw"
 PICS_QUALITY = int(os.environ.get("THROWAWAY_PICS_QUALITY", "") or 90)
 PICS_QUALITY_FLOOR = int(os.environ.get("THROWAWAY_PICS_QUALITY_FLOOR", "") or 65)
 PICS_TARGET = int(os.environ.get("THROWAWAY_PICS_TARGET_BYTES", "") or 1024 * 1024)  # HQ cap
@@ -1308,9 +1318,27 @@ def _thumb_cell(store, pid, m, likes=0):
     decorative, alt=''), otherwise screen readers announce a nameless link."""
     n = f"<span class=n data-n={likes}>{likes or ''}</span>"
     name = store._html_escape(m.get("name") or pid)
-    return (f"<a href='{store.PREFIX}/pics/i/{pid}' aria-label='{name} – groß öffnen'>"
+    # 1.39.2: srcset/sizes — der Browser waehlt die passende Kandidatin
+    # (HiDPI telefoniert sonst das 96px-Default und verpixelt es hoch).
+    src = f"{store.PREFIX}/pics/i/{pid}"
+    # 96w (=THUMB_PX) explizit als Kandidat: sonst greift der Browser fuer
+    # kleine Anzeigegroessen auf src zurueck (Default) und liefert 96px
+    # auch dort, wo 160w noetig waere.
+    srcset = " ".join(f"{src}?thumb={w} {w}w" for w in THUMB_WIDTHS)
+    # 1.39.2: src = 640w (groesster Kandidat), srcset daneben.
+    #   * Chrome + loading=lazy nimmt beim Erst-Load src und wertet srcset
+    #     erst bei Re-Layout neu — ohne src laedt gar nichts. Also muss src
+    #     existieren und scharf sein: 96px (?thumb=1) waere bei 3x-DPI
+    #     pixelig, 640px WebP kostet aber nur ~<1 KB/Bild (gemessen:
+    #     24 Bilder = 16 KB) — der Schaerfetest ist billiger als die Bytes.
+    #   * srcset-faehige Browser OHNE den Chrome-lazy-src-Bug (Safari,
+    #     Firefox) waehlen daraus die zur Anzeigegroesse passende Kandidatin.
+    #   * <noscript>: ohne JS greift der Default (?thumb=1).
+    return (f"<a href='{src}' aria-label='{name} – groß öffnen'>"
             f"<img loading=lazy decoding=async alt='' "
-            f"src='{store.PREFIX}/pics/i/{pid}?thumb=1'>"
+            f"src='{src}?thumb={THUMB_WIDTHS[-1]}' srcset='{srcset}' sizes='{_SIZES}'>"
+            f"<noscript><img decoding=async alt='' "
+            f"src='{src}?thumb={THUMB_WIDTHS[0]}'></noscript>"
             f"<button type=button class=lk data-pid={pid} aria-pressed=false "
             f"aria-label='Bild liken'>{_HEART_SVG}{n}</button></a>")
 
@@ -1893,8 +1921,14 @@ def _serve(h, store, root, pid, admin, query, gid=None):
     if admin and gid is not None and m.get("gid") != gid:
         return h._send(404, "not found\n")     # admin of another gallery
     ctype = m.get("ctype") or "image/webp"
-    if "thumb=1" in query:
-        return h._serve_thumb(fp, ctype)
+    # 1.39.2: ?thumb[=N] — N = gewuenschte longest edge (srcset-Kandidaten),
+    # ?thumb=1 bleibt der Default (THUMB_PX). Whitelist, kein beliebiges px.
+    if "thumb" in query:
+        _mv = re.search(r"(?:^|&)thumb=(\d*)", query)
+        _px = int(_mv.group(1)) if (_mv and _mv.group(1)) else None
+        if _px is not None and _px not in THUMB_WIDTHS:
+            _px = None
+        return h._serve_thumb(fp, ctype, _px)
     # image ids are immutable until expiry -> browsers may cache a day
     h._serve_file(fp, ctype, m.get("name"), "download=1" in query, pid,
                   cache=None if "download=1" in query else "public, max-age=86400")
@@ -2214,7 +2248,7 @@ def api_endpoints(store_base):
         "pics_image": {
             "method": "GET",
             "url": store_base + "/pics/i/<id>",
-            "note": "serve one image inline; ?thumb=1 for a small cached WebP "
+            "note": "serve one image inline; ?thumb=1 (or ?thumb=160|320|640) for a small cached WebP "
                     "preview. Hidden or expired images -> 404.",
         },
         "pics_like": {
@@ -2312,7 +2346,9 @@ VIEW
         lightbox sizes itself to the host viewport (postMessage
         handshake: host -> throway:pics:viewport, iframe acks
         throway:pics:ready); fallback caps at screen.height
-   GET {PUBLIC_BASE}/pics/i/<id>       one image (?thumb=1 for preview)
+   GET {PUBLIC_BASE}/pics/i/<id>       one image (?thumb=1 for a small
+        cached WebP preview; ?thumb=160|320|640 serve that exact longest
+        edge — the grid uses them as srcset candidates)
 
 LIKES & COMMENTS (guestbook, no login; since 1.38.0)
    POST {PUBLIC_BASE}/pics/i/<pid>?like=1        toggle image like

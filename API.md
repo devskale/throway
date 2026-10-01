@@ -52,9 +52,10 @@ curl -A curl "$BASE/pics/g/hochzeit-2026"
 # index (only listed=1 galleries)
 curl -A curl "$BASE/pics"
 
-# one image / its thumbnail
+# one image / its thumbnail (?thumb=1 default, ?thumb=160|320|640 exact)
 curl "$BASE/pics/i/<id>"
 curl "$BASE/pics/i/<id>?thumb=1"
+curl "$BASE/pics/i/<id>?thumb=320"
 ```
 
 ### Likes & comments (since 1.38.0)
