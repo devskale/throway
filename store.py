@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.40.1"
+VERSION = "1.40.2"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -3436,6 +3436,14 @@ def _index(self):
 # patch _index into Handler
 Handler._index = _index
 
+class StoreServer(ThreadingHTTPServer):
+    # 1.40.2: Default-Backlog ist 5 — H2-Bursts des Browsers öffnen über
+    # nginx Dutzende gleichzeitige Upstream-Verbindungen; Überläufe kosteten
+    # ~1 s SYN-Retransmit pro betroffenem Request (sichtbar als ~1,2-s-Stalls
+    # im Galerie-Burst). 128 schluckt Bursts, ohne den Accept-Loop zu ändern.
+    request_queue_size = 128
+
+
 if __name__ == "__main__":
     sweep()
     try:                                        # 1.40.0: fehlende Thumbs nachreichen
@@ -3444,4 +3452,4 @@ if __name__ == "__main__":
     except Exception:
         pass
     print(f"store on :{PORT} root={ROOT} ttl={TTL_HOURS}h")
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    StoreServer(("0.0.0.0", PORT), Handler).serve_forever()

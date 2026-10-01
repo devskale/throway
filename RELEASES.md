@@ -1,9 +1,32 @@
 # throway — Releases
 
-**Current version:** `1.40.1`
+**Current version:** `1.40.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.40.2 — 2026-10-01
+
+### Accept-Backlog 128 + nginx Thumb-Cache
+
+Zwei letzte Latenz-Hebel aus dem Galerie-Burst-Profiling (der H2-Burst
+eines Browsers feuert Dutzende Thumb-Requests quasi gleichzeitig):
+
+- **`request_queue_size = 128`** (war Pythons Default 5): Überschläge im
+  Listen-Backlog kosteten betroffene Requests ~1 s SYN-Retransmit —
+  sichtbar als die ~1,2-s-Stalls im Galerie-Burst (loopback reproduzier-
+  bar). Accept-Verhalten selbst unverändert.
+- **nginx `proxy_cache` für Thumbs** (Server-Konfig, nicht Repo-Code):
+  Zone `throway_thumbs` (300 MB, inactive 24 h) in
+  `conf.d/throway-cache.conf`, map cacht NUR
+  `/throway/pics/i/<id>?…thumb=…` — volle Bilder, Uploads, API, HTML und
+  Admin-Routen laufen BYPASS zur App (Moderation bleibt live).
+  `X-Cache-Status` als Response-Header. Validity 1 h = Trade-off:
+  gelöschte/versteckte Bilder können bis 1 h als Thumb nachlesbar sein.
+  Vorher nachher (H2-parallel über WAN): Ø TTFB 165 ms = reine RTT,
+  Stalls nur noch Netzwerk-Jitter.
 
 ---
 
