@@ -1,9 +1,36 @@
 # throway — Releases
 
-**Current version:** `1.39.3`
+**Current version:** `1.40.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.40.0 — 2026-10-01
+
+### Pics: Thumb-Warmer — alle srcset-Breiten vor dem ersten Request
+
+Nach 1.39.3 (429-Fix) blieb der letzte Langsam-Faktor: die
+Cold-Generation. Der erste Besucher zahlte ~0,3–0,5 s CPU (Pillow
+decode/resize/encode) pro (Bild, Breite) — bei 102 Bildern füllten
+sich die unteren Grid-Zellen sichtbar langsamer als die oberen.
+
+- Neuer Daemon-Worker (`pics-thumb-warmer`, FIFO-Queue): erzeugt alle
+  Whitelist-Breiten (160/320/640) im Hintergrund — nach jedem
+  Upload/Import und beim Serverstart (`warm_existing()` nachrechnen
+  für Bestände; idempotent, nur fehlende Paare, Neustarts danach
+  No-Ops). `sleep(50 ms)` zwischen Generierungen, Pillow gibt die GIL
+  her — Requests bleiben bedient.
+- DI statt `import store` im Worker: store hat modul-level
+  Side-Effects (ROOT-Bootstrap), ein zweiter Import wäre ein zweiter
+  Store. `pics.set_thumb_maker()` wird von store.py main registriert,
+  Tests injizieren ihre eigene Maker-Funktion.
+- Tests: Warmer erzeugt nach Upload alle 3 Breiten ohne Request
+  (echte WebPs, korrekte Kanten); Backfill reicht gezielt NUR die
+  gelöschte Breite nach.
+- Effekt (Gemessen am Soundspritzer-Bestand): Cold Ø 1,3 s/Thumb →
+  warm Ø ~0,3 s/Thumb (Netz-RTT), Galerien laden komplett vorgecached.
 
 ---
 

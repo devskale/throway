@@ -987,3 +987,67 @@ def test_admin_json_and_page_show_comments(srv):
     assert d["comments"][0]["text"] == "text"
     st, _, html = srv.get(adm, headers=BROWSER)
     assert "cdel" in html.decode()
+
+
+def _thumbs_present(s, pid):
+    return [w for w in (160, 320, 640)
+            if os.path.isfile(os.path.join(s.root, "pics", f"{pid}.thumb{w}"))]
+
+
+def _wait_thumbs(s, pid, timeout=10):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if len(_thumbs_present(s, pid)) == 3:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_thumb_warmer_after_upload(srv):
+    """1.40.0: der Warmer erzeugt alle srcset-Breiten im Hintergrund —
+    ohne dass ein Request ?thumb=N anfasst. Cold-Ladezeit für den ersten
+    Galerie-Besucher fällt auf warme Disk-Cache-Lesezeiten."""
+    _, g = create(srv)
+    m = up(srv, g["id"])
+    assert _wait_thumbs(srv, m["id"]), (
+        f"Warmer hat nicht alle Breiten erzeugt: {_thumbs_present(srv, m['id'])}")
+    # und die erzeugten Thumbs sind echte WebPs
+    from PIL import Image
+    for w in (160, 320, 640):
+        p = os.path.join(srv.root, "pics", f"{m['id']}.thumb{w}")
+        with Image.open(p) as im:
+            assert max(im.size) == w, f"thumb{w}: falsche Kante {im.size}"
+
+
+def test_thumb_warmer_startup_backfill(srv):
+    """1.40.0: warm_existing() reicht beim Start fehlende Thumbs des
+    Bestands nach (idempotent, nur fehlende (Bild,Breite)-Paare).
+    Der Maker wird injiziert (store-Import hat Side-Effects) und muss
+    GENAU die fehlende Breite sehen — vorhandene bleiben unangetastet."""
+    import throway.pics as pics
+    _, g = create(srv)
+    m = up(srv, g["id"])
+    assert _wait_thumbs(srv, m["id"])        # Upload-Warmup (Server-Prozess)
+    # thumb320 löschen → warm_existing muss NUR diesen nachreichen
+    os.remove(os.path.join(srv.root, "pics", f"{m['id']}.thumb320"))
+    seen = []
+
+    def fake_maker(fp, tp, px):
+        seen.append((os.path.basename(fp), px))
+        with open(tp, "wb") as f:
+            f.write(b"fake")
+
+    pics.set_thumb_maker(fake_maker)
+    try:
+        pics.warm_existing(srv.root)
+        deadline = time.time() + 10
+        while time.time() < deadline and not os.path.isfile(
+                os.path.join(srv.root, "pics", f"{m['id']}.thumb320")):
+            time.sleep(0.1)
+        assert os.path.isfile(
+            os.path.join(srv.root, "pics", f"{m['id']}.thumb320"))
+        # nur die fehlende Breite wurde erzeugt, nichts anderes angefasst
+        assert (f"{m['id']}", 320) in seen
+        assert all(px == 320 for _, px in seen)
+    finally:
+        pics.set_thumb_maker(None)

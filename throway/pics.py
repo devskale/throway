@@ -49,8 +49,10 @@ import hmac
 import io
 import json
 import os
+import queue
 import re
 import secrets
+import threading
 import time
 
 # --- config (own env family, like THROWAWAY_*) ----------------------------
@@ -339,6 +341,75 @@ def _sorted_visible(items, likes=None):
     return vis
 
 
+# --- thumb warmer (1.40.0) -----------------------------------------------
+# Cold-Generation war der letzte Langsam-Faktor beim Galerie-Laden: der
+# ERSTE Besucher zahlte ~0,3-0,5 s CPU (Pillow decode/resize/encode) fuer
+# jede (Bild, Breite)-Kombination — bei 102 Bildern fuellten sich die
+# letzten Grid-Zellen langsamer als die ersten. Der Warmer erzeugt alle
+# Whitelist-Breiten VOR dem ersten Request: nach jedem Upload/Import und
+# beim Serverstart (Bestand nachreichen, idempotent). Ein Daemon-Worker
+# mit FIFO-Queue, best effort: Fehler werden verworfen, Requests haben
+# Vorrang (Pillow gibt die GIL her, sleeps halten CPU/IO zivil).
+
+_warm_q = queue.Queue()
+_warm_started = False
+_make_thumb_cb = None      # von store.py registriert (DI — kein store-Import:
+                           # store hat modul-level Side-Effects, ein zweiter
+                           # Import wäre ein zweiter Store)
+
+
+def set_thumb_maker(fn):
+    """store.py (bzw. Tests) registriert hier seine _make_thumb-Funktion."""
+    global _make_thumb_cb
+    _make_thumb_cb = fn
+
+
+def _warm_worker():
+    while True:
+        root, pid = _warm_q.get()
+        try:
+            fp = _path(root, pid)
+            if not os.path.isfile(fp):
+                continue                 # inzwischen abgelaufen/gelöscht
+            for w in THUMB_WIDTHS:
+                tp = f"{fp}.thumb{w}"
+                if os.path.isfile(tp):
+                    continue             # schon da (Request hat gewonnen)
+                try:
+                    if _make_thumb_cb:
+                        _make_thumb_cb(fp, tp, w)
+                except Exception:
+                    pass                 # best effort — Request fällt auf
+                time.sleep(0.05)         # Generierung zurück, nie vollständig
+        finally:
+            _warm_q.task_done()
+
+
+def _warm_kick(root, pid):
+    global _warm_started
+    if not _warm_started:
+        _warm_started = True
+        threading.Thread(target=_warm_worker, daemon=True,
+                         name="pics-thumb-warmer").start()
+    _warm_q.put((root, pid))
+
+
+def warm_existing(root):
+    """Serverstart: fehlende Thumbs des Bestands nachreichen (idempotent —
+    nur (Bild, Breite)-Paare ohne Datei auf der Platte landen in der Queue;
+    nach dem ersten vollen Warm-Lauf sind Neustarts daher No-Ops).
+    Setzt voraus, dass set_thumb_maker() gerufen wurde (macht store.py main)."""
+    d = _dir(root)
+    if not os.path.isdir(d):
+        return
+    for f in os.listdir(d):
+        if not f.endswith(".meta"):
+            continue
+        pid = f[:-5]
+        if _HEX.match(pid) and os.path.isfile(_path(root, pid)):
+            _warm_kick(root, pid)
+
+
 def store_pic(root, data, name, ip, gid, dedupe=True):
     """Process and store one upload into gallery gid. Returns (pid, meta,
     duplicate). With dedupe, an identical image (sha256 of the stored
@@ -384,6 +455,7 @@ def store_pic(root, data, name, ip, gid, dedupe=True):
         store._bump_since_start(1, len(out))
     except Exception:
         pass                                    # stats are cosmetic — never fail an upload
+    _warm_kick(root, pid)                       # 1.40.0: Thumbs vorwärmen
     return pid, meta, False
 
 

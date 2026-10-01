@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.39.3"
+VERSION = "1.40.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -3438,5 +3438,10 @@ Handler._index = _index
 
 if __name__ == "__main__":
     sweep()
+    try:                                        # 1.40.0: fehlende Thumbs nachreichen
+        pics.set_thumb_maker(_make_thumb)
+        pics.warm_existing(ROOT)
+    except Exception:
+        pass
     print(f"store on :{PORT} root={ROOT} ttl={TTL_HOURS}h")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
