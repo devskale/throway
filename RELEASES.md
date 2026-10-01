@@ -23,8 +23,10 @@ Request #101 für den Rest des 60-s-Fensters — Chrome zeigte die
   volle Bilder, Uploads und API zählen weiterhin).
 - Test `test_thumbs_dont_consume_rate_limit` läuft jetzt über alle
   vier Breiten (1|160|320|640) — 40 Thumb-Requests bei Limit 5.
-- Gemessen vorher/nachher (Chrome, 102 Bilder): avg 2,2 s/Thumb mit
-  429-Wartefenstern → ohne Limit alle Thumbs < 1 s TTFB.
+- Gemessen vorher/nachher (Chrome, 102 Bilder): vorher avg 2,2 s/Thumb
+  inkl. 429-Wartefenstern, Requests #101+ garnicht → nachher: Cold
+  (Erzeugung on-the-fly) avg 1,3 s/Thumb, warm (Disk-Cache) avg 0,29 s
+  — Rest-Optimierungsidee: Thumbs beim Upload vorwärmen.
 
 ---
 
