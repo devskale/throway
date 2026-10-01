@@ -1,9 +1,41 @@
 # throway — Releases
 
-**Current version:** `1.40.2`
+**Current version:** `1.40.3`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.40.3 — 2026-10-01
+
+### Retro-Umsetzung: Agent-Umgebung gehärtet (P1–P4, nachgezogen)
+
+Versions-Hinweis: Diese Änderungen landeten zunächst als Commit mit
+Betreff „1.39.3" — **Kollision mit einer parallelen Session** (die
+zwischenzeitlich 1.39.3/1.40.0–1.40.2 gelandet hatte; der Thumb-Warmer
+1.40.0 baut direkt auf dem srcset aus 1.39.2 auf). Nachgezogen als
+1.40.3, damit Commit-Betreff und VERSION wieder zusammenpassen.
+
+Inhalt (kein Runtime-Code):
+
+- **`scripts/patch.py` (P1):** Anker prüfen → ersetzen → im Speicher
+  kompilieren → erst dann atomisch schreiben (der 1.39.0-Patch hatte
+  `pics.py` mit SyntaxError auf der Platte hinterlassen). CODING_RULES
+  um die Reihenfolge ergänzt.
+- **`scripts/browser-probe.py` (P2):** Ein CDP-Helfer statt fünf
+  Wegwerf-Scripts pro Session — emulate/open/eval/marker/net gegen den
+  rodney-Chrome, legt fehlende Page-Targets selbst an. Verifiziert:
+  Emulation 390×844@3x, Frame-eval, Marker-Exitcodes, Thumb-Netzwerk-
+  Mitschnitt.
+- **AGENTS.md entwirrt (P3):** Bumppush-Absatz sagte zweimal
+  Gegenteiliges (Minor- vs. Patch-Default), rsync-Zeile widersprach
+  CODING_RULES. Jetzt eine Semantik-Policy + Verweis auf den
+  CODING_RULES-Deploy-Befehl.
+- **ruff in CI (P4):** eigener `lint`-Job (E9+F), Kalibrierung in
+  `ruff.toml`; 9 Auto-Fixes + 2 tote Test-Locals bereinigt.
+
+Suite: 86 Tests grün, ruff grün.
 
 ---
 
