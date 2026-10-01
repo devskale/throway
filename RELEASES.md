@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.39.2`
+**Current version:** `1.39.3`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.39.3 — 2026-10-01
+
+### Fix: Galerie-429s — Thumb-Exemption deckt jetzt alle srcset-Breiten
+
+Der Soundspritzer-Galerie-Report („Laden der Thumbs extrem langsam,
+~30 s“): 1.39.2 stellte die Grid-Thumbs auf `?thumb=160|320|640` um
+(srcset) — die Rate-Limit-Exemption in `do_GET` prüfte aber weiter
+literal `"thumb=1"`. `thumb=320`/`thumb=640` fielen dadurch unter den
+Zähler (`100 req/min` pro IP): jede Galerie mit >100 Bildern 429te ab
+Request #101 für den Rest des 60-s-Fensters — Chrome zeigte die
+übrigen Thumbs erst nach Ablauf des Fensters.
+
+- Exemption jetzt `"thumb=" not in _q` (alle Whitelist-Breiten;
+  volle Bilder, Uploads und API zählen weiterhin).
+- Test `test_thumbs_dont_consume_rate_limit` läuft jetzt über alle
+  vier Breiten (1|160|320|640) — 40 Thumb-Requests bei Limit 5.
+- Gemessen vorher/nachher (Chrome, 102 Bilder): avg 2,2 s/Thumb mit
+  429-Wartefenstern → ohne Limit alle Thumbs < 1 s TTFB.
 
 ---
 

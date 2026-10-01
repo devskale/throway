@@ -603,18 +603,22 @@ def test_store_surface_unaffected(srv):
 
 def test_thumbs_dont_consume_rate_limit(tmp_path):
     """1.30.0: gallery pages fire 60 thumbs — thumbs stay outside the rate
-    counter (two full pages/minute would 429 from request #101)."""
+    counter (two full pages/minute would 429 from request #101).
+    1.39.3-Regression: der Exempt-Test pruefte literal "thumb=1" — die
+    1.39.2er srcset-Breiten thumb=320/thumb=640 wurden MITGEZAHLT und
+    429ten jede Galerie ab Request #101. Alle Whitelist-Breiten testen."""
     s = Server(tmp_path / "rl", env_extra={"THROWAWAY_RATE_LIMIT": "5"})
     try:
         _, g = create(s)
         m = up(s, g["id"])
-        # 10 thumb requests: none may hit the limit
-        for _ in range(10):
-            st, hd, _ = s.get(f"/pics/i/{m['id']}?thumb=1")
-            assert st == 200, "thumb wurde gelimitet"
-            assert hd.get("Cache-Control") == "public, max-age=3600"
+        # 10 Requests pro Whitelist-Breite: keine darf das Limit treffen
+        for w in ("1", "160", "320", "640"):
+            for _ in range(10):
+                st, hd, _ = s.get(f"/pics/i/{m['id']}?thumb={w}")
+                assert st == 200, f"thumb={w} wurde gelimitet"
+                assert hd.get("Cache-Control") == "public, max-age=3600"
         # non-thumb requests still count (setup already used ~3 of the 5;
-        # the 10 thumbs above must NOT have consumed any)
+        # the 40 thumbs above must NOT have consumed any)
         codes = [s.get(f"/pics/i/{m['id']}")[0] for _ in range(6)]
         assert 429 in codes, "limit gilt weiterhin fuer non-thumb-requests"
     finally:

@@ -73,7 +73,7 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 PREFIX = "/throway"
 
 # semantic version + single source of truth for release notes
-VERSION = "1.39.2"
+VERSION = "1.39.3"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1235,12 +1235,17 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
-        # ?thumb=1 requests are cached micro-WebPs; a gallery page fires 60
-        # of them, so they stay OUTSIDE the rate counter (full images,
-        # uploads and API calls still count). Two full gallery pages per
-        # minute would otherwise 429 from request #101.
+        # ?thumb=N requests (N ∈ 1|160|320|640) are cached micro-WebPs; a
+        # gallery page fires 60+ of them (srcset wählt pro Feld EINE Breite),
+        # so they stay OUTSIDE the rate counter (full images, uploads and
+        # API calls still count). Two full gallery pages per minute would
+        # otherwise 429 from request #101.
+        # 1.39.3-Fix: der Test prüfte literal "thumb=1" — die seit 1.39.2
+        # ausgelieferten srcset-Breiten thumb=320/thumb=640 fielen dadurch
+        # UNTER den Zähler und 429ten jede Galerie ab Request #101
+        # (Sichtbar als ~30 s Leerlauf beim Galerie-Laden).
         _q = self.path.split("?", 1)[1] if "?" in self.path else ""
-        if not self._rate(count="thumb=1" not in _q): return
+        if not self._rate(count="thumb=" not in _q): return
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path in ("/", ""):
             if self._is_agent():
