@@ -81,10 +81,14 @@ class Server:
             "THROWAWAY_PICS_ADMIN_TOKEN": "testtoken123",
         })
         env.update(env_extra or {})
+        # Retro 2026-10-01 (P6): das Log-Handle merken und in stop()
+        # schliessen — sonst hinterlaesst jeder Test-Server eine
+        # ungeschlossene Datei (117 ResourceWarnings im Suite-Lauf).
+        self._log = open(stdout_path or os.path.join(tmpdir, "server.log"), "wb")
         self.proc = subprocess.Popen(
             [VENV_PY, os.path.join(app, "store.py")],
             env=env, cwd=app,
-            stdout=open(stdout_path or os.path.join(tmpdir, "server.log"), "wb"),
+            stdout=self._log,
             stderr=subprocess.STDOUT,
         )
         self.base = f"http://127.0.0.1:{self.port}"
@@ -143,6 +147,10 @@ class Server:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+        try:
+            self._log.close()          # P6: kein unclosed-file-Warning
+        except Exception:
+            pass
 
 
 # --- Retro 2026-09-27 (Befund 7): server.log in den Fehlerbericht -------

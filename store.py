@@ -69,10 +69,14 @@ RESERVED_NAMES = {
 }
 
 PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway")
-PREFIX = "/throway"
+# URL-Prefix der Ausgabe-Links. Retro 2026-10-01 (P6): im Prod steht nginx
+# davor, lokal (store.py direkt gestartet) serviert der Server an "/" — mit
+# THROWAWAY_PREFIX="" zeigen alle generierten Links dann auf denselben Origin
+# (kein Reverse-Proxy noetig, um Browser-Tests lokal zu fahren).
+PREFIX = os.environ.get("THROWAWAY_PREFIX", "/throway").rstrip("/")
 
 # semantic version + single source of truth for release notes
-VERSION = "1.40.3"
+VERSION = "1.41.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -256,7 +260,8 @@ def _bundle_meta(dirpath, fid):
     mp = os.path.join(dirpath, fid + ".meta")
     if os.path.isfile(mp):
         try:
-            return json.load(open(mp))
+            with open(mp, "r", encoding="utf-8") as _f:
+                return json.load(_f)
         except Exception:
             pass
     return None
@@ -284,7 +289,8 @@ def sweep():
             expires = None
             if os.path.isfile(mp):
                 try:
-                    expires = json.load(open(mp)).get("expires")
+                    with open(mp, "r", encoding="utf-8") as _f:
+                        expires = json.load(_f).get("expires")
                 except Exception:
                     pass
             if expires is None:
@@ -526,7 +532,8 @@ def _dir_meta(key):
     mp = _dir_meta_path(key)
     if os.path.isfile(mp):
         try:
-            return json.load(open(mp))
+            with open(mp, "r", encoding="utf-8") as _f:
+                return json.load(_f)
         except Exception:
             pass
     return None
@@ -541,7 +548,8 @@ def _dir_history(key):
     hp = _dir_history_path(key)
     if os.path.isfile(hp):
         try:
-            return json.load(open(hp))
+            with open(hp, "r", encoding="utf-8") as _f:
+                return json.load(_f)
         except Exception:
             pass
     return []
@@ -1340,7 +1348,8 @@ class Handler(BaseHTTPRequestHandler):
         expires = None
         if os.path.isfile(mp):
             try:
-                expires = json.load(open(mp)).get("expires")
+                with open(mp, "r", encoding="utf-8") as _f:
+                    expires = json.load(_f).get("expires")
             except Exception:
                 pass
         if expires is None:
@@ -1352,7 +1361,8 @@ class Handler(BaseHTTPRequestHandler):
         orig = None
         if os.path.isfile(mp):
             try:
-                m = json.load(open(mp))
+                with open(mp, "r", encoding="utf-8") as _f:
+                    m = json.load(_f)
                 ctype = m.get("ctype") or ctype
                 orig = m.get("name")
             except Exception:
@@ -1363,7 +1373,8 @@ class Handler(BaseHTTPRequestHandler):
         once = False
         if os.path.isfile(mp):
             try:
-                once = bool(json.load(open(mp)).get("once"))
+                with open(mp, "r", encoding="utf-8") as f:
+                    once = bool(json.load(f).get("once"))
             except Exception:
                 once = False
         if once:
@@ -1492,7 +1503,8 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isfile(fp) or not os.path.isfile(mp):
             return self._send(404, json.dumps({"error": "not found"}), "application/json")
         try:
-            meta = json.load(open(mp))
+            with open(mp, "r", encoding="utf-8") as _f:
+                meta = json.load(_f)
         except Exception:
             return self._send(500, json.dumps({"error": "meta unreadable"}), "application/json")
         add = _parse_tags(qp.get("tag", []))
@@ -1565,7 +1577,8 @@ class Handler(BaseHTTPRequestHandler):
                 continue  # bundles/dirs are listed elsewhere
             mp = p + ".meta"
             try:
-                meta = json.load(open(mp))
+                with open(mp, "r", encoding="utf-8") as _f:
+                    meta = json.load(_f)
             except Exception:
                 continue
             expires = meta.get("expires", os.path.getmtime(p) + TTL_HOURS * 3600)
@@ -2320,7 +2333,8 @@ class Handler(BaseHTTPRequestHandler):
         mp = _id_path(fid) + ".meta"
         if os.path.isfile(mp):
             try:
-                return json.load(open(mp))
+                with open(mp, "r", encoding="utf-8") as _f:
+                    return json.load(_f)
             except Exception:
                 pass
         return None

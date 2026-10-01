@@ -253,8 +253,10 @@ def _meta_path(root, pid):
 
 
 def load_meta(root, pid):
+    # P6: mit with — json.load(open(..)) leakt das Handle bis zum GC
     try:
-        return json.load(open(_meta_path(root, pid)))
+        with open(_meta_path(root, pid), "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return None
 
@@ -534,7 +536,8 @@ def load_gallery(root, gid):
     if not _valid_gid(gid):
         return None
     try:
-        g = json.load(open(g_meta_path(root, gid)))
+        with open(g_meta_path(root, gid), "r", encoding="utf-8") as f:
+            g = json.load(f)
     except Exception:
         return None
     if g.get("expires", 0) < time.time():
@@ -598,7 +601,8 @@ def _comments_path(root, gid):
 def load_likes(root, gid):
     """Image like counters + visitor fingerprints, one sidecar per gallery."""
     try:
-        lk = json.load(open(_likes_path(root, gid)))
+        with open(_likes_path(root, gid), "r", encoding="utf-8") as f:
+            lk = json.load(f)
     except Exception:
         return {"v": 1, "imgs": {}}
     if not isinstance(lk.get("imgs"), dict):
@@ -616,7 +620,8 @@ def save_likes(root, gid, lk):
 
 def load_comments(root, gid):
     try:
-        cl = json.load(open(_comments_path(root, gid)))
+        with open(_comments_path(root, gid), "r", encoding="utf-8") as f:
+            cl = json.load(f)
     except Exception:
         return {"v": 1, "list": []}
     if not isinstance(cl.get("list"), list):
@@ -767,7 +772,8 @@ def gallery_sweep(root, now=None):
         if not f.endswith(".json") or f.endswith(_SIDECAR_SUFFIXES):
             continue    # likes/comments sidecars are not gallery metas
         try:
-            g = json.load(open(os.path.join(d, f)))
+            with open(os.path.join(d, f), "r", encoding="utf-8") as f:
+                g = json.load(f)
             if g.get("expires", 0) < now:
                 os.remove(os.path.join(d, f))
         except Exception:

@@ -1,9 +1,38 @@
 # throway — Releases
 
-**Current version:** `1.40.3`
+**Current version:** `1.41.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.41.0 — 2026-10-01
+
+### Retro-Nachzug: FD-Lecks geschlossen, Repro ohne Proxy, Browser-Fallen dokumentiert
+
+Die restlichen Retro-Punkte (P5/P6) — diesmal mit **echtem Runtime-Fund**:
+
+- **FD-Lecks im Server-Code (P6):** `json.load(open(...))` an 15 Stellen
+  in `store.py`/`pics.py` ließ das Handle bis zum GC offen. Unter
+  Thumb-Last (1.40.0 hat den Warmer eingeführt) konnte das
+  Datei-Deskriptoren aufbrauen. Alle auf `with open(...)` umgestellt —
+  **Semantik unverändert** (die umgebenden try/except bleiben, ein
+  erster Versuch mit einem `_read_json`-Helper änderte das
+  Exception-Verhalten und brach 31 Tests — zurückgenommen).
+  Der Test-Harness schloss sein `server.log` ebenfalls nie (117
+  ResourceWarnings → 0 aus dem Harness).
+- **`THROWAWAY_PREFIX` (P6):** Der URL-Prefix der generierten Links ist
+  jetzt Env. Lokal `THROWAWAY_PREFIX=` → alle Links zeigen auf denselben
+  Origin, **Browser-Tests brauchen keinen Reverse-Proxy mehr** (vorher
+ _proxy.py_ pro Session). Prod unverändert (`/throway`).
+- **CODING_RULES (P5):** Abschnitt „Browser-Tests: Fallen" — harte
+  Reloads, Marker im geladenen DOM **exakt** prüfen, Chromes
+  `src`+`loading=lazy` schlägt `srcset`, Auto-Height-iframes haben
+  keinen sichtbaren Viewport. Plus Verweis auf `scripts/browser-probe.py`.
+
+Suite: 86 Tests grün (`-W error::ResourceWarning` ohne Fehlschlag),
+ruff grün.
 
 ---
 

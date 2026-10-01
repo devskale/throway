@@ -58,6 +58,28 @@ Done = active + live version correct + feature smoke green + heartbeat started.
   curl (= agent UA) mask exactly the bugs users hit. Two shipped that way
   (create-HTML-to-JS-fetch, paste Illegal invocation); both user-found.
 
+## Browser-Tests: Fallen, die jede Runde Zeit kosten
+
+- **Browser-Assertionen mit funktionalen Messwerten statt Screenshots** —
+  `rodney screenshot` wartet auf network-idle, das externe Embeds nie
+  erreichen. Bei iframe-Seiten: `scripts/browser-probe.py`
+  (`emulate`/`open`/`eval`/`marker`/`net`) statt eigener CDP-Skripte.
+- **Harte Reloads & Marker im GELADENEN DOM prüfen, bevor du eine
+  Browser-Aussage interpretierst.** Chrome serviert gecachte Seiten
+  (zwei Runden Debugging gekostet). Der Marker muss dabei exakt der
+  sein, der auch im ausgelieferten HTML steht — `offset:o` statt
+  `offset: o` findet nichts und führt zu falschen Diagnosen.
+  `browser-probe.py marker <frame> <expr>` macht genau das (Exitcode).
+- **`src` + `loading=lazy` schlägt `srcset`:** Chrome lädt beim
+  Erst-Load das `src`-Attribut und wertet `srcset` erst bei Re-Layout
+  neu — ohne `src` lädt lazy gar nichts. Für scharfe Thumbnails ist
+  `src` deshalb die *größte* sinnvolle Kandidatin (1.39.2), nicht die
+  kleinste.
+- **Auto-Height-iframes haben keinen sichtbaren Viewport:**
+  `innerHeight`/`vh`/`dvh`/IntersectionObserver referenzieren die
+  *gesamte* Inhaltshöhe. Wer dort Layout-Entscheidungen trifft,
+  braucht den Host-Handshake (`throway:pics:viewport`).
+
 ## Code structure
 
 - New feature = new module in `throway/` (see `pics.py`, `mdrender.py`)
