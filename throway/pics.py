@@ -947,6 +947,23 @@ _LB_HTML = (
 )
 
 
+def _lb_items(imgs):
+    """Lightbox-Array als JSON — geteilt von _lb_script (gebacken) und dem
+    Embed-Infinite-Scroll (#lbdata), damit nachgeladene Seiten die Liste
+    erweitern koennen (1.38.4, "N / 24"-Bug)."""
+    items = []
+    for entry in imgs:
+        it = {"u": entry[0], "n": entry[1]}
+        if len(entry) > 2 and entry[2]:
+            it["i"] = entry[2]
+        if len(entry) > 3 and isinstance(entry[3], int):
+            it["l"] = entry[3]                  # public: like count
+        if len(entry) > 4:
+            it["h"] = bool(entry[4])            # admin: hidden flag
+        items.append(it)
+    return json.dumps(items).replace("</", "<\\/")
+
+
 def _lb_script(imgs, admin_post=None):
     """Lightbox JS with the (page-local) image list baked in.
     imgs = [(url, name)] | [(url, name, pid, likes)] (public) or
@@ -963,17 +980,7 @@ def _lb_script(imgs, admin_post=None):
     it is kept in sync by the page's social script via window.__tyLbSync,
     which open() calls on every image change. Clicks bubble to the
     document-level delegation of the social script."""
-    items = []
-    for entry in imgs:
-        it = {"u": entry[0], "n": entry[1]}
-        if len(entry) > 2 and entry[2]:
-            it["i"] = entry[2]
-        if len(entry) > 3 and isinstance(entry[3], int):
-            it["l"] = entry[3]                  # public: like count
-        if len(entry) > 4:
-            it["h"] = bool(entry[4])            # admin: hidden flag
-        items.append(it)
-    data = json.dumps(items).replace("</", "<\\/")
+    data = _lb_items(imgs)
     admin_js = ""
     if admin_post:
         admin_js = (
@@ -1000,20 +1007,27 @@ def _lb_script(imgs, admin_post=None):
     return (
         "<script>(function(){"
         "var LB=" + data + ";"
+        # 1.38.4: Infinite-Scroll extends the list from #lbdata payloads
+        "window.__tyLbAdd=function(add){if(!add)return;"
+        "for(var k=0;k<add.length;k++)LB.push(add[k]);};"
         "var lb=document.getElementById('lb'),lbimg=document.getElementById('lbimg'),"
         "lbcap=document.getElementById('lbcap'),lbi=-1;"
         # 1.38.2: size the lightbox to the VISIBLE area, not the frame. A host
         # can post its real viewport (throway:pics:viewport); without one we
         # cap at screen.height — innerHeight inside an auto-height iframe is
         # the whole content height and would put every control off-screen.
-        "var VH=0;"
+        "var VH=0,VOFF=0;"
         "function lbH(){var h=innerHeight;"
         "if(VH>0)h=VH;else h=Math.min(h,screen.height||h);"
         "return Math.max(200,h);}"
-        "function lbFit(){lb.style.height=lbH()+'px';}"
+        # 1.38.4: top follows the visible window (host posts its scroll
+        # offset) — deep-scrolled hosts no longer open the lightbox
+        # thousands of px above the screen.
+        "function lbFit(){lb.style.height=lbH()+'px';"
+        "lb.style.top=Math.max(0,Math.min(VOFF,Math.max(0,innerHeight-lbH())))+'px';}"
         "window.addEventListener('message',function(e){"
         "if(e.data&&e.data.type==='throway:pics:viewport'&&e.data.height>0){"
-        "VH=e.data.height;lbFit();}});"
+        "VH=e.data.height;VOFF=Math.max(0,e.data.offset||0);lbFit();}});"
         # handshake: tell the host the listener is live — its first viewport
         # post (setTimeout 250) can otherwise race a slow-loading embed and
         # get lost with no retry.
@@ -1032,10 +1046,16 @@ def _lb_script(imgs, admin_post=None):
         "function close(){lb.hidden=true;document.body.style.overflow='';lbimg.src='';lbi=-1;"
         "var lk=document.getElementById('lblk');if(lk)lk.hidden=true;}"
         "function nav(d){if(lbi<0)return;open(lbi+d);}"
-        "[].forEach.call(document.querySelectorAll('.grid a'),function(a,i){"
-        "a.addEventListener('click',function(e){"
-        "if(e.target&&e.target.closest&&e.target.closest('.lk'))return;"
-        "e.preventDefault();open(i);});});"
+        # 1.38.4: DELEGATED handling — thumbs appended by infinite scroll
+        # get no per-anchor listener, so clicking them navigated the iframe
+        # to the raw image (gallery died). Live index lookup covers all.
+        "document.addEventListener('click',function(e){"
+        "var a=e.target&&e.target.closest?e.target.closest('.grid a'):null;"
+        "if(!a)return;"
+        "if(e.target.closest&&e.target.closest('.lk'))return;"
+        "var as=document.querySelectorAll('.grid a');"
+        "for(var i=0;i<as.length;i++){if(as[i]===a){e.preventDefault();open(i);return;}}"
+        "},false);"
         "document.getElementById('lbx').addEventListener('click',close);"
         "document.getElementById('lbprev').addEventListener('click',function(e){e.stopPropagation();nav(-1);});"
         "document.getElementById('lbnext').addEventListener('click',function(e){e.stopPropagation();nav(1);});"
@@ -1351,6 +1371,10 @@ def embed_html(store, gid, g, items, page, pages, total,
         pgn.append(f"<a href='?embed=1{sq}&p={page+1}'>&#8250;</a>")
     lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid), pid,
                 likes.get(pid, 0)) for pid, m in items]
+    # 1.38.4: items as JSON payload — the infinite-scroll fetch of the next
+    # page carries its own #lbdata; more() hands it to window.__tyLbAdd.
+    lbdata = ('<script type=application/json id=lbdata>'
+              + _lb_items(lb_imgs) + '</script>')
     inf = (
         "<div id=sent></div>"
         "<script>(function(){"
@@ -1368,6 +1392,8 @@ def embed_html(store, gid, g, items, page, pages, total,
         "var g=doc.querySelector('.grid');"
         "if(!g||!g.children.length){if(sent)sent.remove();busy=false;return;}"
         "while(g.firstChild)grid.appendChild(g.firstChild);"
+        "var ld=doc.getElementById('lbdata');"
+        "if(ld&&window.__tyLbAdd){try{window.__tyLbAdd(JSON.parse(ld.textContent));}catch(e){}}"
         "page++;busy=false;if(sent)sent.textContent='';post();"
         "if(page>=pages&&sent)sent.remove();"
         "}).catch(function(){busy=false;});}"
@@ -1385,6 +1411,7 @@ def embed_html(store, gid, g, items, page, pages, total,
             + f"<style>{_EMBED_CSS}</style></head><body><main>"
             + f"<div class=grid>{cells}</div>"
             + f"<div class=pgn>{''.join(pgn)}</div>"
+            + lbdata
             + _LB_HTML
             + _lb_script(lb_imgs)
             + _comments_html(store, gid, comments or [])
@@ -1402,13 +1429,15 @@ def _embed_snippet(store, gid, title):
         f'style="width:100%;height:640px;border:0;border-radius:8px" '
         f'loading="lazy" title="{title}"></iframe>'
         f'<script>(function(){{'
-        f'var f=document.getElementById("ty-{gid}"),last=0;'
-        f'function vp(){{var h=window.innerHeight;if(h===last)return;last=h;try{{'
-        f'f.contentWindow.postMessage({{type:"throway:pics:viewport",height:h}},"*");'
+        f'var f=document.getElementById("ty-{gid}"),lastH=0,lastO=-1;'
+        f'function vp(){{var h=window.innerHeight,'
+        f'o=Math.max(0,Math.round(-f.getBoundingClientRect().top));'
+        f'if(h===lastH&&o===lastO)return;lastH=h;lastO=o;try{{'
+        f'f.contentWindow.postMessage({{type:"throway:pics:viewport",height:h,offset:o}},"*");'
         f'}}catch(e){{}}}}'
         f'window.addEventListener("message",function(e){{'
         f'if(e.data&&e.data.type==="throway:pics:height"){{f.style.height=e.data.height+"px";vp();}}'
-        f'if(e.data&&e.data.type==="throway:pics:ready"){{last=0;vp();}}}});'
+        f'if(e.data&&e.data.type==="throway:pics:ready"){{lastH=0;lastO=-1;vp();}}}});'
         f'window.addEventListener("resize",vp);window.addEventListener("scroll",vp,true);'
         f'setTimeout(vp,250);}})();</script>')
 

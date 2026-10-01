@@ -1,9 +1,36 @@
 # throway — Releases
 
-**Current version:** `1.38.3`
+**Current version:** `1.38.4`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.38.4 — 2026-10-01
+
+### Pics-Embed: Lightbox jenseits der ersten 24 Bilder + sichtbare Position
+
+Feldbefund soundspritzer.at/share (102 Bilder): Klick auf einen
+Thumb ab #25 navigierte das iframe zum rohen Bild (kein Click-Handler —
+die Pro-Anker-Bindung kannte nur die ersten 24) und tötete damit
+Grid, Lightbox und Auto-Height in einem Zug; die Caption zeigte
+deshalb immer "N / 24"; und die Lightbox öffnete am iframe-Anfang —
+bei tief gescrollter Host-Seite tausende Pixel über dem Sichtbereich.
+
+- **Click-Delegation** auf `.grid a` mit Live-Index-Lookup: jeder
+  nachgeladene Thumb öffnet die Lightbox, kein iframe-Navigieren mehr.
+- **LB-Liste wächst mit**: jede Embed-Seite trägt ihre Items als
+  `<script type=application/json id=lbdata>`; der Infinite-Scroll-
+  fetch übergibt sie an `window.__tyLbAdd` → Caption "N / 102".
+- **Position**: `throway:pics:viewport` um `offset` erweitert (Host-
+  Scrollposition des iframes, Dedupe auf Höhe+Offset); `#lb.top`
+  folgt dem sichtbaren Ausschnitt und rückt beim Scrollen nach —
+  die Lightbox bleibt unter den Augen, nicht am iframe-Anfang.
+
+Browser-Nachweis (rodney, 30-Bilder-Repro): Klick auf Thumb #30 →
+Lightbox "30 / 30", iframe-URL unverändert, Bild korrekt skaliert,
+Box bei Host-Scrollposition. Suite: 80 Tests grün.
 
 ---
 

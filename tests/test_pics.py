@@ -340,6 +340,32 @@ def test_gallery_lightbox(srv):
     assert f"/pics/g/{g['id']}/{g['token']}/i/{a}" in page
 
 
+def test_embed_lightbox_grows_with_infinite_scroll(srv):
+    """1.38.4: thumbs appended by infinite scroll must (a) open the lightbox
+    (delegated clicks — before, clicking thumb #25 navigated the iframe to
+    the raw image and killed the embed) and (b) appear in the caption
+    ("N / 24" bug: the LB list never grew past the first embed page)."""
+    _, g = create(srv)
+    for i in range(6):
+        up(srv, g["id"])
+    st, _, page = srv.get(f"/pics/g/{g['id']}?embed=1", headers=BROWSER)
+    assert st == 200
+    p = page.decode()
+    # (a) delegated click handling, live index lookup
+    assert "closest('.grid a')" in p
+    assert "forEach.call(document.querySelectorAll('.grid a')" not in p
+    # (b) LB list extends from #lbdata payloads of fetched pages
+    assert "id=lbdata" in p and "window.__tyLbAdd" in p
+    assert "JSON.parse(ld.textContent)" in p
+    # (c) box position follows the host viewport offset
+    assert "e.data.offset" in p and "lb.style.top" in p
+    # snippet posts the offset and dedupes on height AND offset
+    st, _, page = srv.get(f"/pics/g/{g['id']}", headers=BROWSER)
+    p2 = page.decode()
+    assert "offset:o" in p2 and "lastO=-1" in p2
+    assert "getBoundingClientRect().top" in p2
+
+
 def test_lightbox_visible_viewport(srv):
     """1.38.2: lightbox sized to the VISIBLE area, not the auto-height
     iframe. Host posts throway:pics:viewport (acked via pics:ready);
