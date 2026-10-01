@@ -13,7 +13,6 @@
 """
 import os
 import re
-import io
 import json
 import time
 import shutil
@@ -1970,10 +1969,10 @@ class Handler(BaseHTTPRequestHandler):
             html = html[:head.end()] + base.encode() + html[head.end():]
         else:
             html = b"<head>" + base.encode() + b"</head>" + html
-        footer = (f'<div style="margin:2rem 0 0;padding:.6rem .9rem;border-top:1px solid #e5e7eb;'
-                  f'font:.8rem system-ui,sans-serif;color:#6b7280">'
-                  f'<a href="?listing=1" style="color:#2563eb">files &amp; history</a>'
-                  f' · throway</div>')
+        footer = ('<div style="margin:2rem 0 0;padding:.6rem .9rem;border-top:1px solid #e5e7eb;'
+                  'font:.8rem system-ui,sans-serif;color:#6b7280">'
+                  '<a href="?listing=1" style="color:#2563eb">files &amp; history</a>'
+                  ' · throway</div>')
         if b"</body>" in html:
             html = html.replace(b"</body>", footer.encode() + b"</body>", 1)
         else:

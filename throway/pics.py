@@ -1634,7 +1634,7 @@ def gallery_html(store, gid, g, items, page, pages, total,
                   "<path d='M21 15l-5-5L5 21'/></svg>")
     sort_note = ("sortiert nach <b>Likes</b> &#8212; die beliebtesten Bilder "
                  "stehen oben" if sort_likes else
-                 f"kuratierte Reihenfolge &#8212; <a href='?sort=likes'>nach "
+                 "kuratierte Reihenfolge &#8212; <a href='?sort=likes'>nach "
                  "Likes sortieren</a>")
     return _page(store, f"pics — {title}",
                  f"<h1>{e(title)}</h1>"

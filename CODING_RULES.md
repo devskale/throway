@@ -90,6 +90,13 @@ Non-negotiable; each guards a real hole found this session:
 
 ## Editing discipline
 
+- **Patch-Scripts validieren vor dem Schreiben** (Retro 2026-10-01, P1):
+  Anker prüfen → ersetzen → **im Speicher kompilieren** → erst dann
+  atomisch schreiben. `scripts/patch.py` macht genau das (Import
+  `from patch import apply`); ein Script, das erst schreibt und dann
+  kompiliert, hinterlässt bei einem Syntaxfehler ein kaputtes Modul
+  (passiert: 1.39.0 Grace-Period).
+
 - Edits in store.py / pics.py (rich in —, ä, ⌘, ⌘): use the python-script
   route (`assert old in src` + `replace` + `py_compile`) BY DEFAULT; the
   edit tool only for pure-ASCII anchors. Rule-of-record: this rule was

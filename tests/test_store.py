@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from conftest import Server, multipart, urlencode
+from conftest import Server, multipart
 
 AGENT = {"User-Agent": "curl/8.0"}
 BROWSER = {"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/120.0"}
@@ -289,7 +289,7 @@ def test_dir_index_landing(srv):
     assert st == 200 and hd["Content-Type"].startswith("text/html")
     p = page.decode()
     assert "<h1>Report</h1>" in p
-    assert f'<base href="/throway/d/landing/">' in p
+    assert '<base href="/throway/d/landing/">' in p
     assert "?listing=1" in p                      # footer link to the listing
     # ?listing=1 forces the plain listing
     st, _, page = srv.get("/d/landing?listing=1", headers=BROWSER)

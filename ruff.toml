@@ -1,0 +1,8 @@
+# Retro 2026-10-01 (P4): bewusst schlanke Regelauswahl — E9 (Syntax) + F
+# (Pyflakes: undefinierte Namen, ungenutzte Imports/Locals). Der Stil-Zoo
+# (E701/E702 Semikolons, E741) bleibt bewusst draussen: die Module bauen
+# Browser-JS in Stringlisten, dort ist der Stil Absicht.
+line-length = 200
+
+[lint]
+select = ["E9", "F"]

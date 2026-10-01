@@ -12,6 +12,16 @@ jobs:
       - run: pip install pytest pillow pillow-heif
       - run: python -m pytest tests/ -q
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .   # E9+F (Syntax + Pyflakes) — Kalibrierung in ruff.toml
+
   release-check:
     runs-on: ubuntu-latest
     steps:

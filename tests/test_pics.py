@@ -265,7 +265,7 @@ def test_superadmin_can_curate_any_gallery(srv):
 
 def test_superadmin_disabled_without_env_token(noadmin_srv):
     _, g = create(noadmin_srv)
-    pid = up(noadmin_srv, g["id"])["id"]
+    up(noadmin_srv, g["id"])["id"]
     st, _, _ = noadmin_srv.get(f"/pics/g/{g['id']}/{SUPER}/json", headers=AGENT)
     assert st == 404                      # env token unset -> superadmin off
     # own token still works
@@ -752,7 +752,7 @@ def test_duplicate_detection(srv):
     st, _, body = srv.get(f"/pics/g/{g['id']}", headers=AGENT)
     assert json.loads(body)["gallery"]["images"] == 1
     # different image stores normally
-    m3 = up(srv, g["id"], jpeg(500, 400, (1, 2, 3)), "b.jpg")
+    up(srv, g["id"], jpeg(500, 400, (1, 2, 3)), "b.jpg")
     st, _, body = srv.get(f"/pics/g/{g['id']}", headers=AGENT)
     assert json.loads(body)["gallery"]["images"] == 2
     # multipart batch with a dup inside

@@ -20,16 +20,15 @@ Auth:      none
 > Gilt für: Code ändern, Deployen, Tests, neue Features, Security-relevante Stellen.
 
 > **Bumppush-Pflicht:** Jede Änderung am Code wird immer als **Bumppush**
-> gelandet — per Default ein **Minor-Bump (`x.y.Z` → `x.y+1.0`-Stelle:
-> `1.11.0` → `1.12.0`)**; Patch-Bumps nur für reine Bugfixes, Major nur bei
-> Breaking Changes. Das heißt: `VERSION` in `store.py` hochziehen,
-> gelandet — per Default ein **Patch-Release** (`x.y.z` → `x.y.z+1`, also
-> nur die dritte Stelle, z.B. `1.12.0` → `1.12.1`). Neue Features dürfen
-> auch als Minor-Release (`y`-Stelle) gelanden, Breaking Changes als Major
-> (`x`-Stelle). Das heißt: `VERSION` in `store.py` hochziehen,
-> Release-Note in `RELEASES.md` ergänzen, committen (mit `(x.y.z)` im
-> Betreff), pushen und auf lubu deployen (`rsync -a --delete throway/ tests/ store.py lubu:/var/www/store/` — seit 1.19.0 ist der Code ein Paket:
-> `store.py` (Entry) + `throway/` — + `sudo systemctl restart throway-store`).
+> gelandet — Version nach Semantik: **Bugfix → Patch** (`1.12.0` →
+> `1.12.1`), **Feature → Minor** (`1.11.0` → `1.12.0`), **Breaking →
+> Major**. Unsicher, ob eine Änderung Feature oder Bugfix ist? Nachfragen
+> statt raten. Das heißt: `VERSION` in `store.py` hochziehen, Release-Note
+> in `RELEASES.md` ergänzen, committen (mit `(x.y.z)` im Betreff), pushen
+> und auf lubu deployen — exakt der Befehl in `CODING_RULES.md`
+> (rsync-Falle: **kein** Trailing Slash; seit 1.19.0 ist der Code ein
+> Paket: `store.py` (Entry) + `throway/`) — dann
+> `sudo systemctl restart throway-store`.
 
 1. `POST` a file → get back JSON with an `id` and `url`.
 2. Share that `url`. It's valid for 4 hours.
