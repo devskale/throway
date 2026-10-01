@@ -1045,7 +1045,14 @@ def _lb_script(imgs, admin_post=None):
         + ("lb.focus();" if admin_post else "") + "}"
         "function close(){lb.hidden=true;document.body.style.overflow='';lbimg.src='';lbi=-1;"
         "var lk=document.getElementById('lblk');if(lk)lk.hidden=true;}"
-        "function nav(d){if(lbi<0)return;open(lbi+d);}"
+        # 1.39.0: naechste Seite an der Grenze nachladen (lazy load darf
+        # das Weiterblaettern nicht abwruergen) — wartet kurz auf __tyMore.
+        "function nav(d){if(lbi<0)return;var t=lbi+d;"
+        "if(t>=LB.length&&window.__tyHasMore&&window.__tyHasMore()&&window.__tyMore){"
+        "window.__tyMore();"
+        "var w=setInterval(function(){if(LB.length>t){clearInterval(w);open(t);}},150);"
+        "setTimeout(function(){clearInterval(w);},8000);return;}"
+        "open(t);}"
         # 1.38.4: DELEGATED handling — thumbs appended by infinite scroll
         # get no per-anchor listener, so clicking them navigated the iframe
         # to the raw image (gallery died). Live index lookup covers all.
@@ -1397,11 +1404,25 @@ def embed_html(store, gid, g, items, page, pages, total,
         "page++;busy=false;if(sent)sent.textContent='';post();"
         "if(page>=pages&&sent)sent.remove();"
         "}).catch(function(){busy=false;});}"
+        # 1.39.0: smart lazy-load — im Auto-Height-iframe ist innerHeight
+        # die GESAMTE Inhaltshoehe (lud alles sofort nach). Massgeblich ist
+        # der sichtbare Ausschnitt des Hosts (Handshake, 1.38.4): laden,
+        # wenn der Sentinel dem sichtbaren Fenster nahe kommt.
+        "var visTop=0,visH=0,t0=Date.now();"
+        "window.addEventListener('message',function(e){var d=e.data;"
+        "if(d&&d.type==='throway:pics:viewport'&&d.height>0){"
+        "visH=d.height;visTop=Math.max(0,d.offset||0);tick();}});"
+        "window.__tyMore=more;"
+        "window.__tyHasMore=function(){return !!sent&&!!sent.parentNode;};"
         "function tick(){"
         "if(!sent||!sent.parentNode){clearInterval(iv);return;}"
-        "if(sent.getBoundingClientRect().top<innerHeight+500)more();}"
-        "var iv=setInterval(tick,400);setTimeout(tick,150);"
-        "if('ResizeObserver' in window)new ResizeObserver(post).observe(document.body);"
+        # Grace: dem Handshake 1.5 s Zeit lassen, sonst faengt der Fallback
+        # (innerHeight = ganze iframe-Hoehe) schon beim ersten Tick an und
+        # laedt alles — genau der Race, der den Smart-Load leerlaufen liess.
+        "if(!visH&&Date.now()-t0<1500)return;"
+        "var lim=visH?visTop+visH+900:innerHeight+500;"
+        "if(sent.getBoundingClientRect().top<lim)more();}"
+        "var iv=setInterval(tick,400);setTimeout(tick,150);"        "if('ResizeObserver' in window)new ResizeObserver(post).observe(document.body);"
         "window.addEventListener('load',post);setTimeout(post,300);"
         "})();</script>"
     )

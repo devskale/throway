@@ -366,6 +366,31 @@ def test_embed_lightbox_grows_with_infinite_scroll(srv):
     assert "getBoundingClientRect().top" in p2
 
 
+def test_embed_lazy_load_is_viewport_aware(srv):
+    """1.39.0: smart lazy-load — the infinite scroll must follow the visible
+    window (handshake), not the whole auto-height iframe (which loaded
+    every page at once). Plus lightbox next() loads the next page at the
+    list boundary instead of wrapping."""
+    _, g = create(srv)
+    up(srv, g["id"])
+    st, _, page = srv.get(f"/pics/g/{g['id']}?embed=1", headers=BROWSER)
+    assert st == 200
+    p = page.decode()
+    # viewport-bewusstes Nachladen
+    assert "visTop=0,visH=0" in p and "visTop+visH+900" in p
+    # Fallback ohne Host-Nachricht: erst nach Grace-Periode
+    assert "Date.now()-t0<1500" in p
+    assert "innerHeight+500" in p                     # Fallback bleibt
+    # Hooks fuer die Lightbox-Grenze
+    assert "window.__tyMore=more" in p
+    assert "window.__tyHasMore" in p
+    # Lightbox: next() an der Grenze laedt nach statt zu wrappen
+    assert "if(t>=LB.length&&window.__tyHasMore" in p
+    assert "LB.length>t){clearInterval(w);open(t);" in p
+    # Thumbs weiterhin native-lazy (fixed-height-frames / standalone)
+    assert "loading=lazy" in p and "decoding=async" in p
+
+
 def test_lightbox_visible_viewport(srv):
     """1.38.2: lightbox sized to the VISIBLE area, not the auto-height
     iframe. Host posts throway:pics:viewport (acked via pics:ready);

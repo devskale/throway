@@ -1,9 +1,38 @@
 # throway — Releases
 
-**Current version:** `1.38.4`
+**Current version:** `1.39.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.39.0 — 2026-10-01
+
+### Pics-Embed: Smartes Lazy-Load (sichtbarer Ausschnitt statt iframe-Höhe)
+
+Der Infinite-Scroll im `?embed=1` lud bei einer auto-height-Galerie
+alles auf einmal nach: das Nachlade-Limit war `innerHeight+500` — im
+auto-Height-iframe ist `innerHeight` aber die GESAMTE Inhaltshöhe
+(2717 px / 102 Bilder), der Sentinel lag also immer im "Fenster". Bei
+102 Bildern luden alle 5 Seiten sofort.
+
+SOTA-Lever, der in dieser Architektur zur Verfügung steht: der
+1.38.4-Handshake kennt den sichtbaren Ausschnitt bereits
+(`throway:pics:viewport` mit `height`+`offset`). Das Inf-Script hört
+mit, pflegt `visTop`/`visH` und lädt erst, wenn der Sentinel dem
+sichtbaren Fenster nahe kommt (900 px Vorlauf) — event-getrieben
+(Viewport-Nachricht) mit Intervall als Sicherheitsnetz. Grace-Periode
+von 1.5 s, damit der Handshake den Erst-Tick nicht verpasst; ohne
+Host-Nachrichten bleibt das alte `innerHeight`-Verhalten.
+
+Zusätzlich: `next` in der Lightbox an der Grenze der geladenen Liste
+lädt die nächste Seite nach und springt automatisch weiter, statt zu
+wrappen — Lazy-Load bricht das Durchblättern nicht ab.
+
+Browser-Nachweis (rodney, 30 Bilder, 390-px-iframe): ohne Scrollen
+24 Thumbs, Seite 2 lädt erst bei Tiefscroll; Lightbox "24 / 30" →
+next → "25 / 30". Suite: 81 Tests grün.
 
 ---
 
