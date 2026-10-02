@@ -2135,7 +2135,9 @@ def _url_import(h, store, root, gid, qp):
     try:
         pid, m, dup = store_pic(root, data, name or "image", h._client_ip(), gid)
     except PicError as ex:
-        return h._send(ex.code, json.dumps({"error": ex.msg}), "application/json")
+        # 1.41.2/P1: code + ggf. Retry-After (507 Pool voll -> wartet nicht
+        # von selbst, aber der Admin kann freigeben; Hinweis an den Agenten)
+        return h._err(ex.code, ex.msg, retry_after=300 if ex.code == 507 else None)
     resp = dict(public_meta(store, pid, m))
     if dup:
         resp["duplicate"] = True
@@ -2201,7 +2203,9 @@ def _upload(h, store, root, gid, qp):
     try:
         pid, m, dup = store_pic(root, data, store._safe_name(name)[:128], ip, gid)
     except PicError as ex:
-        return h._send(ex.code, json.dumps({"error": ex.msg}), "application/json")
+        # 1.41.2/P1: code + ggf. Retry-After (507 Pool voll -> wartet nicht
+        # von selbst, aber der Admin kann freigeben; Hinweis an den Agenten)
+        return h._err(ex.code, ex.msg, retry_after=300 if ex.code == 507 else None)
     resp = dict(public_meta(store, pid, m))
     if dup:
         resp["duplicate"] = True

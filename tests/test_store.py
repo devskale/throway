@@ -55,6 +55,41 @@ def test_agent_homepage_is_help(srv):
     assert "/api" in text
 
 
+def test_errors_are_structured(srv, tmp_path):
+    """1.41.2 (P1): every JSON error carries a stable machine `code`; 429
+    and 507 add Retry-After (header + field) so an agent waits instead of
+    guessing."""
+    # 404: not found -> code
+    st, _, body = srv.get("/deadbeefdeadbeef", headers=AGENT)
+    assert st == 404
+    d = json.loads(body)
+    assert d["code"] == "not_found" and d["error"]
+    # 413: eigener Server mit kleinem MAX_FILE, damit der Body die
+    # Content-Length-Grenze wirklich ueberschreitet, ohne dass der Client
+    # beim Senden abbricht (Connection reset bei 5MB+).
+    small = Server(tmp_path / "small",
+                   env_extra={"THROWAWAY_MAX_FILE_BYTES": "1000"})
+    try:
+        st, _, body = small.post("/?name=big.bin", data=b"x" * 2000,
+                                 headers=AGENT)
+        assert st == 413
+        assert json.loads(body)["code"] == "too_large"
+    finally:
+        small.stop()
+    # 429: rate limit -> code + Retry-After header + retry_after field
+    hits = 0
+    for _ in range(140):
+        st, hd, body = srv.get("/api", headers=AGENT)
+        if st == 429:
+            d = json.loads(body)
+            assert d["code"] == "rate_limited"
+            assert hd.get("Retry-After") == "60"
+            assert d["retry_after"] == 60
+            hits += 1
+            break
+    assert hits == 1, "rate limit not reached / structured as expected"
+
+
 def test_help_topics_all_served(srv):
     st, _, body = srv.get("/help", headers=AGENT)
     assert st == 200

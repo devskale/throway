@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.41.1`
+**Current version:** `1.42.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.42.0 — 2026-10-02
+
+### P1 (SOTA-Review): Strukturierte Fehler + Retry-After
+
+Fehler waren Status + Prosa (`{"error":"not found"}`); ein Agent
+musste raten, ob „gleich nochmal" (429) oder „falscher Aufruf" (400)
+oder „Pool voll" (507) gilt — und wusste nie, wie lange er warten
+soll.
+
+- **`code`-Feld in jeder JSON-Fehlerantwort** (stabile Maschinen-Codes:
+  `bad_request`, `write_denied`, `not_found`, `length_required`,
+  `too_large`, `rate_limited`, `pool_full`, `server_error`). 11 text/plain-
+  404-Antworten auf strukturiertes JSON umgestellt, damit *jede*
+  Fehlerantwort maschinenlesbar ist.
+- **`Retry-After`-Header + `retry_after`-Feld**: 429 → 60s (Rate-Fenster),
+  507 pics-Pool → 300s. Ein Agent wartet jetzt, statt zu raten.
+
+Suite: 87 Tests grün, ruff grün. Nächster Punkt: P2 (Idempotenz).
 
 ---
 

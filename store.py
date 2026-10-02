@@ -75,8 +75,18 @@ PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway
 # (kein Reverse-Proxy noetig, um Browser-Tests lokal zu fahren).
 PREFIX = os.environ.get("THROWAWAY_PREFIX", "/throway").rstrip("/")
 
+# 1.41.2 (P1 des SOTA-Reviews): stabile maschinenlesbare Codes fuer jede
+# Fehlerantwort. Ein Agent verzweigt auf `code`, nicht auf Prosa; der
+# Text bleibt fuer Menschen. Retry-After nur, wo Warten der richtige Zug
+# ist (429/507).
+_ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
+              404: "not_found", 405: "method_not_allowed",
+              411: "length_required", 413: "too_large",
+              429: "rate_limited", 500: "server_error",
+              507: "pool_full"}
+
 # semantic version + single source of truth for release notes
-VERSION = "1.41.1"
+VERSION = "1.42.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -958,6 +968,16 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
 
+    def _err(self, code, msg, retry_after=None):
+        """Structured error (1.41.2 / P1): code + message, plus a
+        Retry-After header/body field where waiting is the right move."""
+        payload = {"error": msg, "code": _ERR_CODES.get(code, "error")}
+        extra = None
+        if retry_after:
+            payload["retry_after"] = retry_after
+            extra = {"Retry-After": str(retry_after)}
+        return self._send(code, json.dumps(payload), "application/json", extra)
+
     def _send(self, code, body=b"", ctype="text/plain", extra=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -982,7 +1002,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _rate(self, count=True):
         if not allowed(self._client_ip(), count=count):
-            self._send(429, "rate limit exceeded\n"); return False
+            # 1.41.2/P1: strukturierter Code + Retry-After (Rate-Fenster)
+            self._err(429, "rate limit exceeded", retry_after=60)
+            return False
         return True
 
     def _client_ip(self):
@@ -1129,7 +1151,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             size = os.path.getsize(path)
         except OSError:
-            return self._send(404, "not found\n")
+            return self._err(404, "not found")
         self.send_response(200)
         self.send_header("Content-Type", ct)
         self.send_header("Content-Length", str(size))
@@ -1290,7 +1312,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = path.lstrip("/").split("/")
         fid = parts[0]
         if not fid or fid.endswith(".meta") or fid.endswith(".thumb") or fid.endswith(".thumbtmp"):
-            return self._send(404, "not found\n")
+            return self._err(404, "not found")
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         force_dl = "download=1" in query
         now = time.time()
@@ -1310,10 +1332,10 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) >= 2 and parts[1]:
                 fname = os.path.basename(unquote(parts[1]))
                 if not fname or fname.endswith(".meta") or fname.endswith(".thumb") or fname.endswith(".thumbtmp"):
-                    return self._send(404, "not found\n")
+                    return self._err(404, "not found")
                 fpath = os.path.join(dirpath, fname)
                 if not os.path.isfile(fpath):
-                    return self._send(404, "not found\n")
+                    return self._err(404, "not found")
                 ctype = (m or {}).get("files", {}).get(fname)
                 if not ctype:
                     ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
@@ -1343,7 +1365,7 @@ class Handler(BaseHTTPRequestHandler):
         # --- single file ---
         fp = _id_path(fid)
         if not os.path.isfile(fp):
-            return self._send(404, "not found\n")
+            return self._err(404, "not found")
         mp = fp + ".meta"
         expires = None
         if os.path.isfile(mp):
@@ -1384,7 +1406,7 @@ class Handler(BaseHTTPRequestHandler):
                 with open(fp, "rb") as f:
                     data = f.read()
             except OSError:
-                return self._send(404, "not found\n")
+                return self._err(404, "not found")
             _remove(fp)
             self._send(200, data, ctype, {"X-Once": "1", "X-Expires": "0"})
             return
@@ -1454,7 +1476,7 @@ class Handler(BaseHTTPRequestHandler):
                 if length not in (None, "0"):
                     length = int(length)
                     if length > MAX_FILE:
-                        return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+                        return self._err(413, "too large (max 5MB)")
                     data = self.rfile.read(length)
                     initial = [(name_hint or "file", data, "application/octet-stream")]
             return self._dir_create(key, qp, initial)
@@ -1481,10 +1503,10 @@ class Handler(BaseHTTPRequestHandler):
         # raw-body upload: body is the file content
         length = self.headers.get("Content-Length")
         if length is None:
-            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+            return self._err(411, "length required")
         length = int(length)
         if length > MAX_FILE:
-            return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            return self._err(413, "too large (max 5MB)")
         data = self.rfile.read(length)
         if name_hint:
             ctype = mimetypes.guess_type(name_hint)[0] or "application/octet-stream"
@@ -1501,7 +1523,7 @@ class Handler(BaseHTTPRequestHandler):
         fp = _id_path(fid)
         mp = fp + ".meta"
         if not os.path.isfile(fp) or not os.path.isfile(mp):
-            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return self._err(404, "not found")
         try:
             with open(mp, "r", encoding="utf-8") as _f:
                 meta = json.load(_f)
@@ -1643,7 +1665,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _store(self, data, name_hint, ctype, tags=None, ttl_seconds=None, once=False):
         if len(data) > MAX_FILE:
-            return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            return self._err(413, "too large (max 5MB)")
         fid = secrets.token_hex(8)
         fp = _id_path(fid)
         with open(fp, "wb") as f:
@@ -1689,7 +1711,7 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             return self._send(400, json.dumps({"error": f"invalid share name: {reason}"}), "application/json")
         if len(data) > MAX_FILE:
-            return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            return self._err(413, "too large (max 5MB)")
         key = share
         dirpath = _dir_path(key)
         now = time.time()
@@ -1903,7 +1925,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, json.dumps({"error": "dir add requires multipart"}), "application/json")
         payload = self._read_body()
         if payload is None:
-            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+            return self._err(411, "length required")
         files = _parse_multipart(payload, ctype)
         named = [(n, d, c) for (n, d, c) in files if n]
         if not named:
@@ -1935,7 +1957,7 @@ class Handler(BaseHTTPRequestHandler):
         m = _dir_meta(key)
         now = time.time()
         if not m or m.get("type") != "dir":
-            return self._send(404, "not found\n")
+            return self._err(404, "not found")
         if m.get("expires", 0) < now:
             shutil.rmtree(dirpath, ignore_errors=True)
             return self._send(404, "expired\n")
@@ -1947,10 +1969,10 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) >= 2 and parts[1]:
             fname = os.path.basename(unquote(parts[1]))
             if not fname or fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp"):
-                return self._send(404, "not found\n")
+                return self._err(404, "not found")
             fpath = os.path.join(dirpath, fname)
             if not os.path.isfile(fpath):
-                return self._send(404, "not found\n")
+                return self._err(404, "not found")
             ctype = m.get("files", {}).get(fname) or mimetypes.guess_type(fname)[0] or "application/octet-stream"
             if "thumb=1" in query:
                 return self._serve_thumb(fpath, ctype)
@@ -2107,28 +2129,28 @@ class Handler(BaseHTTPRequestHandler):
         m = _dir_meta(key)
         now = time.time()
         if not m or m.get("type") != "dir":
-            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return self._err(404, "not found")
         if m.get("expires", 0) < now:
             shutil.rmtree(dirpath, ignore_errors=True)
             return self._send(404, json.dumps({"error": "expired"}), "application/json")
         fpath = os.path.join(dirpath, fname)
         if fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp") or not os.path.isfile(fpath):
-            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return self._err(404, "not found")
         ctype = m.get("files", {}).get(fname) or ""
         if not _is_editable(ctype):
             return self._send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
         data = self._read_body()
         if data is None:
-            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+            return self._err(411, "length required")
         old_size = os.path.getsize(fpath)
         if append:
             if old_size + len(data) > MAX_FILE:
-                return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+                return self._err(413, "too large (max 5MB)")
             with open(fpath, "ab") as f:
                 f.write(data)
         else:
             if len(data) > MAX_FILE:
-                return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+                return self._err(413, "too large (max 5MB)")
             with open(fpath, "wb") as f:
                 f.write(data)
         _dir_touch(m, now)
@@ -2152,13 +2174,13 @@ class Handler(BaseHTTPRequestHandler):
         dirpath = _dir_path(key)
         m = _dir_meta(key)
         if not m or m.get("type") != "dir":
-            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return self._err(404, "not found")
         now = time.time()
         if len(parts) >= 2 and parts[1]:
             fname = os.path.basename(unquote(parts[1]))
             fpath = os.path.join(dirpath, fname)
             if fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp") or not os.path.isfile(fpath):
-                return self._send(404, "not found\n")
+                return self._err(404, "not found")
             os.remove(fpath)
             m["files"].pop(fname, None)
             _dir_touch(m, now)
@@ -2327,7 +2349,7 @@ class Handler(BaseHTTPRequestHandler):
         if os.path.isfile(fp):
             _remove(fp); self._send(200, "deleted\n")
         else:
-            self._send(404, "not found\n")
+            self._err(404, "not found")
 
     def _meta_of(self, fid):
         mp = _id_path(fid) + ".meta"
@@ -2368,17 +2390,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._dir_edit(parts[1], parts[1:], append=False)
         fid = parts[0]
         if not fid or fid.endswith(".meta"):
-            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return self._err(404, "not found")
         fp = _id_path(fid)
         if not os.path.isfile(fp):
-            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return self._err(404, "not found")
         if not self._is_text(fid):
             return self._send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
         data = self._read_body()
         if data is None:
-            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+            return self._err(411, "length required")
         if len(data) > MAX_FILE:
-            return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            return self._err(413, "too large (max 5MB)")
         with open(fp, "wb") as f:
             f.write(data)
         evict(THROW_POOL_SIZE)
@@ -2394,18 +2416,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._dir_edit(parts[1], parts[1:], append=True)
         fid = parts[0]
         if not fid or fid.endswith(".meta"):
-            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return self._err(404, "not found")
         fp = _id_path(fid)
         if not os.path.isfile(fp):
-            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return self._err(404, "not found")
         if not self._is_text(fid):
             return self._send(400, json.dumps({"error": "only text files can be appended to"}), "application/json")
         data = self._read_body()
         if data is None:
-            return self._send(411, json.dumps({"error": "length required"}), "application/json")
+            return self._err(411, "length required")
         cur = os.path.getsize(fp)
         if cur + len(data) > MAX_FILE:
-            return self._send(413, json.dumps({"error": "too large (max 5MB)"}), "application/json")
+            return self._err(413, "too large (max 5MB)")
         with open(fp, "ab") as f:
             f.write(data)
         evict(THROW_POOL_SIZE)
