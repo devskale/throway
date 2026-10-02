@@ -1170,3 +1170,26 @@ def test_stars_recipient_marking_injected(srv):
         assert ".grid a[data-star]" in h, qs
         # paintStar wertet starmine() ODER RECEIVED aus
         assert "starmine()[pid]||RECEIVED[pid]" in h, qs
+
+
+def test_stars_received_abwaehlen_injected(srv):
+    """1.43.2 (P4): Ein Empfänger, der ein Foto selbst gestarrt hat UND es
+    im geteilten RECEIVED-Set liegt, muss es per Klick aus seiner Auswahl
+    entfernen können — der Stern wird leer. Dafür gibt es ein
+    session-lokales DESEL-Set (nie in localStorage): paintStar blendet
+    RECEIVED für ein abgewähltes Bild aus. Die Empfänger-Markierung wird
+    weiterhin nie persistiert (P1/P3-Invariante)."""
+    g = _mk_gal(srv, "starsabw")
+    a = _up(srv, g["id"], "a.jpg", (120, 40, 200))["id"]
+    for qs in ("embed=1", ""):
+        sep = "&" if qs else ""
+        st, _, html = srv.get(f"/pics/g/{g['id']}?{qs}{sep}stars={a}",
+                              headers=BROWSER)
+        h = html.decode()
+        assert st == 200
+        # DESEL-Set (session-lokal, Abwahl-Zustand) injiziert
+        assert "var DESEL={}" in h, qs
+        # paintStar blendet RECEIVED für abgewählte Bilder aus
+        assert "starmine()[pid]||RECEIVED[pid])&&!DESEL[pid]" in h, qs
+        # Klick setzt DESEL, wenn das Bild im RECEIVED-Set liegt
+        assert "else if(RECEIVED[spid])DESEL[spid]=1" in h, qs

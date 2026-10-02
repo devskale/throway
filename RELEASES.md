@@ -1,9 +1,38 @@
 # throway — Releases
 
-**Current version:** `1.43.1`
+**Current version:** `1.43.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.43.2 — 2026-10-02
+
+### Bugfix (P4): RECEIVED-Stern lässt sich abwählen
+
+Randfall aus dem Review (pics-star-received-abwaehlen): Ein Empfänger,
+der ein Foto selbst gestarrt hat UND das Foto im geteilten `RECEIVED`-Set
+liegt, konnte den Stern nicht aus seiner Auswahl entfernen — er blieb
+gefüllt (wegen `RECEIVED`), obwohl er aus dem localStorage entfernt war.
+Rein visuell, kein falsches Teilen.
+
+Behoben über ein **session-lokales `DESEL`-Set** (nie in localStorage):
+- `paintStar` blendet `RECEIVED` für ein abgewähltes Bild aus:
+  `on = (starmine()[pid] || RECEIVED[pid]) && !DESEL[pid]`.
+- Klick auf einen Stern, der im `RECEIVED`-Set liegt, setzt `DESEL[pid]`
+  → der Stern wird leer, obwohl das Bild im geteilten Set bleibt.
+- Die Empfänger-Markierung wird weiterhin **nie** in localStorage
+  geschrieben (P1/P3-Invariante) — `shareSet()` baut die Auswahl nur aus
+  eigenen Sternen und nimmt ein abgewähltes Foto nicht in die URL auf.
+- Gilt für Grid **und** Lightbox (`#lbsst` nutzt `paintStar`).
+
+Browser-Flow (rodney/CDP) verifiziert: Empfänger mit eigenem Stern +
+`RECEIVED` kann den Stern abwählen (Grid + Lightbox), localStorage wird
+geleert, `shareSet()`-URL enthält das Foto nicht mehr; fremde
+`RECEIVED`-Sterne werden nie übernommen.
+
+Suite: 93 Tests grün, ruff grün.
 
 ---
 
