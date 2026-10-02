@@ -1,9 +1,23 @@
 # throway — Releases
 
-**Current version:** `1.45.2`
+**Current version:** `1.45.3`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.3 — 2026-10-02
+
+### Bugfix: `POST /d?retain=1` erzeugte stille retained Muell-Files (hard-validate R2)
+
+Die Flip-Route uebersprang reservierte Namen (`parts[0] != DIR_NS`) und
+fiel in den Raw-Body-Upload-Pfad: aus einem Flip-Request auf `/d` wurde
+eine *retained Leer-Datei* mit 200. `/pics` war durch pics.post (400)
+und `_retain_flip`s internen Guard gedeckt. Fix: reservierte
+Namespaces enden mit 404, Root ohne id faellt weiter durch (legitimer
+Retain-Upload per Flag bleibt). Test:
+`test_flip_on_reserved_names_404`.
 
 ---
 

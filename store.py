@@ -88,7 +88,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.45.2"
+VERSION = "1.45.3"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1638,7 +1638,12 @@ class Handler(BaseHTTPRequestHandler):
         if retained and "retain=1" in query:
             if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
                 return self._retain_flip_dir(parts[1])
-            if len(parts) == 1 and parts[0] and parts[0] != DIR_NS:
+            if len(parts) == 1 and parts[0]:
+                if parts[0] in (DIR_NS, pics.NS):
+                    # reservierte Namespaces: kein Flip — und kein
+                    # Fall-through in den Upload-Pfad (Retro hard-validate:
+                    # POST /d?retain=1 erzeugte still retained Muell-Files)
+                    return self._err(404, "not found")
                 return self._retain_flip(parts[0])
 
         # POST /<id>?tag=a&tag=b&untag=c -> update tags on an existing file

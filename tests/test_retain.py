@@ -308,3 +308,17 @@ def test_share_token_add_implies_retention(srv):
     # und jetzt write-gated
     st, _, raw = srv.post("/?share=hfixdir&name=three.txt", data=b"3", headers=AGENT)
     assert st == 401
+
+
+def test_flip_on_reserved_names_404(srv):
+    """POST /d?retain=1 (+ Token) darf KEINE stille (retained) Leer-Datei
+    erzeugen — reservierte Namespaces enden mit 404 (Retro hard-validate)."""
+    for reserved in ("d", "pics"):
+        st, _, raw = srv.post(f"/{reserved}?retain=1", data=b"",
+                              headers={**AGENT, **AUTH})
+        assert st in (400, 404), (reserved, st)
+    # Root ohne id faellt weiter durch (legitimer Retain-Upload per Flag)
+    st, body = srv.jpost("/?retain=1", data=b"flag-upload",
+                         headers={**AGENT, **AUTH})
+    assert st == 200 and body["expires_at"] is None
+    srv.delete(f"/{body['id']}", headers={**AGENT, **AUTH})
