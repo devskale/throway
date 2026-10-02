@@ -1,9 +1,36 @@
 # throway — Releases
 
-**Current version:** `1.45.1`
+**Current version:** `1.45.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.2 — 2026-10-02
+
+### Bugfix: Data-Loss-Race in der Dir-Maschinerie (Retro hard-validate, Runde 2)
+
+12 parallele Adds auf ein Dir: alle 200, aber **3 Files verschollen,
+Meta kannte nur 2, History nur 1 Eintrag**. Präexistent (Dir-Maschinerie),
+durch Show-Dirs zum Alltagsrisiko (offener Write = parallele Schreiber
+by design). Drei gestapelte Ursachen:
+
+1. **Nicht-atomare Meta-Schreiben**: `json.dump` direkt aufs Ziel —
+   concurrent Reader sahen halbe Dateien → `_dir_meta` = None.
+2. **`_dir_add`-None fiel durch do_POST** in den Raw-Upload-Pfad: aus
+   einem Dir-Add wurde *still ein Einzel-Upload mit 200* (daher schienen
+   alle Adds "erfolgreich").
+3. **Read-modify-write-Races** auf Meta `files`-Map und History
+   (last-writer-wins).
+
+Fix: `_atomic_json()` (tmp + `os.replace`, wie schon idem-map) für alle
+14 Persistenz-Schreiben; `_dirlock`-Decorator (`RLock`) auf alle
+Dir-Mutatoren; `/d/<key>`-POST endet bei None mit 404 statt Fall-through.
+
+Tests: +2 (`test_parallel_adds_no_loss` mit 12-Thread-Hammer und
+Dir-Antwort-Assertion je Add, `test_dir_add_missing_dir_404`);
+Suite 129/129 grün.
 
 ---
 

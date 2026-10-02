@@ -18,6 +18,7 @@ import time
 import shutil
 import secrets
 import socket
+import threading
 import zipfile
 import ipaddress
 import mimetypes
@@ -87,7 +88,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.45.1"
+VERSION = "1.45.2"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -157,6 +158,29 @@ def _save_stats(s):
 def _cumulative():
     """All-time totals (files ever uploaded, bytes ever uploaded)."""
     return _load_stats()
+
+def _atomic_json(path, obj):
+    """Write JSON atomically (tmp + os.replace) — concurrent readers never
+    see a partial file. Retro 2026-10-02 hard-validate: non-atomic meta
+    writes lost files under parallel dir writes."""
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f)
+    os.replace(tmp, path)
+
+
+_DIR_LOCK = threading.RLock()
+
+
+def _dirlock(fn):
+    """Serialize dir mutations (RLock, reentrant). Retro 2026-10-02
+    hard-validate: read-modify-write races auf Meta/History verloren bei
+    parallelen Writes Dateien (Show-Dirs = parallele Schreiber by design)."""
+    def wrapper(*a, **kw):
+        with _DIR_LOCK:
+            return fn(*a, **kw)
+    return wrapper
+
 
 def _idem_map_path():
     return os.path.join(ROOT, ".idem.json")
@@ -319,6 +343,7 @@ def _fmt_exp(expires):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))
 
 
+@_dirlock
 def _dir_retain(key):
     """Flip a dir's manifest to indefinite retention. True on success."""
     m = _dir_meta(key)
@@ -328,7 +353,7 @@ def _dir_retain(key):
         m["retain"] = True
         m.pop("expires", None)
         m.pop("max_age", None)
-        json.dump(m, open(_dir_meta_path(key), "w"))
+        _atomic_json(_dir_meta_path(key), m)
     return True
 
 
@@ -666,13 +691,14 @@ def _dir_history(key):
     return []
 
 
+@_dirlock
 def _dir_append_history(key, entry):
     """Append a history entry, trimmed to HISTORY_LIMIT newest."""
     h = _dir_history(key)
     h.append(entry)
     if len(h) > HISTORY_LIMIT:
         h = h[-HISTORY_LIMIT:]
-    json.dump(h, open(_dir_history_path(key), "w"))
+    _atomic_json(_dir_history_path(key), h)
 
 
 def _is_hex_id(s):
@@ -1627,6 +1653,10 @@ class Handler(BaseHTTPRequestHandler):
             r = self._dir_add(parts[1])
             if r is not None:
                 return r
+            # Retro hard-validate: None (Dir fehlt/invalid) darf NICHT in
+            # den Raw-Upload-Pfad fallen — aus einem Dir-Add wurde sonst
+            # still ein Einzel-Upload mit 200.
+            return self._err(404, "dir not found")
 
         # POST /?url=<url>[&name=<name>][&link=1] -> server-side import / link doc
         if "url" in qp:
@@ -1706,7 +1736,7 @@ class Handler(BaseHTTPRequestHandler):
             m = _bundle_meta(bdir, fid) or {}
             m["retain"] = True
             m.pop("expires", None)
-            json.dump(m, open(os.path.join(bdir, fid + ".meta"), "w"))
+            _atomic_json(os.path.join(bdir, fid + ".meta"), m)
             return self._send(200, json.dumps({
                 "id": fid, "url": f"{PUBLIC_BASE}/{fid}", "bundle": True,
                 "retention": "indefinite", "expires_at": None,
@@ -1723,12 +1753,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(404, "not found")
         m["retain"] = True
         m.pop("expires", None)
-        json.dump(m, open(mp, "w"))
+        _atomic_json(mp, m)
         return self._send(200, json.dumps({
             "id": fid, "url": f"{PUBLIC_BASE}/{fid}",
             "retention": "indefinite", "expires_at": None,
             "persistence": _persistence_block("single", None)}), "application/json")
 
+    @_dirlock
     def _show_flip_dir(self, key):
         """POST /d/<key>?show=1 (token) — flip a dir to a show-dir:
         retained (indefinite) AND publicly writable. Idempotent."""
@@ -1740,9 +1771,10 @@ class Handler(BaseHTTPRequestHandler):
             m["open"] = True
             m.pop("expires", None)
             m.pop("max_age", None)
-            json.dump(m, open(_dir_meta_path(key), "w"))
+            _atomic_json(_dir_meta_path(key), m)
         return self._dir_response(key, _dir_path(key), _dir_meta(key))
 
+    @_dirlock
     def _retain_flip_dir(self, key):
         """POST /d/<key>?retain=1 (token) — flip a dir to indefinite."""
         if not _dir_retain(key):
@@ -1764,7 +1796,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         m["retain"] = True
         m.pop("expires", None)
-        json.dump(m, open(mp, "w"))
+        _atomic_json(mp, m)
 
     def _file_tags(self, fid, qp):
         """POST /<id>?tag=<t>&untag=<t> — update meta tags on a stored file."""
@@ -1790,7 +1822,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(cur) >= MAX_TAGS:
                 break
         meta["tags"] = cur
-        json.dump(meta, open(mp, "w"))
+        _atomic_json(mp, meta)
         body = json.dumps({
             "id": fid,
             "url": f"{PUBLIC_BASE}/{fid}",
@@ -1940,7 +1972,7 @@ class Handler(BaseHTTPRequestHandler):
             meta["once"] = True
         if tags:
             meta["tags"] = tags
-        json.dump(meta, open(fp + ".meta", "w"))
+        _atomic_json(fp + ".meta", meta)
         evict(THROW_POOL_SIZE)
         s = _load_stats()
         s["files"] += 1
@@ -1965,6 +1997,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(200, body, "application/json", {"X-Expires": str(lifetime)})
 
+    @_dirlock
     def _share_store(self, data, name_hint, ctype, share, ttl_seconds=None,
                      retained=False):
         """POST /?share=<name> — store a single file under a chosen, memorable
@@ -2006,7 +2039,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 meta["expires"] = now + ttl
                 meta["max_age"] = ttl
-            json.dump(meta, open(_dir_meta_path(key), "w"))
+            _atomic_json(_dir_meta_path(key), meta)
         fname = name_hint or "file"
         r = self._dir_write_files(key, dirpath, meta, [(fname, data, ctype)], create=True)
         if r is None:
@@ -2050,7 +2083,7 @@ class Handler(BaseHTTPRequestHandler):
             meta["retain"] = True          # token-gated: never expires
         else:
             meta["expires"] = time.time() + TTL_HOURS * 3600
-        json.dump(meta, open(os.path.join(dirpath, fid + ".meta"), "w"))
+        _atomic_json(os.path.join(dirpath, fid + ".meta"), meta)
         evict(THROW_POOL_SIZE)
         s = _load_stats()
         s["files"] += len(clean)
@@ -2085,6 +2118,7 @@ class Handler(BaseHTTPRequestHandler):
     # A dir is a directory with a <key>.meta manifest + <key>.history log.
     # ------------------------------------------------------------------
 
+    @_dirlock
     def _dir_create(self, key, qp, initial_files=None, retained=False):
         """Create (or get, if named & exists) a dir. key is a hex id (unnamed)
         or a name. initial_files is a list of (name, data, ctype) or None."""
@@ -2137,13 +2171,14 @@ class Handler(BaseHTTPRequestHandler):
             meta["name"] = key
         if write_token:
             meta["write_token"] = write_token
-        json.dump(meta, open(_dir_meta_path(key), "w"))
+        _atomic_json(_dir_meta_path(key), meta)
         # write initial files
         if initial_files:
             self._dir_write_files(key, dirpath, meta, initial_files, create=True)
         evict(THROW_POOL_SIZE)
         return self._dir_response(key, dirpath, meta, write_token=write_token)
 
+    @_dirlock
     def _dir_write_files(self, key, dirpath, meta, files, create=False):
         """Write new files into a dir, update meta + stats + history.
         Returns (files_map, added_bytes, added_count)."""
@@ -2181,7 +2216,7 @@ class Handler(BaseHTTPRequestHandler):
             added_bytes += len(d)
         meta["files"] = files_map
         _dir_touch(meta, time.time())
-        json.dump(meta, open(_dir_meta_path(key), "w"))
+        _atomic_json(_dir_meta_path(key), meta)
         s = _load_stats()
         s["files"] += added
         s["bytes"] += added_bytes
@@ -2189,6 +2224,7 @@ class Handler(BaseHTTPRequestHandler):
         _bump_since_start(added, added_bytes)
         return (files_map, added_bytes, added)
 
+    @_dirlock
     def _dir_add(self, key):
         """POST /d/<key> — add multipart files to an existing dir."""
         dirpath = _dir_path(key)
@@ -2404,6 +2440,7 @@ class Handler(BaseHTTPRequestHandler):
              "</main></body></html>")
         self._send(200, h, "text/html")
 
+    @_dirlock
     def _dir_edit(self, key, parts, append):
         if self._dir_write_guard(key):
             return
@@ -2440,7 +2477,7 @@ class Handler(BaseHTTPRequestHandler):
             with open(fpath, "wb") as f:
                 f.write(data)
         _dir_touch(m, now)
-        json.dump(m, open(_dir_meta_path(key), "w"))
+        _atomic_json(_dir_meta_path(key), m)
         # history entry: action, file, delta
         entry = {"ts": now, "file": fname, "action": "append" if append else "put"}
         if append:
@@ -2452,6 +2489,7 @@ class Handler(BaseHTTPRequestHandler):
         evict(THROW_POOL_SIZE)
         return self._dir_response(key, dirpath, m)
 
+    @_dirlock
     def _dir_delete(self, parts):
         if self._dir_write_guard(parts[0] if parts else ""):
             return
@@ -2478,7 +2516,7 @@ class Handler(BaseHTTPRequestHandler):
             os.remove(fpath)
             m["files"].pop(fname, None)
             _dir_touch(m, now)
-            json.dump(m, open(_dir_meta_path(key), "w"))
+            _atomic_json(_dir_meta_path(key), m)
             _dir_append_history(key, {"ts": now, "action": "delete", "file": fname})
             return self._send(200, "deleted\n")
         shutil.rmtree(dirpath, ignore_errors=True)

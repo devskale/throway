@@ -131,3 +131,47 @@ def test_show_dir_survives_sweep_and_is_listed(srv):
     entry = [e for e in d.get("dirs", d.get("entries", [])) if e["name"] == "brett"]
     assert entry, d
     assert entry[0]["expires_at"] is None
+
+
+# --- 1.45.2 hard-validate: Concurrency + Fall-through ----------------------
+
+def test_parallel_adds_no_loss(srv):
+    """12 parallele Adds muessen 12 Files, 12 Meta-Eintraege und >=12
+    History-Eintraege hinterlassen (Retro hard-validate: Race verlor
+    Files + _dir_add-None fiel in den Einzel-Upload-Pfad)."""
+    import threading
+    srv.post("/?dir=1&show=1&name=hammer", data=b"", headers={**AGENT, **AUTH})
+    codes, bodies = [], []
+
+    def add(i):
+        b, ct = multipart([(f"f{i}.txt", f"c{i}".encode(), "text/plain")])
+        st, _, raw = srv.post("/d/hammer", data=b,
+                              headers={**AGENT, "Content-Type": ct})
+        codes.append(st)
+        bodies.append(raw)
+
+    ts = [threading.Thread(target=add, args=(i,)) for i in range(12)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert codes == [200] * 12, codes
+    # jede Antwort muss eine DIR-Antwort sein — kein stiller Einzel-Upload
+    for raw in bodies:
+        assert json.loads(raw).get("dir") is True
+    st, _, raw = srv.get("/d/hammer", headers=AGENT)
+    d = json.loads(raw)
+    assert len(d["files"]) == 12, d["files"]
+    st, _, raw = srv.get("/d/hammer/history", headers=AGENT)
+    assert json.loads(raw)["total"] >= 12
+
+
+def test_dir_add_missing_dir_404(srv):
+    """POST /d/gibtsnicht (multipart) muss 404 sein — vorher fiel es
+    durch do_POST in den Raw-Upload und erzeugte still eine Datei."""
+    b, ct = multipart([("x.txt", b"x", "text/plain")])
+    st, _, raw = srv.post("/d/gibtsnicht", data=b,
+                          headers={**AGENT, "Content-Type": ct})
+    assert st == 404
+    # und es wurde kein Einzel-File angelegt
+    st, _, raw = srv.get("/browse", headers=AGENT)
+    assert not any(e["name"] == "x.txt"
+                   for e in json.loads(raw).get("files", []))
