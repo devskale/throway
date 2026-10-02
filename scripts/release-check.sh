@@ -23,6 +23,9 @@ fi
 # Commit-Kette. Lokal mit .handoff/ vorhanden: eigener Claim nötig.
 # Ohne Handoff-Struktur (CI-Runner) wird der Check übersprungen.
 if [ -d .handoff/issues/active ] || [ -d "$HOME/code/handoffs/throway/issues/active" ]; then
+  # $CLAIM darf leer sein (bumppush-check.sh behandelt '' als kein eigener
+  # Claim); unter set -u ist eine ungesetzte Variable aber ein Fehler.
+  CLAIM="${CLAIM:-}"
   bash scripts/bumppush-check.sh "$CLAIM" || { echo "FAIL: bumppush-check"; FAIL=1; }
 else
   echo "bumppush-check: uebersprungen (keine issues-Struktur — CI)"
@@ -53,5 +56,45 @@ for t in $TOPICS; do
   grep -q "\`$t\`" API.md || { echo "FAIL: Help-Topic '$t' fehlt in API.md (Docs-Drift)"; FAIL=1; }
 done
 rm -rf "$ROOT"
+
+# CSS-Klammer-Balance (Retro 2026-10-02): Verwaiste/doppelte } legen die
+# FOLGENDE Regel still weg (in throway 2× passiert). Die CSS-Strings liegen
+# als Python-String-Literale in pics.py (_GALLERY_CSS, _EMBED_CSS, _LB_CSS,
+# _SOCIAL_CSS, _ADMIN_CSS). Jede Regel ist ein eigenes Literal mit { } im
+# selben String — wir zählen { vs } über alle Literale, ignorieren aber
+# Kommentare und Strings (sonst schlagen echte } in content-/url-Werten an).
+python3 - <<'PY' || { echo "FAIL: CSS-Klammer-Balance"; FAIL=1; }
+import re
+src = open("throway/pics.py", encoding="utf-8").read()
+# Alle *_CSS = ( ... ) Blöcke sammeln (konkatenierte String-Literale)
+blocks = re.findall(r"_(?:GALLERY|EMBED|LB|SOCIAL|ADMIN)_CSS = \((.*?)\n\)", src, re.S)
+if not blocks:
+    raise SystemExit("keine CSS-Bloecke gefunden")
+
+def css_strings(block):
+    # Die CSS-Regeln sind die "..."-String-Inhalte im Block. Wichtig: wir
+    # extrahieren sie, statt die Strings zu ENTFERNEN — sonst löschen wir
+    # die Regeln mitsamt ihren { } und die Balance ist immer 0 (nutzlos).
+    return re.findall(r'"((?:\\.|[^"\\])*)"', block)
+
+def balance(txt):
+    depth = 0; mn = 0
+    txt = re.sub(r"/\*.*?\*/", "", txt, flags=re.S)   # CSS-Kommentare
+    for ch in txt:
+        if ch == "{": depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth < mn: mn = depth
+    return depth, mn
+
+bad = []
+for name, block in zip(("_GALLERY_CSS", "_EMBED_CSS", "_LB_CSS", "_SOCIAL_CSS", "_ADMIN_CSS"), blocks):
+    d, mn = balance("".join(css_strings(block)))
+    if d != 0 or mn < 0:
+        bad.append(f"{name}: End-Tiefe {d}, min {mn}")
+if bad:
+    raise SystemExit(" | ".join(bad))
+print("css-balance: OK (5 Bloecke balanciert)")
+PY
 
 [ "$FAIL" = 0 ] && echo "release-check: OK (version=$V_STORE, docs aktuell)" || exit 1
