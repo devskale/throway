@@ -497,6 +497,23 @@ curl -X POST -H "Authorization: Bearer <token>" "$BASE/d/<key>?retain=1"
 - Falsches/fehlendes Token bei Retention-Anfrage: 401; ohne konfiguriertes
   Token: 401 "retention is not enabled".
 
+### Show-Dirs — permanent + öffentlich beschreibbar (`&show=1`)
+
+```bash
+# Show-Dir anlegen (Token) — danach darf JEDER mit der URL read+editen
+curl -X POST -H "Authorization: Bearer <token>" \
+     "$BASE/?dir=1&show=1&name=team-board"
+
+# Bestands-Dir zum Show-Dir flippen (idempotent)
+curl -X POST -H "Authorization: Bearer <token>" "$BASE/d/<key>?show=1"
+```
+
+- Show-Dir = `{retain: true, open: true}`: unbegrenzt lebend **und** öffentlich
+  beschreibbar — Dateien adden/editen/löschen ohne Token, beliebige Typen.
+- **Ganzer-Dir-Delete nur mit Token** (File-Deletes bleiben offen).
+- `write_token` (falls bei Create gesetzt) schlägt `open`.
+- Responses carry `"open": true`; History protokolliert jede Änderung.
+
 ---
 
 ## Pics — event galleries (seit 1.20.0, Details: `GET /help/pics`)

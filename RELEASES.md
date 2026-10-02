@@ -1,9 +1,34 @@
 # throway — Releases
 
-**Current version:** `1.44.0`
+**Current version:** `1.45.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.0 — 2026-10-02
+
+### Feature: Show-Dirs — permanent + öffentlich beschreibbar (`&show=1`)
+
+Issue throway-show-dirs (User-Spec): eine per Retain-Token **einmal
+generierte** Dir, danach **unbegrenzt** nutzbar, und **jeder mit der URL
+darf read+editen** — beliebige Dateitypen. Das Kollaborations-Pendant zu
+1.44.0: reteniert (stabil) aber mit offenem Write-Modell.
+
+- `POST /?dir=1&show=1[&name=<slug>]` + Token → Meta `{retain: true,
+  open: true}`: nie expiry/eviction, öffentlich beschreibbar.
+- `POST /d/<key>?show=1` + Token flippt Bestands-Dirs (idempotent);
+  `show=1` auf Nicht-Dirs → 400.
+- File-Level-Ops (add/edit/delete) ohne Token; **Whole-Dir-Delete nur mit
+  Token** (schützt das Retention-Versprechen — sonst tötet jeder Joker
+  die Show).
+- `write_token` (falls bei Create gesetzt) hat weiter Vorrang vor `open`.
+- Dir-Responses carry `"open": true`; History läuft mit (Accountability
+  ohne Auth). `/api`: `show_dir`-Endpunkt, `&show=1` im create_dir-Note;
+  `/help/retention` um SHOW-DIRS-Sektion erweitert.
+
+Tests: `tests/test_show.py` (10 neue); Suite 125/125 grün.
 
 ---
 

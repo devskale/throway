@@ -52,6 +52,10 @@ curl -X POST --data-binary @secret.txt \
 curl -X POST --data-binary @skill.tar.gz \
      -H "Authorization: Bearer <retain-token>" \
      "https://skale.dev/throway/?name=skill.tar.gz"
+
+# show-dir: permanent + everyone with the URL can read AND edit
+curl -X POST -H "Authorization: Bearer <retain-token>" \
+     "https://skale.dev/throway/?dir=1&show=1&name=team-board"
 ```
 
 ```bash
@@ -125,7 +129,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |
 | Rate limit | **100 req/min** per IP |
-| **Retention** | token-gated: uploads with the retain token **never expire** & are never evicted; public read, token-gated write ([details](API.md#retention-indefinite-objects-token-gated-since-1440)) |
+| **Retention** | token-gated: uploads with the retain token **never expire** & are never evicted; public read, token-gated write; **show-dirs** (`&show=1`): permanent dirs everyone with the URL can edit ([details](API.md#retention-indefinite-objects-token-gated-since-1440)) |
 | **pics galleries** | shared pool **20 GB** (full = uploads rejected with 507, never evicted), images fixed **90 days** (gallery slides on upload), max **30 MB** per image, recompressed to ≤ 2048 px WebP (GIFs pass through, HEIC supported) |
 
 ## 🖼️ Behavior

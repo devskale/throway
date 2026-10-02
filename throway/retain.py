@@ -67,7 +67,8 @@ def request_retention(handler):
         if valid(token):
             return True, None
         return False, (401, {"error": "invalid retain token"})
-    if "retain=1" in (handler.path.split("?", 1)[1] if "?" in handler.path else ""):
+    qs = handler.path.split("?", 1)[1] if "?" in handler.path else ""
+    if "retain=1" in qs or "show=1" in qs:
         if not ENABLED:
             return False, (401, {"error": "retention is not enabled on this server"})
         return False, (401, {"error": TOKEN_HINT})
@@ -118,6 +119,20 @@ Rules:
 - "&once=1" (burn-after-reading) cannot be combined with retention (400).
 - Retained units are never swept and never pool-evicted; when the pool
   runs tight, only disposable units are evicted.
+
+SHOW-DIRS — permanent, publicly writable dirs
+
+  curl -X POST -H "Authorization: Bearer <token>" \\
+       "{PUBLIC_BASE}/?dir=1&show=1&name=team-board"
+
+- A show-dir is retained (never expires, never evicted) AND open:
+  EVERYONE with the URL can add, edit and delete files — no token.
+- Creating or flipping needs the token. Deleting the WHOLE dir needs
+  the token too (protects the retention promise); file-level deletes
+  stay open.
+- Flip an existing dir: POST {PUBLIC_BASE}/d/<key>?show=1 (token).
+- Dir responses carry "open": true; the edit history records every
+  change, so abuse is traceable even without auth.
 
 Errors: 401 invalid retain token / token required / retention not
 enabled; 400 once=1 combined with retention.""",

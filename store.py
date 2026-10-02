@@ -87,7 +87,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.44.0"
+VERSION = "1.45.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1204,6 +1204,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "header or ?write=<token>"})
             if not hmac.compare_digest(given.encode(), m["write_token"].encode()):
                 return (401, {"error": "invalid write token"})
+        if m.get("open"):
+            return None      # show-dir: everyone with the URL may write
         return self._retain_write_denied(m)
 
     def _retain_write_denied(self, m):
@@ -1598,6 +1600,13 @@ class Handler(BaseHTTPRequestHandler):
         if parts and parts[0] == pics.NS:
             return pics.post(self, parts[1:], qp)
 
+        # POST /d/<key>?show=1 (token) -> flip a dir to a SHOW-DIR:
+        # indefinite AND publicly writable. show=1 on non-dirs is a 400.
+        if retained and "show=1" in query and not want_dir:
+            if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
+                return self._show_flip_dir(parts[1])
+            return self._err(400, "show=1 applies to dirs only: POST /d/<key>?show=1")
+
         # POST /<id>?retain=1 (token) -> flip an existing file/bundle to
         # indefinite retention; POST /d/<key>?retain=1 flips a whole dir.
         if retained and "retain=1" in query:
@@ -1719,6 +1728,20 @@ class Handler(BaseHTTPRequestHandler):
             "id": fid, "url": f"{PUBLIC_BASE}/{fid}",
             "retention": "indefinite", "expires_at": None,
             "persistence": _persistence_block("single", None)}), "application/json")
+
+    def _show_flip_dir(self, key):
+        """POST /d/<key>?show=1 (token) — flip a dir to a show-dir:
+        retained (indefinite) AND publicly writable. Idempotent."""
+        m = _dir_meta(key)
+        if not m:
+            return self._err(404, "not found")
+        if not (m.get("retain") and m.get("open")):
+            m["retain"] = True
+            m["open"] = True
+            m.pop("expires", None)
+            m.pop("max_age", None)
+            json.dump(m, open(_dir_meta_path(key), "w"))
+        return self._dir_response(key, _dir_path(key), _dir_meta(key))
 
     def _retain_flip_dir(self, key):
         """POST /d/<key>?retain=1 (token) — flip a dir to indefinite."""
@@ -2075,6 +2098,7 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(dirpath, exist_ok=True)
         ttl = _parse_ttl((qp.get("ttl") or [""])[0]) or DIR_DEFAULT_AGE
         listed = "listed=1" in (self.path.split("?", 1)[1] if "?" in self.path else "")
+        show = "show=1" in (self.path.split("?", 1)[1] if "?" in self.path else "")
         tags = _parse_tags(qp.get("tag", []))
         write_flag = (qp.get("write") or [""])[0].strip()
         write_token = None
@@ -2095,7 +2119,10 @@ class Handler(BaseHTTPRequestHandler):
             "tags": tags,
             "files": {},
         }
-        if retained:
+        if retained and show:
+            meta["retain"] = True          # show-dir: indefinite ...
+            meta["open"] = True            # ... and publicly writable
+        elif retained:
             meta["retain"] = True          # token-gated: never expires
         else:
             meta["expires"] = now + ttl
@@ -2308,6 +2335,8 @@ class Handler(BaseHTTPRequestHandler):
             resp["name"] = meta["name"]
         if meta.get("listed"):
             resp["listed"] = True
+        if meta.get("open"):
+            resp["open"] = True
         if meta.get("write_token"):
             resp["write_protected"] = True
         if write_token:
@@ -2422,8 +2451,16 @@ class Handler(BaseHTTPRequestHandler):
     def _dir_delete(self, parts):
         if self._dir_write_guard(parts[0] if parts else ""):
             return
-        """DELETE /d/<key> or /d/<key>/<file>."""
+        """DELETE /d/<key> or /d/<key>/<file>. Whole-dir delete on a
+        retained dir (incl. show-dirs) needs the retain token — file
+        deletes stay open."""
         key = parts[0]
+        dm = _dir_meta(key)
+        if dm and dm.get("retain") and not retain.valid(retain.token_from(self)) \
+                and not (len(parts) >= 2 and parts[1]):
+            return self._send(401, json.dumps(
+                {"error": "whole-dir delete on a retained dir needs the retain "
+                          "token (file-level deletes stay open)"}), "application/json")
         dirpath = _dir_path(key)
         m = _dir_meta(key)
         if not m or m.get("type") != "dir":
@@ -2922,7 +2959,7 @@ function copyDesc() {{
                 "browse_files": {"method": "GET", "url": PUBLIC_BASE + "/browse?tag=<t>[&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]", "note": "JSON listing of live single files for agents (HTML page for browsers). Filter by one or more &tag= values (AND), by name/tag substring &q=; sort with &sort= (default created) and &order= (default desc). Each entry: id, url, name, content_type, size, tags, created_at, expires_at."},
                 "tag_file": {"method": "POST", "url": PUBLIC_BASE + "/<id>?tag=<t>[&tag=<t2>][&untag=<t3>]", "note": "update tags on an existing single file without touching its content or expiry. Tags: lowercase [a-z0-9-], 1-24 chars, max 5 per file."},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
-                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open.", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "tags": ["str"]}},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open; &show=1 (retain token) creates a SHOW-DIR: indefinite AND publicly writable — everyone with the URL may add/edit/delete files, whole-dir delete stays token-gated", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "open?": "bool (show-dir)", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl; 401 without the X-Throway-Write token when the dir is write-protected"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
                 "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
@@ -2934,6 +2971,7 @@ function copyDesc() {{
                 "delete_dir": {"method": "DELETE", "url": PUBLIC_BASE + "/d/<key>", "note": "delete a whole dir"},
                 "list_dirs": {"method": "GET", "url": PUBLIC_BASE + "/d", "note": "list dirs created with listed=1; filters ?q=<sub> (name or tag), ?created_after/before=<ts>, ?updated_after/before=<ts>; sort ?sort=created|updated|name&order=asc|desc (default created desc)"},
                 "delete": {"method": "DELETE", "url": PUBLIC_BASE + "/<id>"},
+                "show_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1&show=1[&name=<slug>]", "note": "create a SHOW-DIR (retain token): indefinite lifetime AND public write — everyone with the URL can add/edit/delete files (no token), whole-dir delete needs the token, history records everything. Flip an existing dir with POST /d/<key>?show=1 (token, idempotent). See /help/retention.", "response": {"id": "str", "url": "str", "dir": True, "open": True, "persistence": {"type": "dir", "expires_at": None, "extendable_by": "none", "max_age": None, "retention": "indefinite"}}},
                 "retain": {"method": "POST", "url": PUBLIC_BASE + "/<id>?retain=1", "note": "flip an EXISTING file, bundle (/<id>) or dir (/d/<key>?retain=1) to indefinite retention: never expires, exempt from pool eviction, public read, but writes/deletes need the retain token. Requires the token (Authorization: Bearer <token> or ?token=). Idempotent. Token-authenticated uploads and PUT/PATCH writes retain implicitly. See /help/retention.", "response": {"id": "str", "url": "str", "retention": "indefinite", "expires_at": None, "persistence": {"type": "single|dir|bundle", "expires_at": None, "extendable_by": "none", "max_age": None, "retention": "indefinite"}}},
                 "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content"},
                 "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)"},

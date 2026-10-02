@@ -174,6 +174,26 @@ Rules:
   runs tight, only disposable units are evicted.
 - Wrong/missing token on a retention request: `401`. On servers without
   a retain token: `401 retention is not enabled`.
+
+### Show-Dirs (`&show=1`, since 1.45.0)
+
+A dir that is **retained AND publicly writable** — one token-holder
+generates it once, then everyone with the URL reads and edits (any file
+type):
+
+```bash
+# create (retain token)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+     "$BASE/?dir=1&show=1&name=team-board"
+
+# flip an existing dir (idempotent)
+curl -X POST -H "Authorization: Bearer $TOKEN" "$BASE/d/<key>?show=1"
+```
+
+- File-level ops (add/edit/delete) need **no token** — open collaboration.
+- **Whole-dir delete needs the token** (protects the retention promise).
+- `write_token` (if set at create) still takes precedence over `open`.
+- Dir responses carry `"open": true`; history records every change.
 - Details: `GET /help/retention` (topic `retention`).
 
 ## Browser rendering (since 1.27.0 / 1.28.0)
@@ -235,6 +255,7 @@ schlägt beim Push an.)
 | list_dirs | [Dirs](#dirs--one-unified-concept-under-dkey) |
 | delete | [Delete a file](#delete-a-file) |
 | retain | [Retention](#retention-indefinite-objects-token-gated-since-1440) |
+| show_dir | [Retention](#retention-indefinite-objects-token-gated-since-1440) (`&show=1`) |
 | edit_text | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
 | append_text | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
 | contract | [Contract endpoint](#contract-endpoint) |
