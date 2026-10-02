@@ -25,6 +25,11 @@ rsync -a --delete throway lubu:/var/www/store/   # NO trailing slash on throway/
 A trailing slash on the package dir flattens its contents into
 `/var/www/store/` — happened, service failed its own smoke.
 
+- **Daten-Root ≠ Deploy-Root auf lubu** (Retro 2026-10-02, hard-validate):
+  Code liegt in `/var/www/store`, Daten in `/srv/storage2/throway`
+  (Code-Default von `THROWAWAY_ROOT`). ssh-Aufräumen am falschen Ort
+  läuft *still ins Leere* (rm erfolgreich, Objekt lebt weiter) — erst
+  `systemctl cat`/`find` nach dem echten ROOT, dann rm.
 - Secrets live in the systemd drop-in
   (`/etc/systemd/system/throway-store.service.d/`), never in the repo.
 - Verify, in order: `grep ^VERSION` on lubu, `systemctl is-active`,
@@ -88,6 +93,16 @@ Done = active + live version correct + feature smoke green + heartbeat started.
   everything else. Monolith edits stay surgical.
 - Optional deps (`PIL`, `pillow_heif`) import lazily inside functions —
   the server must start without them.
+- **Kein Create-Pfad ohne Delete-Pfad** (Retro 2026-10-02, hard-validate):
+  jede Erzeugungsroute braucht eine *live geprüfte* Löschroute. Bundles
+  waren seit 1.0 per API unlöschbar (DELETE prüfte nur `isfile`), die
+  Doku behauptete das Gegenteil — mit Retention wurden sie immortal
+  orphans. Eine neue Objektart oder Lifetime einzubauen heißt: den
+  Gegenpfad im selben Commit testen.
+- **Nach Guard-Mutation Meta neu laden** (Retro 2026-10-02, hard-validate):
+  wenn ein Guard neben der Prüfung Meta auf Disk ändert (write implies
+  retention), müssen Caller ihr In-Memory-Meta verwerfen — sonst
+  überschreibt der nächste `json.dump` den Flip still (`_share_store`).
 - The HELP dict is the single source for all agent copy; the root agent
   description assembles from it automatically. One meaning, one place.
 - All limits env-tunable (`THROWAWAY_*`), defaults in code.
@@ -155,6 +170,18 @@ Non-negotiable; each guards a real hole found this session:
   `rodney screenshot` waits for network-idle, which external embeds never
   reach. Measure the DOM (`getBoundingClientRect`, counts, flags) —
   numbers, not pixels.
+- **Harte Live-Validierung vor Review** (Retro 2026-10-02, hard-validate):
+  nach Feature-Deploys einen adversarialen Pass fahren — nicht nur happy
+  path: „kann man das erzeugte Objekt wieder loswerden?", leere/falsche
+  Credentials, Flag-Kombinationen, HTML-Injection-Namen, Write-Gates an
+  ALLEN Routen (auch share/import). Der Pass fand 2 echte Bugs, die 127
+  grüne Tests nicht sahen.
+- **Live-Validierer-Hygiene**: eindeutige Objektnamen pro Run (create-or-get
+  revealt write_token nie wieder → Run 2 crasht) und Cleanup via
+  atexit/finally — Crash vor Cleanup hinterlässt *retained* Orphans, die
+  nur per ssh sterben.
+- **HTTP/2-Proxies lowercases Response-Header** (`X-Expires` → `x-expires`):
+  Header-Assertionen case-insensitiv lesen, sonst False-Negative-FAILs.
 - **Prove features with real data once** — the ~/Pictures upload
   surfaced the `%40`-encoding bug that every synthetic test missed.
 - Long tasks run in a Herdr pane with `tee` into a log; the heartbeat
