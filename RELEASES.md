@@ -1,9 +1,35 @@
 # throway — Releases
 
-**Current version:** `1.45.0`
+**Current version:** `1.45.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.1 — 2026-10-02
+
+### Bugfixes aus der harten Live-Validierung (Retro hard-validate)
+
+1. **Bundles waren per API unloeschbar** (praekexistent, Doku behauptete
+   das Gegenteil): `DELETE /<id>` pruefte nur `isfile` — Bundles sind
+   Dirs → 404, seit 1.44.0 auch mit Token. Mit Retention akut: retained
+   Bundles waren immortal orphans (nur per ssh entfernbar). Fix: Bundle-
+   Delete mit Retain-Gate. Regel daraus: **kein Create-Pfad ohne
+   Delete-Pfad**.
+2. **„Write implies retention" versagte bei `?share=`**: `_share_store`
+   rief den Write-Guard nur bei `write_token`-Dirs; Token-Adds auf
+   normalen Share-Dirs flippeden nicht. Fix: Guard immer + Meta-Neuladen
+   danach (der Flip landete auf Disk, aber `_dir_write_files` schrieb das
+   stale In-Memory-Meta zurueck).
+
+Benigne Kanten (dokumentiert, kein Fix noetig): leerer Bearer zaehlt als
+kein Token (Wegwerf-Upload); falscher Query-Token ohne Retention-Wunsch
+→ fail-closed 401; HTTP/2 lowercased Response-Header (Validierung
+case-insensitiv lesen).
+
+Tests: +2 (`test_bundle_deletable_and_retained_gate`,
+`test_share_token_add_implies_retention`); Suite 127/127 grün.
 
 ---
 

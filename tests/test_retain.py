@@ -267,3 +267,44 @@ def test_api_and_help_surface(srv):
 def test_api_retention_flag_off(srv_off):
     st, _, body = srv_off.get("/api", headers=AGENT)
     assert json.loads(body)["retention_token"] is False
+
+
+# --- 1.45.1 hard-validate fixes -------------------------------------------
+
+def test_bundle_deletable_and_retained_gate(srv):
+    """Retro hard-validate: kein Create ohne Delete-Pfad. Normale Bundles
+    waren per Doku loeschbar, code-seitig kam DELETE nur bei Files an."""
+    body, ctype = multipart([("a.txt", b"aaa", "text/plain"),
+                             ("b.css", b"b{}", "text/css")])
+    # normales Bundle: ohne Token loeschbar
+    st, resp = srv.jpost("/", data=body, headers={**AGENT, "Content-Type": ctype})
+    assert st == 200
+    st, _, _ = srv.delete(f"/{resp['id']}", headers=AGENT)
+    assert st == 200
+    st, _, _ = srv.get(f"/{resp['id']}", headers=AGENT)
+    assert st == 404
+    # retained Bundle: ohne Token 401, mit Token 200
+    body, ctype = multipart([("a.txt", b"aaa", "text/plain"),
+                             ("b.css", b"b{}", "text/css")])
+    st, resp = srv.jpost("/", data=body, headers={**AGENT, **AUTH,
+                                                    "Content-Type": ctype})
+    assert st == 200 and resp["expires_at"] is None
+    st, _, _ = srv.delete(f"/{resp['id']}", headers=AGENT)
+    assert st == 401
+    st, _, _ = srv.delete(f"/{resp['id']}", headers={**AGENT, **AUTH})
+    assert st == 200
+
+
+def test_share_token_add_implies_retention(srv):
+    """Token-Add auf bestehendem Normal-Share-Dir muss es retained machen
+    (write implies retention — ging ueber _share_store frueher verloren)."""
+    st, body = srv.jpost("/?share=hfixdir&name=one.txt", data=b"1", headers=AGENT)
+    assert st == 200 and body["expires_at"] is not None
+    st, body = srv.jpost("/?share=hfixdir&name=two.txt", data=b"2",
+                          headers={**AGENT, **AUTH})
+    assert st == 200
+    assert body["expires_at"] is None, body
+    assert body["persistence"]["retention"] == "indefinite"
+    # und jetzt write-gated
+    st, _, raw = srv.post("/?share=hfixdir&name=three.txt", data=b"3", headers=AGENT)
+    assert st == 401

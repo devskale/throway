@@ -87,7 +87,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.45.0"
+VERSION = "1.45.1"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1982,9 +1982,13 @@ class Handler(BaseHTTPRequestHandler):
         if _meta_expired(meta, now):
             shutil.rmtree(dirpath, ignore_errors=True)
             meta = None
-        if meta is not None and meta.get("write_token"):
+        if meta is not None:
             if self._dir_write_guard(key):
                 return
+            # der Guard kann die Dir soeben retained gemacht haben
+            # (write implies retention) — Meta neu laden, sonst schreibt
+            # _dir_write_files das stale Meta zurueck (Retro hard-validate)
+            meta = _dir_meta(key)
         if meta is None:
             os.makedirs(dirpath, exist_ok=True)
             ttl = ttl_seconds or DIR_DEFAULT_AGE
@@ -2642,6 +2646,15 @@ class Handler(BaseHTTPRequestHandler):
             if denied:
                 return self._send(denied[0], json.dumps(denied[1]), "application/json")
             _remove(fp); self._send(200, "deleted\n")
+        elif os.path.isdir(fp) and fid not in (DIR_NS, pics.NS):
+            # bundle dir: DELETE /<id> removes the whole bundle (documented
+            # since 1.0; retained bundles need the retain token — Retro
+            # 2026-10-02 hard-validate: kein Create ohne Delete-Pfad)
+            denied = retain.write_denied(self, _bundle_meta(fp, fid))
+            if denied:
+                return self._send(denied[0], json.dumps(denied[1]), "application/json")
+            shutil.rmtree(fp, ignore_errors=True)
+            self._send(200, "deleted\n")
         else:
             self._err(404, "not found")
 
