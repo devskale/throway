@@ -128,6 +128,15 @@ Non-negotiable; each guards a real hole found this session:
   grep after any multi-edit.
 - Validate generated JS by extracting the rendered page's scripts and
   `node --check`-ing them; HTML markup via grep on the live response.
+  **Automated since 1.43.3** — `tests/test_pics.py`
+  (`test_js_constants_are_str` + `test_rendered_scripts_node_check`)
+  assert the JS-carrying constants stay `str` and every rendered `<script>`
+  parses. CI runs them; the manual step is now a safety net, not the gate.
+- **CSS-Klammer-Balance** (Retro 2026-10-02): Verwaiste/doppelte `}` legen
+  die FOLGENDE Regel still weg (2× passiert). **Automated** —
+  `scripts/release-check.sh` prüft die `_*_CSS`-String-Inhalte in
+  `pics.py` auf `{`/`}`-Balance (Kommentare + Strings ignoriert). Läuft bei
+  jedem Release; der manuelle Balance-Check ist damit überflüssig.
 
 ## Process
 
@@ -137,6 +146,11 @@ Non-negotiable; each guards a real hole found this session:
   `rodney url` once — other agents navigate the same instance, and evals
   on a foreign page read as mysterious failures (three misread rounds
   this session).
+- **Start each browser flow from a clean page.** localStorage persists
+  across evals on the same page — a click that "doesn't take" is often a
+  prior eval that already mutated state (or pre-populated the key).
+  Reset the relevant localStorage keys and re-open the page before
+  asserting a flow (Retro 1.43.2, P4).
 - **Functional assertions over screenshots** on iframe-heavy pages:
   `rodney screenshot` waits for network-idle, which external embeds never
   reach. Measure the DOM (`getBoundingClientRect`, counts, flags) —

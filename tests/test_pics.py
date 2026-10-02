@@ -1193,3 +1193,90 @@ def test_stars_received_abwaehlen_injected(srv):
         assert "starmine()[pid]||RECEIVED[pid])&&!DESEL[pid]" in h, qs
         # Klick setzt DESEL, wenn das Bild im RECEIVED-Set liegt
         assert "else if(RECEIVED[spid])DESEL[spid]=1" in h, qs
+
+
+# --- Retro 1.43.2: JS-in-Python-strings maschinell geprüft ----------------
+# Die Module bauen Browser-JS als Python-Stringlisten (_SOCIAL_JS, _LB_HTML,
+# _lb_script). Zwei Fehlerklassen schlüpften durch, weil nur manuell geprüft:
+#   (a) ein Trailing-Comma machte aus der String-Konkatenation ein Tupel →
+#       _social_js crashte mit AttributeError ('tuple' hat kein .replace);
+#   (b) ungültiges JS in den Strings (nur manuelles node --check fing es).
+# Diese Tests machen beides deterministisch: Konstanten sind str, und jedes
+# gerenderte <script> parst mit node --check.
+
+import re as _re
+import shutil as _shutil
+import subprocess as _sp
+
+
+def _inline_scripts(html):
+    """Alle Inline-<script>-Körper ohne type=application/json (lbdata)."""
+    out = []
+    for m in _re.finditer(r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>",
+                          html, _re.S):
+        if "application/json" in (m.group("attrs") or ""):
+            continue
+        out.append(m.group("body"))
+    return out
+
+
+def _node_check(source):
+    """node --check auf dem JS-Körper; True wenn syntaktisch gültig."""
+    if not _shutil.which("node"):
+        pytest.skip("node nicht installiert")
+    p = _sp.run(["node", "--check", "-"], input=source.encode(),
+                capture_output=True, timeout=30)
+    return p.returncode == 0, p.stderr.decode()
+
+
+def _assert_js_constants_are_str():
+    from throway import pics as P
+    for name in ("_SOCIAL_JS", "_LB_HTML", "_SOCIAL_CSS",
+                 "_LB_CSS", "_STAR_SVG", "_HEART_SVG"):
+        v = getattr(P, name)
+        assert isinstance(v, str), \
+            f"{name} ist {type(v).__name__}, kein str — String-Konkatenation " \
+            f"durch Trailing-Comma zu Tupel/Liste geworden?"
+
+
+def test_js_constants_are_str():
+    """Retro 1.43.2 (a): Die Browser-JS-Konstanten bleiben echte Strings.
+    Ein Trailing-Comma in der Stringliste macht sie zu Tupeln und crasht
+    _social_js beim .replace() — deterministisch gefangen, nicht erst beim
+    Serverstart."""
+    _assert_js_constants_are_str()
+
+
+def test_rendered_scripts_node_check(srv):
+    """Retro 1.43.2 (b): Jedes gerenderte <script> (embed + volle Seite,
+    mit und ohne stars/sort) parst mit node --check — ungültiges JS in den
+    String-Konstanten fällt hier, nicht erst im Browser."""
+    g = _mk_gal(srv, "jscheck")
+    _up(srv, g["id"], "a.jpg", (120, 40, 200))
+    _up(srv, g["id"], "b.jpg", (10, 200, 30))
+    a = _up(srv, g["id"], "c.jpg", (200, 200, 200))["id"]
+    if not _shutil.which("node"):
+        pytest.skip("node nicht installiert")
+    pages = [
+        f"/pics/g/{g['id']}?embed=1",
+        f"/pics/g/{g['id']}?embed=1&sort=likes",
+        f"/pics/g/{g['id']}?embed=1&stars={a}",
+        f"/pics/g/{g['id']}",
+        f"/pics/g/{g['id']}?sort=likes",
+    ]
+    seen = set()
+    for path in pages:
+        st, _, html = srv.get(path, headers=BROWSER)
+        assert st == 200, path
+        for i, body in enumerate(_inline_scripts(html.decode())):
+            if not body.strip():
+                continue
+            key = body.strip()
+            if key in seen:      # gleiche Scripts über Seiten hinweg dedup
+                continue
+            seen.add(key)
+            ok, err = _node_check(body)
+            assert ok, f"node --check FAIL in {path} script#{i}:\n{err}"
+    # Sanity: wir haben wirklich die JS-Konstanten geprüft
+    assert seen, "keine Inline-Scripts gefunden — Render-Pfad geändert?"
+    assert any("paintStar" in s for s in seen), "paintStar fehlt — _SOCIAL_JS nicht gerendert?"

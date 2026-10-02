@@ -153,6 +153,49 @@ def _cumulative():
     """All-time totals (files ever uploaded, bytes ever uploaded)."""
     return _load_stats()
 
+def _idem_map_path():
+    return os.path.join(ROOT, ".idem.json")
+
+
+def _idem_load():
+    try:
+        with open(_idem_map_path(), "r", encoding="utf-8") as f:
+            return _read_json(f.name) or {}
+    except Exception:
+        return {}
+
+
+def _idem_get(key):
+    """key -> gespeicherte Upload-Antwort (falls Ziel noch lebt)."""
+    if not key:
+        return None
+    try:
+        return _idem_load().get(hashlib.sha256(key.encode()).hexdigest())
+    except Exception:
+        return None
+
+
+def _idem_put(key, resp):
+    if not key:
+        return
+    try:
+        m = _idem_load()
+        h = hashlib.sha256(key.encode()).hexdigest()
+        # aufraeumen: Eintraege, deren Ziel nicht mehr existiert
+        for k, v in list(m.items()):
+            fp = _id_path(v.get("id", ""))
+            mp = _meta_path(v.get("id", ""))
+            if not (os.path.isfile(fp) and os.path.isfile(mp)):
+                del m[k]
+        m[h] = resp
+        tmp = _idem_map_path() + ".part"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(m, f)
+        os.replace(tmp, _idem_map_path())
+    except Exception:
+        pass
+
+
 def _id_path(fid):
     # ids are secrets.token_hex, safe; guard anyway
     return os.path.join(ROOT, os.path.basename(fid))
@@ -1418,6 +1461,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self._rate(): return
+        # 1.42.x P2: Idempotenz-Key. Ein Agent, der nach Timeout wiederholt,
+        # darf keine zweite Datei erzeugen. Header oder ?idem=; der Key wird
+        # nur gehasht gespeichert. Treffer -> dieselbe Antwort wie beim
+        # ersten Mal (sofern das Ziel noch lebt).
+        idem = (self.headers.get("Idempotency-Key")
+                or (unquote((self.path.split("?", 1)[1].partition("idem=")[2]
+                             if "idem=" in self.path else "")).split("&")[0]))
+        idem = idem.strip()[:128] if idem else None
+        if idem:
+            prev = _idem_get(idem)
+            if prev and os.path.isfile(_id_path(prev.get("id", ""))):
+                prev = dict(prev)
+                prev["idempotent_replay"] = True
+                return self._send(200, json.dumps(prev, indent=2),
+                                  "application/json")
+        self._idem_pending = idem
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         qp = {}
         for kv in query.split("&"):
