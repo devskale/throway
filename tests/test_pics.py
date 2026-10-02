@@ -1077,3 +1077,72 @@ def test_sweep_throttle(tmp_path):
     # explizites now= umgeht die Drossel und raeumt ab
     pics.sweep(root, now=time.time())
     assert not os.path.isfile(fp), "expliziter Sweep muss loeschen"
+
+
+# --- star & share-set (1.43.0) --------------------------------------------
+
+def test_stars_sort_link_order_and_selected(srv):
+    """?stars=b,a,c shows b,a,c first (link order), then the rest; agent
+    JSON mirrors selected."""
+    g = _mk_gal(srv, "stars")
+    a = _up(srv, g["id"], "a.jpg", (120, 40, 200))["id"]
+    b = _up(srv, g["id"], "b.jpg", (10, 200, 30))["id"]
+    c = _up(srv, g["id"], "c.jpg", (200, 200, 200))["id"]
+    st, _, body = srv.get(f"/pics/g/{g['id']}?stars={b},{a}", headers=AGENT)
+    d = json.loads(body)
+    assert st == 200
+    assert d["selected"] == [b, a]
+    assert [i["id"] for i in d["images"]] == [b, a, c]
+
+
+def test_stars_combines_with_sort_likes(srv):
+    """Stars stay first (link order) even on sort=likes pages; rest follows
+    like ranking."""
+    g = _mk_gal(srv, "starslk")
+    a = _up(srv, g["id"], "a.jpg", (120, 40, 200))["id"]
+    b = _up(srv, g["id"], "b.jpg", (10, 200, 30))["id"]
+    c = _up(srv, g["id"], "c.jpg", (200, 200, 200))["id"]
+    for ip in ("198.51.100.1", "198.51.100.2"):
+        srv.post(f"/pics/i/{a}?like=1",
+                 headers={**BROWSER, "X-Forwarded-For": ip})
+    srv.post(f"/pics/i/{c}?like=1",
+             headers={**BROWSER, "X-Forwarded-For": "198.51.100.3"})
+    st, _, body = srv.get(f"/pics/g/{g['id']}?sort=likes&stars={c},{a}",
+                          headers=AGENT)
+    d = json.loads(body)
+    assert [i["id"] for i in d["images"]] == [c, a, b]  # stars first, then b
+
+
+def test_stars_skips_unknown_hidden_expired_pids(srv):
+    """Unknown/hidden/expired pids in the link are silently skipped — no
+    404, the link stays valid."""
+    g = _mk_gal(srv, "starsrob")
+    a = _up(srv, g["id"], "a.jpg", (120, 40, 200))["id"]
+    b = _up(srv, g["id"], "b.jpg", (10, 200, 30))["id"]
+    st, _, body = srv.get(
+        f"/pics/g/{g['id']}?stars=deadbeefdeadbeef,zzzz,{a}", headers=AGENT)
+    assert st == 200
+    d = json.loads(body)
+    # invalid 'zzzz' filtered out; deadbeef (unknown) kept in selected but
+    # not present in order; valid a survives
+    assert d["selected"] == ["deadbeefdeadbeef", a]
+    assert [i["id"] for i in d["images"]] == [a, b]
+
+
+def test_embed_and_page_carry_star_ui(srv):
+    """Star buttons, star bar + share button render on both embed and full
+    page; starred cells get data-star + star button."""
+    g = _mk_gal(srv, "starsui")
+    a = _up(srv, g["id"], "a.jpg", (120, 40, 200))["id"]
+    _up(srv, g["id"], "b.jpg", (10, 200, 30))
+    for qs in ("embed=1", ""):
+        sep = "&" if qs else ""
+        st, _, html = srv.get(f"/pics/g/{g['id']}?{qs}{sep}stars={a}",
+                              headers=BROWSER)
+        h = html.decode()
+        assert st == 200
+        assert "class=st " in h or "class=st\"" in h, qs  # star buttons
+        assert "shareSet" in h and "starHint" in h, qs
+        assert "ty_stars_" in h, qs
+        assert f"data-pid={a} aria-label" in h and "data-star" in h, qs
+        assert "class=lk" in h, qs  # like buttons still present

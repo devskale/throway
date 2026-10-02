@@ -88,6 +88,26 @@ buttons on every thumb + in the lightbox, an AJAX comment form, and on
 `sort=likes` pages liked images FLIP-climb live (30 s poll). Admins
 delete comments via the admin page (action `cdel`).
 
+### Star & share-set (since 1.43.0)
+
+Starring is a **private** per-browser selection (localStorage
+`ty_stars_<gid>`), separate from public likes — guests pick favourite
+photos and share them as a set. No server state, no counters, no rate
+limits, no "who may delete the set" problem.
+
+```bash
+# the shared link — starred pids first (in link order), rest after
+curl -A curl "$BASE/pics/g/hochzeit-2026?stars=<pid1>,<pid2>"
+#   -> "selected": ["<pid1>", "<pid2>"], images sorted starred-first
+```
+
+Unknown/hidden/expired pids in the link are silently skipped — the link
+never 404s. `?sort=likes` still ranks the non-starred rest. Browsers
+mark starred cells with a filled star and show an "Als Set teilen"
+button (visible once >= 1 star is picked) that builds the `?stars=` link
+from localStorage and shares it via `navigator.share` (copy fallback);
+stars persist across reloads.
+
 Behavior: uploads are recompressed server-side to max 2048 px WebP q80
 (EXIF rotation respected; GIFs pass through untouched; HEIC/AVIF decoded
 via pillow-heif). The original bytes are discarded. Images live a fixed

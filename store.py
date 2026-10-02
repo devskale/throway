@@ -86,7 +86,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.42.0"
+VERSION = "1.43.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)

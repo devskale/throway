@@ -1,9 +1,42 @@
 # throway — Releases
 
-**Current version:** `1.42.0`
+**Current version:** `1.43.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.43.0 — 2026-10-02
+
+### Feature: Fotos starren & als Set teilen (pics-star-set-teilen)
+
+Galerie-Gäste können Lieblingsfotos starren und sie als Set über Social
+Media teilen — ohne Server-State. Star ist bewusst etwas anderes als
+Like: Like ist öffentlich (gezählt, rankt die Galerie), Star ist eine
+**private** Auswahl zum Teilen.
+
+- **Star = rein clientseitig** (localStorage `ty_stars_<gid>`): kein
+  Server-State, keine Rate-Limits, keine Cleanup-Pflicht, kein
+  „wer darf das Set löschen“-Problem. Analog zu den bestehenden
+  Browser-Likes `ty_likes_<gid>`.
+- **Zustandsloser Link statt Set-Objekt:**
+  `/pics/g/<gid>?stars=<pid1>,<pid2>,<pid3>` — starrer PIDs zuerst (in
+  Link-Reihenfolge), dann der Rest in gewohnter Ordnung (`?sort=likes`
+  rankt weiterhin den Rest). Unbekannte/versteckte/abgelaufene PIDs
+  werden still übersprungen — der Link 404t nie.
+- **Browser-UI:** Stern-Button an jedem Thumb + im Lightbox (toggelt
+  localStorage), markierte Zellen mit gefülltem Stern, Hinweis über dem
+  Grid („★ Sterne deine Lieblingsfotos und teile sie als Set.“) und ein
+  „Als Set teilen“-Button mit Zähler (sichtbar ab ≥ 1 Stern) via
+  `navigator.share`/Copy-Fallback. Sterne überleben Reloads.
+- **Agent-JSON** spiegelt die Auswahl als `selected: [pid, …]`.
+
+Browser-Flow (rodney/CDP) verifiziert: Stern-Klick → localStorage →
+Zähler → Share-URL → Reload-Persistenz → Empfänger sieht starrer-zuerst
+mit gefüllten Sternen; Lightbox-Stern synchronisiert mit dem Grid.
+
+Suite: 91 Tests grün, ruff grün.
 
 ---
 

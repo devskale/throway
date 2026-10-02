@@ -348,14 +348,29 @@ def all_pics(root, gid=None):
     return out
 
 
-def _sorted_visible(items, likes=None):
+def _sorted_visible(items, likes=None, stars=None):
     vis = [(pid, m) for pid, m in items if not m.get("hidden")]
+    rank = {pid: i for i, pid in enumerate(stars or [])}
     if likes is None:
-        vis.sort(key=lambda t: (t[1].get("order", 0), -t[1].get("created", 0)))
+        base = lambda t: (t[1].get("order", 0), -t[1].get("created", 0))
     else:          # &sort=likes — most liked first, curated order ties
-        vis.sort(key=lambda t: (-likes.get(t[0], 0), t[1].get("order", 0),
-                                -t[1].get("created", 0)))
+        base = lambda t: (-likes.get(t[0], 0), t[1].get("order", 0),
+                          -t[1].get("created", 0))
+    vis.sort(key=lambda t: (rank.get(t[0], len(rank)),) + base(t))
     return vis
+
+
+def _parse_stars(query):
+    """?stars=a1b2,c3d4 — only hex pids, dedupe, keep link order."""
+    out = []
+    if "stars=" in query:
+        for kv in query.split("&"):
+            if kv.startswith("stars="):
+                for pid in kv[6:].split(","):
+                    pid = pid.strip()
+                    if _HEX.match(pid) and pid not in out:
+                        out.append(pid)
+    return out
 
 
 # --- thumb warmer (1.40.0) -----------------------------------------------
@@ -879,6 +894,14 @@ _GALLERY_CSS = (
     ".drop .meta{margin-top:.45rem}"
     ".srinput{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0)}"
     ".meta{color:var(--muted);font-size:.85rem}"
+    ".stbar{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:0 0 .8rem}"
+    ".starHint{color:#6b7280;font-size:.85rem;margin:0}"
+    ".shareSet{display:inline-flex;align-items:center;gap:.4rem;background:#f59e0b;color:#fff;"
+    "border:0;border-radius:999px;font-weight:600;font-size:.85rem;padding:.45rem .9rem;"
+    "cursor:pointer;min-height:36px}"
+    ".shareSet .cnt{font-weight:700}"
+    ".shareSet[hidden]{display:none}"
+    ".shareSet svg{width:15px;height:15px;fill:#fff;stroke:#fff;stroke-width:1.5}"
     "details.embedbox{margin:.8rem 0 0;font-size:.85rem}"
     "details.embedbox summary{cursor:pointer;color:var(--muted)}"
     "details.embedbox input{width:100%;margin-top:.4rem;background:var(--card);"
@@ -1010,6 +1033,10 @@ _HEART_SVG = ("<svg viewBox='0 0 24 24' aria-hidden='true'>"
                "5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 "
                "5.5 0 0 0 0-7.78z'/></svg>")
 
+_STAR_SVG = ("<svg viewBox='0 0 24 24' aria-hidden='true'>"
+             "<path d='M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 "
+             "9.19 8.63 2 9.24l5.46 4.73L5.82 21z'/></svg>")
+
 _LB_CSS = (
     # 1.38.2: top/left/right + explicit height instead of inset:0 — in an
     # auto-height iframe inset:0 spans the WHOLE iframe height (thousands of
@@ -1036,6 +1063,12 @@ _LB_CSS = (
     "#lb .lblk svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2}"
     "#lb .lblk.on{background:#f43f5e}"
     "#lb .lblk.on svg{fill:#fff}"
+    "#lb .lbsst{display:inline-flex;align-items:center;gap:6px;margin-top:.55rem;"
+    "background:rgba(255,255,255,.12);color:#fff;border:0;border-radius:999px;"
+    "padding:8px 15px;font:600 14px/1 system-ui,-apple-system,sans-serif;cursor:pointer}"
+    "#lb .lbsst svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2}"
+    "#lb .lbsst.on{background:#f59e0b}"
+    "#lb .lbsst.on svg{fill:#fff}"
 )
 
 # 1.39.1 a11y (W3C ARIA APG Dialog-Modal): aria-modal=true, tabindex=-1
@@ -1050,6 +1083,7 @@ _LB_HTML = (
     "<button type=button class='lbnav lbnext' id=lbnext aria-label='next'>&#8250;</button>"
     "<div class=lbcap id=lbcap aria-live=polite></div>"
     "<button type=button class='lblk lk' id=lblk hidden aria-pressed=false aria-label='Bild liken'>" + _HEART_SVG + "<span class=n></span></button>"
+    "<button type=button class='lbsst st' id=lbsst hidden aria-pressed=false aria-label='Bild starren'>" + _STAR_SVG + "</button>"
     "</div>"
 )
 
@@ -1157,6 +1191,7 @@ def _lb_script(imgs, admin_post=None):
         "var opener=null;"
         "function close(){lb.hidden=true;document.body.style.overflow='';lbimg.src='';lbi=-1;"
         "var lk=document.getElementById('lblk');if(lk)lk.hidden=true;"
+        "var sst=document.getElementById('lbsst');if(sst)sst.hidden=true;"
         "if(opener&&opener.focus){try{opener.focus();}catch(e){}}opener=null;}"
         # 1.39.0: naechste Seite an der Grenze nachladen (lazy load darf
         # das Weiterblaettern nicht abwruergen) — wartet kurz auf __tyMore.
@@ -1209,16 +1244,20 @@ def _lb_script(imgs, admin_post=None):
 
 _SOCIAL_CSS = (
     ".grid a{position:relative}"
-    ".lk,.clk{display:inline-flex;align-items:center;gap:4px;border:0;border-radius:999px;"
+    ".lk,.clk,.st{display:inline-flex;align-items:center;gap:4px;border:0;border-radius:999px;"
     "padding:4px 9px 4px 7px;font:600 12px/1.1 system-ui,-apple-system,sans-serif;"
     "background:rgba(17,24,39,.62);color:#fff;cursor:pointer;backdrop-filter:blur(3px)}"
-    ".lk svg,.clk svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2}"
+    ".lk svg,.clk svg,.st svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2}"
     ".lk.on,.clk.on{background:#f43f5e}"
     ".lk.on svg,.clk.on svg{fill:#fff}"
+    ".st.on{background:#f59e0b}"
+    ".st.on svg{fill:#fff}"
     ".grid .lk{position:absolute;left:6px;bottom:6px}"
+    ".grid .st{position:absolute;right:6px;bottom:6px}"
+    ".grid a.starred{outline:2px solid #f59e0b;outline-offset:-2px}"
     "@media(prefers-reduced-motion:no-preference){"
     "@keyframes typop{0%{transform:scale(1)}40%{transform:scale(1.28)}100%{transform:scale(1)}}"
-    ".lk.on svg,.clk.on svg{animation:typop .35s}}"
+    ".lk.on svg,.clk.on svg,.st.on svg{animation:typop .35s}}"
     ".lk .n:empty,.clk .n:empty{display:none}"
     ".ccmts{max-width:760px;margin:1.1rem auto;padding:1rem 1.1rem;background:#fff;"
     "color:#111827;border-radius:12px;box-shadow:0 1px 10px rgba(0,0,0,.25)}"
@@ -1257,6 +1296,14 @@ _EMBED_CSS = (
     ".pgn{display:flex;align-items:center;justify-content:center;gap:.7rem;margin:.6rem 0 0;"
     "font-size:.8rem;color:#6b7280}"
     ".pgn a{color:#2563eb;text-decoration:none}"
+    ".stbar{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:0 0 .8rem}"
+    ".starHint{color:#6b7280;font-size:.85rem;margin:0}"
+    ".shareSet{display:inline-flex;align-items:center;gap:.4rem;background:#f59e0b;color:#fff;"
+    "border:0;border-radius:999px;font-weight:600;font-size:.85rem;padding:.45rem .9rem;"
+    "cursor:pointer;min-height:36px}"
+    ".shareSet .cnt{font-weight:700}"
+    ".shareSet[hidden]{display:none}"
+    ".shareSet svg{width:15px;height:15px;fill:#fff;stroke:#fff;stroke-width:1.5}"
 ) + _LB_CSS + _SOCIAL_CSS
 
 
@@ -1271,6 +1318,27 @@ _SOCIAL_JS = (
     "catch(e){return{}}}"
     "function setMine(id,v){var m=mine();if(v)m[id]=1;else delete m[id];"
     "try{localStorage.setItem('ty_likes_'+GID,JSON.stringify(m))}catch(e){}}"
+    "var STARS=(location.search.match(/[?&]stars=([^&]*)/)||[])[1]||'';"
+    "function starmine(){try{return JSON.parse(localStorage.getItem('ty_stars_'+GID))||{}}"
+    "catch(e){return{}}}"
+    "function setStar(id,v){var m=starmine();if(v)m[id]=1;else delete m[id];"
+    "try{localStorage.setItem('ty_stars_'+GID,JSON.stringify(m))}catch(e){}}"
+    "function paintStar(b,on){b.classList.toggle('on',on);"
+    "b.setAttribute('aria-pressed',on?'true':'false');"
+    "var a=b.closest('a');if(a)a.classList.toggle('starred',on);}"
+    "function starCount(){var m=starmine(),n=0;for(var k in m)if(m[k])n++;return n;}"
+    "function updateShare(){var b=document.getElementById('shareSet');if(!b)return;"
+    "var n=starCount(),c=b.querySelector('.cnt');"
+    "if(c){c.setAttribute('data-n',n);c.textContent=n>0?'('+n+')':'';}"
+    "b.hidden=n<1;}"
+    "function shareSet(){var m=starmine(),p=[];for(var k in m)if(m[k])p.push(k);"
+    "if(!p.length)return;"
+    "var u=location.href.split('?')[0]+'?stars='+p.join(',');"
+    "if(navigator.share){navigator.share({url:u}).catch(function(){});}"
+    "else if(navigator.clipboard&&navigator.clipboard.writeText){"
+    "navigator.clipboard.writeText(u);"
+    "var h=document.getElementById('starHint');if(h){var o=h.textContent;"
+    "h.textContent='Link kopiert!';setTimeout(function(){h.textContent=o;},2000);}}}"
     "function paintBtn(b,on){b.classList.toggle('on',on);"
     "b.setAttribute('aria-pressed',on?'true':'false')}"
     "function setN(b,n){var s=b.querySelector('.n');if(!s)return;"
@@ -1279,7 +1347,9 @@ _SOCIAL_JS = (
     "qsa('.lk').forEach(function(b){var pid=b.getAttribute('data-pid');"
     "if(pid)paintBtn(b,!!mine()[pid])});"
     "qsa('.clk').forEach(function(b){var cid=b.getAttribute('data-cid');"
-    "if(cid)paintBtn(b,!!mine()[cid])});}"
+    "if(cid)paintBtn(b,!!mine()[cid])});"
+    "qsa('.st').forEach(function(b){var pid=b.getAttribute('data-pid');"
+    "if(pid)paintStar(b,!!starmine()[pid])});}"
     "function likePid(pid){if(!pid)return;"
     "fetch(P+'/pics/i/'+pid+'?like=1',{method:'POST',headers:{'Accept':'application/json'}})"
     ".then(function(r){return r.json()})"
@@ -1300,6 +1370,12 @@ _SOCIAL_JS = (
     "if(!e.target||!e.target.closest)return;"
     "var lk=e.target.closest('.lk');"
     "if(lk){e.preventDefault();e.stopPropagation();likePid(lk.getAttribute('data-pid'));return;}"
+    "var st=e.target.closest('.st');"
+    "if(st){e.preventDefault();e.stopPropagation();"
+    "var spid=st.getAttribute('data-pid');if(!spid)return;"
+    "var son=!starmine()[spid];setStar(spid,son);paintStar(st,son);"
+    "var lbst=document.getElementById('lbsst');if(lbst)paintStar(lbst,son);"
+    "updateShare();return;}"
     "var clk=e.target.closest('.clk');"
     "if(clk){e.preventDefault();e.stopPropagation();clike(clk.getAttribute('data-cid'));}});"
     "function cellN(a){var s=a.querySelector('.lk .n');if(!s)return 0;"
@@ -1372,9 +1448,12 @@ _SOCIAL_JS = (
     "window.__tyLbSync=function(LB,i){"
     "var lb=document.getElementById('lblk'),it=LB&&LB[i];"
     "if(!lb)return;"
-    "if(!it||!it.i){lb.hidden=true;return;}"
+    "if(!it||!it.i){lb.hidden=true;"
+    "var sst0=document.getElementById('lbsst');if(sst0)sst0.hidden=true;return;}"
     "lb.hidden=false;lb.setAttribute('data-pid',it.i);"
-    "setN(lb,it.l||0);paintBtn(lb,!!mine()[it.i]);};"
+    "setN(lb,it.l||0);paintBtn(lb,!!mine()[it.i]);"
+    "var sst=document.getElementById('lbsst');if(sst){sst.hidden=false;"
+    "sst.setAttribute('data-pid',it.i);paintStar(sst,!!starmine()[it.i]);}};"
     "function poll(){"
     "if(document.hidden)return;"
     "fetch(P+'/pics/g/'+GID+'?likes=1',{headers:{'Accept':'application/json'}})"
@@ -1393,22 +1472,39 @@ _SOCIAL_JS = (
     "s.setAttribute('data-n',d.comments);s.textContent=d.comments;}});"
     "resort();})"
     ".catch(function(){});}"
+    "var ss=document.getElementById('shareSet');if(ss)ss.addEventListener('click',shareSet);"
+    "updateShare();"
     "paintAll();"
     "setInterval(poll,30000);setTimeout(poll,2000);"
     "})();</script>"
 )
 
 
-def _social_js(store, gid, sort_likes=False):
+def _star_bar(store, sort_likes):
+    """Motivation hint + live 'Als Set teilen' button (hidden until >=1 star)."""
+    hint = ("&#9733; Die beliebtesten Bilder stehen oben &#8212; starre deine "
+            "Favoriten und teile sie als Set." if sort_likes else
+            "&#9733; Sterne deine Lieblingsfotos und teile sie als Set.")
+    return ("<div class=stbar>"
+            f"<p class=starHint id=starHint>{hint}</p>"
+            "<button type=button id=shareSet class=shareSet hidden>"
+            + _STAR_SVG +
+            " Als Set teilen <span class=cnt data-n=0></span>"
+            "</button></div>")
+
+
+def _social_js(store, gid, sort_likes=False, stars=None):
     return (_SOCIAL_JS.replace("__P__", store.PREFIX)
             .replace("__GID__", gid)
-            .replace("__SORT__", "true" if sort_likes else "false"))
+            .replace("__SORT__", "true" if sort_likes else "false")
+            .replace("__STARS__", json.dumps(stars or [])))
 
 
-def _thumb_cell(store, pid, m, likes=0):
-    """One grid cell: thumb + like button (delegated clicks, no-JS = link).
-    1.39.1 a11y: the anchor gets a real accessible name (the thumb img is
-    decorative, alt=''), otherwise screen readers announce a nameless link."""
+def _thumb_cell(store, pid, m, likes=0, star=False):
+    """One grid cell: thumb + like button + star button (delegated clicks,
+    no-JS = link). 1.39.1 a11y: the anchor gets a real accessible name (the
+    thumb img is decorative, alt=''), otherwise screen readers announce a
+    nameless link."""
     n = f"<span class=n data-n={likes}>{likes or ''}</span>"
     name = store._html_escape(m.get("name") or pid)
     # 1.39.2: srcset/sizes — der Browser waehlt die passende Kandidatin
@@ -1427,11 +1523,15 @@ def _thumb_cell(store, pid, m, likes=0):
     #   * srcset-faehige Browser OHNE den Chrome-lazy-src-Bug (Safari,
     #     Firefox) waehlen daraus die zur Anzeigegroesse passende Kandidatin.
     #   * <noscript>: ohne JS greift der Default (?thumb=1).
-    return (f"<a href='{src}' aria-label='{name} – groß öffnen'>"
+    star_attr = " data-star" if star else ""
+    st = (f"<button type=button class=st data-pid={pid} aria-pressed=false "
+          f"aria-label='Bild starren'>{_STAR_SVG}</button>")
+    return (f"<a href='{src}' data-pid={pid} aria-label='{name} – groß öffnen'{star_attr}>"
             f"<img loading=lazy decoding=async alt='' "
             f"src='{src}?thumb={THUMB_WIDTHS[-1]}' srcset='{srcset}' sizes='{_SIZES}'>"
             f"<noscript><img decoding=async alt='' "
             f"src='{src}?thumb={THUMB_WIDTHS[0]}'></noscript>"
+            + st +
             f"<button type=button class=lk data-pid={pid} aria-pressed=false "
             f"aria-label='Bild liken'>{_HEART_SVG}{n}</button></a>")
 
@@ -1503,7 +1603,7 @@ def _admin_comments_html(store, root, gid, secret, page):
 
 
 def embed_html(store, gid, g, items, page, pages, total,
-               likes=None, comments=None, sort_likes=False):
+               likes=None, comments=None, sort_likes=False, stars=None):
     """Minimal, chrome-less gallery view for <iframe> embedding: grid with
     like buttons, guestbook comments, the lightbox and a scroll sentinel —
     no header, no uploader, transparent background so the host page shines
@@ -1516,8 +1616,11 @@ def embed_html(store, gid, g, items, page, pages, total,
     instantly (optimistic, pseudonymous), with sort=likes liked images
     FLIP-climb and a 30 s poll keeps counts fresh without reload."""
     likes = likes or {}
+    stars = stars or []
+    star_set = set(stars)
     sq = "&sort=likes" if sort_likes else ""
-    cells = "".join(_thumb_cell(store, pid, m, likes.get(pid, 0))
+    cells = "".join(_thumb_cell(store, pid, m, likes.get(pid, 0),
+                                 star=(pid in star_set))
                     for pid, m in items)
     pgn = []
     if page > 1:
@@ -1579,16 +1682,16 @@ def embed_html(store, gid, g, items, page, pages, total,
             + store._META_MOBILE
             + f"<title>{store._html_escape(g.get('name') or gid)}</title>"
             + f"<style>{_EMBED_CSS}</style></head><body><main>"
+            + _star_bar(store, sort_likes)
             + f"<div class=grid>{cells}</div>"
             + f"<div class=pgn>{''.join(pgn)}</div>"
             + lbdata
             + _LB_HTML
             + _lb_script(lb_imgs)
             + _comments_html(store, gid, comments or [])
-            + _social_js(store, gid, sort_likes)
+            + _social_js(store, gid, sort_likes, stars)
             + inf
             + "</main></body></html>")
-
 
 def _embed_snippet(store, gid, title):
     """Copy-paste embed for a gallery: auto-height + (1.38.2) the host tells
@@ -1613,15 +1716,18 @@ def _embed_snippet(store, gid, title):
 
 
 def gallery_html(store, gid, g, items, page, pages, total,
-                 likes=None, comments=None, sort_likes=False):
+                 likes=None, comments=None, sort_likes=False, stars=None):
     """One public gallery: grid (with like buttons), uploader, guestbook
     comments, pagination. sort=likes ranks by likes — liked images
     FLIP-climb in the browser."""
     e = store._html_escape
     likes = likes or {}
+    stars = stars or []
+    star_set = set(stars)
     sp = "&sort=likes" if sort_likes else ""
     title = g.get("name") or gid
-    cells = "".join(_thumb_cell(store, pid, m, likes.get(pid, 0))
+    cells = "".join(_thumb_cell(store, pid, m, likes.get(pid, 0),
+                                 star=(pid in star_set))
                     for pid, m in items)
     pgn = []
     if page > 1:
@@ -1655,6 +1761,7 @@ def gallery_html(store, gid, g, items, page, pages, total,
                  + _fmt(PICS_MAX_FILE) + " pro Bild</div>"
                  + "<div class=meta id=upstat></div>"
                  + "</label>"
+                 + _star_bar(store, sort_likes)
                  + f"<div class=grid>{cells}</div>"
                  + f"<div class=pgn>{''.join(pgn)}</div>"
                  + _comments_html(store, gid, comments or [])
@@ -1670,7 +1777,7 @@ def gallery_html(store, gid, g, items, page, pages, total,
                  + f"<script>{js}</script>"
                  + _LB_HTML
                  + _lb_script(lb_imgs)
-                 + _social_js(store, gid, sort_likes),
+                 + _social_js(store, gid, sort_likes, stars),
                  _GALLERY_CSS + _LB_CSS + _SOCIAL_CSS)
 
 
@@ -1906,12 +2013,15 @@ def _get_gallery(h, store, root, gid, query):
             "comments": len(cl["list"]),
         }), "application/json")
     sort_likes = "sort=likes" in query
+    stars = _parse_stars(query)
     lm = likes_map(root, gid)
-    items = _sorted_visible(all_pics(root, gid), likes=lm if sort_likes else None)
+    items = _sorted_visible(all_pics(root, gid), likes=lm if sort_likes else None,
+                            stars=stars)
     cmts = load_comments(root, gid)["list"]
     if h._is_agent() and "html=1" not in query:
         return h._send(200, json.dumps({
             "gallery": gallery_public_meta(store, gid, g, len(items)),
+            "selected": stars,
             "images": [public_meta(store, pid, m, lm.get(pid, 0))
                        for pid, m in items[:PICS_JSON_CAP]],
             "comments": [public_comment(c) for c in reversed(cmts)],
@@ -1953,14 +2063,14 @@ def _get_gallery(h, store, root, gid, query):
         chunk = items[(page - 1) * EMBED_PAGE: page * EMBED_PAGE]
         return h._send(200, embed_html(store, gid, g, chunk, page, pages, total,
                                        likes=lm, comments=cmts,
-                                       sort_likes=sort_likes), "text/html")
+                                       sort_likes=sort_likes, stars=stars), "text/html")
     total = len(items)
     pages = max(1, (total + PICS_PAGE - 1) // PICS_PAGE)
     page = min(_page_of(query), pages)
     chunk = items[(page - 1) * PICS_PAGE: page * PICS_PAGE]
     h._send(200, gallery_html(store, gid, g, chunk, page, pages, total,
                               likes=lm, comments=cmts,
-                              sort_likes=sort_likes), "text/html")
+                              sort_likes=sort_likes, stars=stars), "text/html")
 
 
 def _get_admin(h, store, root, gid, secret, query):
@@ -2311,10 +2421,13 @@ def api_endpoints(store_base):
             "method": "GET",
             "url": store_base + "/pics/g/<gid>",
             "note": "one gallery: HTML grid for browsers (paginated ?p=N), "
-                    "JSON for agents (images[], pool, limits, upload how-to). "
-                    "Hidden images never appear. ?embed=1 renders a minimal, "
-                    "chrome-less view (transparent bg, no uploader) for "
-                    "<iframe> embedding.",
+                    "JSON for agents (images[], selected[], pool, limits, "
+                    "upload how-to). Hidden images never appear. ?embed=1 "
+                    "renders a minimal, chrome-less view (transparent bg, no "
+                    "uploader) for <iframe> embedding. ?stars=<pid1>,<pid2> "
+                    "(since 1.43.0) sorts starred pids first in link order, "
+                    "then the rest (unknown/hidden/expired pids are silently "
+                    "skipped); agent JSON mirrors them as selected[].",
         },
         "pics_upload": {
             "method": "POST",
@@ -2465,6 +2578,20 @@ LIKES & COMMENTS (guestbook, no login; since 1.38.0)
 Comments render newest first; the gallery admin (or the superadmin
 token) deletes them (admin action cdel). Nothing personal is persisted
 with a comment — no IP, no fingerprint.
+
+STARS & SHARE-SET (private selection, since 1.43.0)
+   Starring is a client-side selection (localStorage ty_stars_<gid>),
+   separate from public likes: guests pick favourite photos and share
+   them as a set. No server state, no counters, no rate limits.
+   GET {PUBLIC_BASE}/pics/g/<gid>?stars=<pid1>,<pid2>,<pid3>
+        the shared link: starred pids first (in link order), then the
+        rest in the regular order (?sort=likes still applies to the
+        rest). Unknown/hidden/expired pids are silently skipped — the
+        link never 404s. Browser pages mark starred cells with a filled
+        star. Agent JSON mirrors them as "selected": [pid, ...].
+   Browsers: a "Als Set teilen" button (visible once >= 1 star is
+   picked) builds the ?stars= link from localStorage and shares it via
+   navigator.share (copy fallback). Stars persist across reloads.
 
 ADMIN (per-gallery token or the server superadmin token, as path segment)
    GET  {PUBLIC_BASE}/pics/g/<gid>/<secret>          admin page

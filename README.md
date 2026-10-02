@@ -102,6 +102,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | `POST` | `/throway/pics/g/<gid>?clike=<cid>` | toggle a comment like |
 | `GET` | `/throway/pics/g/<gid>?likes=1` | cheap like/comment counters (polling) |
 | `GET` | `/throway/pics/g/<gid>?sort=likes` | gallery ranked by likes |
+| `GET` | `/throway/pics/g/<gid>?stars=<p1>,<p2>` | shared star-set link: starred pids first, rest after (private selection, since 1.43.0) |
 | `GET`/`POST` | `/throway/pics/g/<gid>/<secret>` | gallery admin: page / `/json` / actions (`hide`,`unhide`,`delete`,`up`,`down`) |
 | `GET` | `/throway/api` | machine-readable contract (JSON) |
 | `GET` | `/throway/help` | modular help index (JSON for agents, HTML for browsers) |
