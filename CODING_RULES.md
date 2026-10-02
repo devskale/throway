@@ -182,6 +182,20 @@ Non-negotiable; each guards a real hole found this session:
   nur per ssh sterben.
 - **HTTP/2-Proxies lowercases Response-Header** (`X-Expires` → `x-expires`):
   Header-Assertionen case-insensitiv lesen, sonst False-Negative-FAILs.
+- **Unmatched POST-Pfade enden im Raw-Upload** (Retro 2026-10-02, hard-validate R2):
+  jeder POST, den keine Route reklamiert, wird zum Datei-Upload — mit
+  Token sogar zu einer *retained* Muell-Datei mit 200 (`POST /d?retain=1`).
+  Neue Routen/Flags muessen reservierte Namen explizit abweisen und duerfen
+  sich nicht darauf verlassen, dass "die naechste Route es ablehnt".
+- **UA-gesplittete Seiten bei Marker-Checks** (Retro R2): die Homepage
+  liefert curl Agent-Text, Browsern das JS-UI — Marker gegen das
+  Browser-HTML nur mit Browser-User-Agent curlen (sonst False-Negative).
+- **Rodney am geteilten Chrome: Flows als EINE async-Expression**
+  (Retro R2): input→click→wait→DOM-Lesen in einem Aufruf kombiniert
+  (kein Diebstahlsfenster zwischen Kommandos); row()-Label und -Wert
+  landen auf getrennten innerText-Zeilen (Regex ueber \n). Bleibt ein
+  Flow trotz 3 Versuchen unbestimmt: ehrlich als offen dokumentieren —
+  Marker + node-check + Pfade-Analyse decken bis dahin, kein Fake-Pass.
 - **Prove features with real data once** — the ~/Pictures upload
   surfaced the `%40`-encoding bug that every synthetic test missed.
 - Long tasks run in a Herdr pane with `tee` into a log; the heartbeat
