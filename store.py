@@ -24,11 +24,12 @@ import mimetypes
 import urllib.error
 import urllib.request
 import hmac
+import hashlib
 import html as _html
 from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from throway import pics
+from throway import pics, retain
 
 
 def _html_escape(s):
@@ -86,7 +87,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.43.2"
+VERSION = "1.44.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -125,7 +126,11 @@ def _bump_since_start(files, bytes_):
 
 def _dir_touch(meta, now):
     """Slide a dir's expiry forward by its TTL on activity, capped at an
-    absolute ceiling from creation. Returns the new expires timestamp."""
+    absolute ceiling from creation. Returns the new expires timestamp
+    (None for retained dirs — they never expire)."""
+    if meta.get("retain"):
+        meta["updated"] = now
+        return None
     ttl = meta.get("max_age", DIR_DEFAULT_AGE)
     created = meta.get("created", now)
     # sliding: now + ttl, but never beyond created + DIR_ABS_MAX
@@ -160,7 +165,7 @@ def _idem_map_path():
 def _idem_load():
     try:
         with open(_idem_map_path(), "r", encoding="utf-8") as f:
-            return _read_json(f.name) or {}
+            return json.load(f) or {}
     except Exception:
         return {}
 
@@ -267,6 +272,8 @@ def _units():
             continue
         p = os.path.join(ROOT, f)
         if os.path.isfile(p):
+            if _meta_retained(p + ".meta"):
+                continue    # retained units are never eviction candidates
             yield p, False, os.path.getmtime(p)
         elif os.path.isdir(p):
             if f == pics.NS:
@@ -276,9 +283,54 @@ def _units():
                 for key in os.listdir(nd):
                     np_ = os.path.join(nd, key)
                     if os.path.isdir(np_):
+                        if (_dir_meta(key) or {}).get("retain"):
+                            continue
                         yield np_, True, os.path.getmtime(np_)
             else:
+                if (_bundle_meta(p, f) or {}).get("retain"):
+                    continue
                 yield p, True, os.path.getmtime(p)
+
+def _meta_retained(mp):
+    """True when the meta file at mp marks its unit as retained."""
+    if os.path.isfile(mp):
+        try:
+            with open(mp, "r", encoding="utf-8") as _f:
+                return bool(json.load(_f).get("retain"))
+        except Exception:
+            pass
+    return False
+
+
+def _meta_expired(m, now):
+    """True when a manifest is past its lifetime. Retained units
+    (m['retain']) never expire; a missing manifest counts as expired."""
+    if m is None:
+        return True
+    if m.get("retain"):
+        return False
+    return m.get("expires", 0) < now
+
+
+def _fmt_exp(expires):
+    """ISO expiry timestamp, or None for retained (indefinite) objects."""
+    if expires is None:
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))
+
+
+def _dir_retain(key):
+    """Flip a dir's manifest to indefinite retention. True on success."""
+    m = _dir_meta(key)
+    if not m:
+        return False
+    if not m.get("retain"):
+        m["retain"] = True
+        m.pop("expires", None)
+        m.pop("max_age", None)
+        json.dump(m, open(_dir_meta_path(key), "w"))
+    return True
+
 
 def evict(target):
     """Delete oldest units (by mtime) until total data size <= target."""
@@ -339,6 +391,8 @@ def sweep():
         p = os.path.join(ROOT, f)
         if os.path.isfile(p):
             mp = p + ".meta"
+            if _meta_retained(mp):
+                continue    # retained files never expire
             expires = None
             if os.path.isfile(mp):
                 try:
@@ -358,6 +412,8 @@ def sweep():
                 pics.sweep(ROOT, now)
                 continue
             m = _bundle_meta(p, f)
+            if m and m.get("retain"):
+                continue    # retained bundles never expire
             expires = (m or {}).get("expires")
             if expires is None:
                 expires = os.path.getmtime(p) + TTL_HOURS * 3600
@@ -375,6 +431,8 @@ def _sweep_dirs(now):
         if not os.path.isdir(p):
             continue
         m = _dir_meta(key)
+        if m and m.get("retain"):
+            continue    # retained dirs never expire
         expires = (m or {}).get("expires")
         if expires is None:
             expires = os.path.getmtime(p) + DIR_DEFAULT_AGE
@@ -879,6 +937,8 @@ An agent should read /api to discover current limits before acting.""",
 
 HELP.update(pics.HELP_TOPICS)
 HELP_ORDER.append("pics")
+HELP.update(retain.HELP_TOPICS)
+HELP_ORDER.append("retention")
 
 
 def _render_help_body(key):
@@ -914,8 +974,16 @@ def _persistence_block(ptype, expires, max_age=None, extendable_by="none"):
     """A small, machine-readable block describing how long a resource lives
     and how an agent can keep it alive. Kept additive so old agents that only
     read id/url/expires_at are unaffected."""
+    if expires is None:        # retained (indefinite, token-gated)
+        return {
+            "type": ptype,
+            "expires_at": None,
+            "extendable_by": "none",
+            "max_age": None,
+            "retention": "indefinite",
+        }
     return {
-        "type": ptype,          # "single" | "dir" | "named"
+        "type": ptype,          # "single" | "dir" | "bundle"
         "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
         "extendable_by": extendable_by,
         "max_age": max_age,     # seconds, or None for single (fixed 4h)
@@ -1022,6 +1090,16 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(code, json.dumps(payload), "application/json", extra)
 
     def _send(self, code, body=b"", ctype="text/plain", extra=None):
+        # 1.44.0: Idempotenz-Key resp. persistieren (1.42.x speicherte den
+        # Key, rief _idem_put aber nie — Replay war still tot, dazu fraen
+        # NameErrors die Loader). Erste 200-JSON-Antwort unter dem Key merken.
+        pend = getattr(self, "_idem_pending", None)
+        if pend and code == 200 and ctype == "application/json":
+            try:
+                _idem_put(pend, json.loads(body))
+            except Exception:
+                pass
+            self._idem_pending = None
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         if isinstance(body, str): body = body.encode()
@@ -1110,29 +1188,39 @@ class Handler(BaseHTTPRequestHandler):
         token via the X-Throway-Write header or ?write=<token>, compared
         constant-time."""
         m = _dir_meta(key)
-        if not m or not m.get("write_token"):
+        if not m:
             return None
-        given = (self.headers.get("X-Throway-Write") or "").strip()
-        if not given:
-            q = self.path.split("?", 1)[1] if "?" in self.path else ""
-            for kv in q.split("&"):
-                k, _, v = kv.partition("=")
-                if k == "write" and v:
-                    given = unquote(v).strip()
-                    break
-        if not given:
-            return (401, {"error": "write token required: send the X-Throway-Write "
-                                   "header or ?write=<token>"})
-        if not hmac.compare_digest(given.encode(), m["write_token"].encode()):
-            return (401, {"error": "invalid write token"})
-        return None
+        if m.get("write_token"):
+            given = (self.headers.get("X-Throway-Write") or "").strip()
+            if not given:
+                q = self.path.split("?", 1)[1] if "?" in self.path else ""
+                for kv in q.split("&"):
+                    k, _, v = kv.partition("=")
+                    if k == "write" and v:
+                        given = unquote(v).strip()
+                        break
+            if not given:
+                return (401, {"error": "write token required: send the X-Throway-Write "
+                                       "header or ?write=<token>"})
+            if not hmac.compare_digest(given.encode(), m["write_token"].encode()):
+                return (401, {"error": "invalid write token"})
+        return self._retain_write_denied(m)
+
+    def _retain_write_denied(self, m):
+        """401 tuple when a retained manifest is written without the
+        retain token; None when the write may proceed."""
+        return retain.write_denied(self, m)
 
     def _dir_write_guard(self, key):
-        """Send the 401 when _dir_write_denied fires; True = request handled."""
+        """Send the 401 when _dir_write_denied fires; True = request handled.
+        A token-authenticated write also retains the dir (write implies
+        retention)."""
         denied = self._dir_write_denied(key)
         if denied:
             self._send(denied[0], json.dumps(denied[1]), "application/json")
             return True
+        if retain.valid(retain.token_from(self)):
+            _dir_retain(key)
         return False
 
     def _serve_file(self, fp, ctype, orig, force_dl, fid, cache=None):
@@ -1364,12 +1452,13 @@ class Handler(BaseHTTPRequestHandler):
         dirpath = os.path.join(ROOT, os.path.basename(fid))
         if os.path.isdir(dirpath):
             m = _bundle_meta(dirpath, fid)
-            expires = (m or {}).get("expires")
-            if expires is None:
-                expires = os.path.getmtime(dirpath) + TTL_HOURS * 3600
-            if expires < now:
-                shutil.rmtree(dirpath, ignore_errors=True)
-                return self._send(404, "expired\n")
+            if not (m or {}).get("retain"):
+                expires = (m or {}).get("expires")
+                if expires is None:
+                    expires = os.path.getmtime(dirpath) + TTL_HOURS * 3600
+                if expires < now:
+                    shutil.rmtree(dirpath, ignore_errors=True)
+                    return self._send(404, "expired\n")
             is_dir = (m or {}).get("type") == "dir"
             # /<fid>/<file>
             if len(parts) >= 2 and parts[1]:
@@ -1410,18 +1499,19 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isfile(fp):
             return self._err(404, "not found")
         mp = fp + ".meta"
-        expires = None
-        if os.path.isfile(mp):
-            try:
-                with open(mp, "r", encoding="utf-8") as _f:
-                    expires = json.load(_f).get("expires")
-            except Exception:
-                pass
-        if expires is None:
-            expires = os.path.getmtime(fp) + TTL_HOURS * 3600
-        if expires < now:
-            _remove(fp)
-            return self._send(404, "expired\n")
+        if not _meta_retained(mp):
+            expires = None
+            if os.path.isfile(mp):
+                try:
+                    with open(mp, "r", encoding="utf-8") as _f:
+                        expires = json.load(_f).get("expires")
+                except Exception:
+                    pass
+            if expires is None:
+                expires = os.path.getmtime(fp) + TTL_HOURS * 3600
+            if expires < now:
+                _remove(fp)
+                return self._send(404, "expired\n")
         ctype = "application/octet-stream"
         orig = None
         if os.path.isfile(mp):
@@ -1492,12 +1582,29 @@ class Handler(BaseHTTPRequestHandler):
         if "name" in qp:
             name_hint = _safe_name(unquote(qp["name"][0]))[:128]
 
+        # token-gated indefinite retention (throway.retain): a request
+        # carrying a token either becomes retained or fails 401 — never
+        # silently disposable. ?retain=1 without a token is a 401 too.
+        retained, denied = retain.request_retention(self)
+        if denied:
+            return self._send(denied[0], json.dumps(denied[1]), "application/json")
+        if retained and once:
+            return self._err(400, "once=1 (burn-after-reading) and retention are mutually exclusive")
+
         path = self.path.split("?", 1)[0].rstrip("/")
         parts = path.lstrip("/").split("/")
 
         # --- pics: gallery upload (/pics) + admin actions (/pics/<secret>) ---
         if parts and parts[0] == pics.NS:
             return pics.post(self, parts[1:], qp)
+
+        # POST /<id>?retain=1 (token) -> flip an existing file/bundle to
+        # indefinite retention; POST /d/<key>?retain=1 flips a whole dir.
+        if retained and "retain=1" in query:
+            if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
+                return self._retain_flip_dir(parts[1])
+            if len(parts) == 1 and parts[0] and parts[0] != DIR_NS:
+                return self._retain_flip(parts[0])
 
         # POST /<id>?tag=a&tag=b&untag=c -> update tags on an existing file
         # (single-file ids only; dirs have their own tag handling at create)
@@ -1514,7 +1621,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # POST /?url=<url>[&name=<name>][&link=1] -> server-side import / link doc
         if "url" in qp:
-            return self._url_import(qp, tags)
+            return self._url_import(qp, tags, retained=retained)
 
         # POST /?dir=1[&name=<name>][&listed=1][&tag=..][&ttl=..] -> create a dir
         if want_dir:
@@ -1538,7 +1645,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._err(413, "too large (max 5MB)")
                     data = self.rfile.read(length)
                     initial = [(name_hint or "file", data, "application/octet-stream")]
-            return self._dir_create(key, qp, initial)
+            return self._dir_create(key, qp, initial, retained=retained)
 
         ctype = self.headers.get("Content-Type", "application/octet-stream")
         # multipart/form-data upload (browser-friendly / -F)
@@ -1552,12 +1659,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "no file part in multipart body"}), "application/json")
             # multiple files -> bundle
             if len(named) > 1:
-                return self._store_bundle(named)
+                return self._store_bundle(named, retained=retained)
             n, d, c = named[0]
             ttl = _parse_ttl((qp.get("ttl") or [""])[0])
             if share:
-                return self._share_store(d, _safe_name(n)[:128] or None, c, share, ttl)
-            return self._store(d, _safe_name(n)[:128] or None, c, tags, ttl_seconds=ttl, once=once)
+                return self._share_store(d, _safe_name(n)[:128] or None, c, share, ttl,
+                                         retained=retained)
+            return self._store(d, _safe_name(n)[:128] or None, c, tags, ttl_seconds=ttl, once=once,
+                               retained=retained)
 
         # raw-body upload: body is the file content
         length = self.headers.get("Content-Length")
@@ -1574,8 +1683,65 @@ class Handler(BaseHTTPRequestHandler):
                 ctype = "application/octet-stream"
         ttl = _parse_ttl((qp.get("ttl") or [""])[0])
         if share:
-            return self._share_store(data, name_hint or None, ctype, share, ttl)
-        return self._store(data, name_hint or None, ctype, tags, ttl_seconds=ttl, once=once)
+            return self._share_store(data, name_hint or None, ctype, share, ttl,
+                                      retained=retained)
+        return self._store(data, name_hint or None, ctype, tags, ttl_seconds=ttl, once=once,
+                           retained=retained)
+
+    def _retain_flip(self, fid):
+        """POST /<id>?retain=1 (token) — flip an existing single file or
+        bundle to indefinite retention. Idempotent."""
+        fp = _id_path(fid)
+        bdir = os.path.join(ROOT, fid)
+        if os.path.isdir(bdir) and fid != DIR_NS and fid != pics.NS:
+            m = _bundle_meta(bdir, fid) or {}
+            m["retain"] = True
+            m.pop("expires", None)
+            json.dump(m, open(os.path.join(bdir, fid + ".meta"), "w"))
+            return self._send(200, json.dumps({
+                "id": fid, "url": f"{PUBLIC_BASE}/{fid}", "bundle": True,
+                "retention": "indefinite", "expires_at": None,
+                "persistence": _persistence_block("bundle", None)}), "application/json")
+        if not os.path.isfile(fp):
+            return self._err(404, "not found")
+        mp = fp + ".meta"
+        if not os.path.isfile(mp):
+            return self._err(404, "not found")
+        try:
+            with open(mp, "r", encoding="utf-8") as _f:
+                m = json.load(_f)
+        except Exception:
+            return self._err(404, "not found")
+        m["retain"] = True
+        m.pop("expires", None)
+        json.dump(m, open(mp, "w"))
+        return self._send(200, json.dumps({
+            "id": fid, "url": f"{PUBLIC_BASE}/{fid}",
+            "retention": "indefinite", "expires_at": None,
+            "persistence": _persistence_block("single", None)}), "application/json")
+
+    def _retain_flip_dir(self, key):
+        """POST /d/<key>?retain=1 (token) — flip a dir to indefinite."""
+        if not _dir_retain(key):
+            return self._err(404, "not found")
+        return self._send(200, json.dumps({
+            "id": key, "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}", "dir": True,
+            "retention": "indefinite", "expires_at": None,
+            "persistence": _persistence_block("dir", None)}), "application/json")
+
+    def _retain_meta(self, fid):
+        """Flip a single file's meta to indefinite retention (token write)."""
+        mp = _id_path(fid) + ".meta"
+        if not os.path.isfile(mp):
+            return
+        try:
+            with open(mp, "r", encoding="utf-8") as _f:
+                m = json.load(_f)
+        except Exception:
+            return
+        m["retain"] = True
+        m.pop("expires", None)
+        json.dump(m, open(mp, "w"))
 
     def _file_tags(self, fid, qp):
         """POST /<id>?tag=<t>&untag=<t> — update meta tags on a stored file."""
@@ -1588,6 +1754,9 @@ class Handler(BaseHTTPRequestHandler):
                 meta = json.load(_f)
         except Exception:
             return self._send(500, json.dumps({"error": "meta unreadable"}), "application/json")
+        denied = self._retain_write_denied(meta)
+        if denied:
+            return self._send(denied[0], json.dumps(denied[1]), "application/json")
         add = _parse_tags(qp.get("tag", []))
         remove = _parse_tags(qp.get("untag", []))
         cur = list(meta.get("tags", []))
@@ -1607,7 +1776,7 @@ class Handler(BaseHTTPRequestHandler):
         })
         return self._send(200, body, "application/json")
 
-    def _url_import(self, qp, tags=None):
+    def _url_import(self, qp, tags=None, retained=False):
         """POST /?url=<u>[&name=<name>][&link=1]
         Default: fetch the remote document server-side and store it.
         link=1:  store the URL itself as a tiny redirect HTML document."""
@@ -1623,12 +1792,12 @@ class Handler(BaseHTTPRequestHandler):
                     urlparse(raw).hostname or "link")
             if not base.lower().endswith((".html", ".htm")):
                 base += ".html"
-            return self._store(_link_doc(raw), base, "text/html", tags)
+            return self._store(_link_doc(raw), base, "text/html", tags, retained=retained)
         try:
             data, fname, ctype = _fetch_remote(raw)
         except _FetchError as e:
             return self._send(e.code, json.dumps({"error": e.msg}), "application/json")
-        return self._store(data, override or fname, ctype, tags)
+        return self._store(data, override or fname, ctype, tags, retained=retained)
 
     def _browse(self, query):
         """GET /browse?tag=<t>[&tag=<t2>][&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]
@@ -1662,9 +1831,12 @@ class Handler(BaseHTTPRequestHandler):
                     meta = json.load(_f)
             except Exception:
                 continue
-            expires = meta.get("expires", os.path.getmtime(p) + TTL_HOURS * 3600)
-            if expires < now:
-                continue
+            if meta.get("retain"):
+                expires = None      # retained: never expires
+            else:
+                expires = meta.get("expires", os.path.getmtime(p) + TTL_HOURS * 3600)
+                if expires < now:
+                    continue
             ftags = meta.get("tags", [])
             if want_tags and not all(t in ftags for t in want_tags):
                 continue
@@ -1679,9 +1851,10 @@ class Handler(BaseHTTPRequestHandler):
                 "size": os.path.getsize(p),
                 "tags": ftags,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("created", now))),
-                "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
+                "expires_at": _fmt_exp(expires),
                 "_k": {"created": meta.get("created", 0), "name": name.lower(),
-                        "size": os.path.getsize(p), "expires": expires}[sort],
+                        "size": os.path.getsize(p),
+                        "expires": expires if expires is not None else float("inf")}[sort],
             })
         entries.sort(key=lambda e: e["_k"], reverse=(order != "asc"))
         total = len(entries)
@@ -1694,7 +1867,7 @@ class Handler(BaseHTTPRequestHandler):
             + (f'<img class=thumb src="{_html_escape(e["url"])}?thumb=1" alt="" loading=lazy decoding=async width=44 height=44>'
                if e["content_type"].startswith("image/") else "")
             + f'<a href="{_html_escape(e["url"])}">{_html_escape(e["name"])}</a> '
-            + f'<span class=meta>{_fmt_size(e["size"])} · {e["content_type"]} · exp {e["expires_at"]}</span>'
+            + f'<span class=meta>{_fmt_size(e["size"])} · {e["content_type"]} · exp {e["expires_at"] or "∞ retained"}</span>'
             + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
             + '</li>'
             for e in entries)
@@ -1722,7 +1895,8 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(int(length))
 
-    def _store(self, data, name_hint, ctype, tags=None, ttl_seconds=None, once=False):
+    def _store(self, data, name_hint, ctype, tags=None, ttl_seconds=None, once=False,
+               retained=False):
         if len(data) > MAX_FILE:
             return self._err(413, "too large (max 5MB)")
         fid = secrets.token_hex(8)
@@ -1731,11 +1905,14 @@ class Handler(BaseHTTPRequestHandler):
             f.write(data)
         lifetime = ttl_seconds or TTL_HOURS * 3600  # default 4h; ttl= override (clamped 4h..14d)
         meta = {
-            "expires": time.time() + lifetime,
             "ctype": ctype or "application/octet-stream",
             "name": name_hint or fid,
             "created": time.time(),
         }
+        if retained:
+            meta["retain"] = True          # token-gated: never expires
+        else:
+            meta["expires"] = time.time() + lifetime
         if once:
             meta["once"] = True
         if tags:
@@ -1756,13 +1933,17 @@ class Handler(BaseHTTPRequestHandler):
             "content_type": meta["ctype"],
             "editable": _is_editable(meta["ctype"]),
             **({"tags": meta["tags"]} if meta.get("tags") else {}),
-            "persistence": _persistence_block("single", meta["expires"]),
-            "expires_in": lifetime,
-            "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"])),
+            "persistence": _persistence_block("single", meta.get("expires")),
+            "expires_in": None if retained else lifetime,
+            "expires_at": _fmt_exp(meta.get("expires")),
         })
-        self._send(200, body, "application/json", {"X-Expires": str(lifetime)})
+        if retained:
+            self._send(200, body, "application/json")
+        else:
+            self._send(200, body, "application/json", {"X-Expires": str(lifetime)})
 
-    def _share_store(self, data, name_hint, ctype, share, ttl_seconds=None):
+    def _share_store(self, data, name_hint, ctype, share, ttl_seconds=None,
+                     retained=False):
         """POST /?share=<name> — store a single file under a chosen, memorable
         name (create-or-get, like a named dir) at /d/<name>. Reuses the dir
         machinery: sliding lifetime (default 7d, ttl= clamped [4h,14d])."""
@@ -1775,7 +1956,7 @@ class Handler(BaseHTTPRequestHandler):
         dirpath = _dir_path(key)
         now = time.time()
         meta = _dir_meta(key)
-        if meta is not None and meta.get("expires", 0) < now:
+        if _meta_expired(meta, now):
             shutil.rmtree(dirpath, ignore_errors=True)
             meta = None
         if meta is not None and meta.get("write_token"):
@@ -1788,13 +1969,16 @@ class Handler(BaseHTTPRequestHandler):
                 "type": "dir",
                 "created": now,
                 "updated": now,
-                "expires": now + ttl,
-                "max_age": ttl,
                 "listed": False,
                 "tags": [],
                 "files": {},
                 "name": key,
             }
+            if retained:
+                meta["retain"] = True          # token-gated: never expires
+            else:
+                meta["expires"] = now + ttl
+                meta["max_age"] = ttl
             json.dump(meta, open(_dir_meta_path(key), "w"))
         fname = name_hint or "file"
         r = self._dir_write_files(key, dirpath, meta, [(fname, data, ctype)], create=True)
@@ -1803,7 +1987,7 @@ class Handler(BaseHTTPRequestHandler):
         evict(THROW_POOL_SIZE)
         return self._dir_response(key, dirpath, meta)
 
-    def _store_bundle(self, files):
+    def _store_bundle(self, files, retained=False):
         """Store multiple files as a bundle directory; return JSON response."""
         clean = []
         total = 0
@@ -1832,10 +2016,13 @@ class Handler(BaseHTTPRequestHandler):
             files_map[name] = mimetypes.guess_type(name)[0] or c or "application/octet-stream"
         meta = {
             "bundle": True,
-            "expires": time.time() + TTL_HOURS * 3600,
             "created": time.time(),
             "files": files_map,
         }
+        if retained:
+            meta["retain"] = True          # token-gated: never expires
+        else:
+            meta["expires"] = time.time() + TTL_HOURS * 3600
         json.dump(meta, open(os.path.join(dirpath, fid + ".meta"), "w"))
         evict(THROW_POOL_SIZE)
         s = _load_stats()
@@ -1843,13 +2030,13 @@ class Handler(BaseHTTPRequestHandler):
         s["bytes"] += sum(len(d) for _, d, _ in clean)
         _save_stats(s)
         _bump_since_start(len(clean), sum(len(d) for _, d, _ in clean))
-        expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["expires"]))
+        expires_at = _fmt_exp(meta.get("expires"))
         body = json.dumps({
             "id": fid,
             "url": f"{PUBLIC_BASE}/{fid}",
             "bundle": True,
             "editable": False,
-            "persistence": _persistence_block("bundle", meta["expires"]),
+            "persistence": _persistence_block("bundle", meta.get("expires")),
             "files": [
                 {"name": n,
                  "url": f"{PUBLIC_BASE}/{fid}/{quote(n)}",
@@ -1858,17 +2045,20 @@ class Handler(BaseHTTPRequestHandler):
                 for n in names
             ],
             "size": sum(os.path.getsize(os.path.join(dirpath, n)) for n in names),
-            "expires_in": TTL_HOURS * 3600,
+            "expires_in": None if retained else TTL_HOURS * 3600,
             "expires_at": expires_at,
         })
-        self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
+        if retained:
+            self._send(200, body, "application/json")
+        else:
+            self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
 
     # ------------------------------------------------------------------
     # Unified dir module — one concept, addressable by id or name under /d/.
     # A dir is a directory with a <key>.meta manifest + <key>.history log.
     # ------------------------------------------------------------------
 
-    def _dir_create(self, key, qp, initial_files=None):
+    def _dir_create(self, key, qp, initial_files=None, retained=False):
         """Create (or get, if named & exists) a dir. key is a hex id (unnamed)
         or a name. initial_files is a list of (name, data, ctype) or None."""
         now = time.time()
@@ -1877,7 +2067,7 @@ class Handler(BaseHTTPRequestHandler):
         if not _is_hex_id(key):
             existing = _dir_meta(key)
             if existing is not None:
-                if existing.get("expires", 0) < now:
+                if _meta_expired(existing, now):
                     shutil.rmtree(dirpath, ignore_errors=True)
                     existing = None
                 else:
@@ -1901,12 +2091,15 @@ class Handler(BaseHTTPRequestHandler):
             "type": "dir",
             "created": now,
             "updated": now,
-            "expires": now + ttl,
-            "max_age": ttl,
             "listed": listed,
             "tags": tags,
             "files": {},
         }
+        if retained:
+            meta["retain"] = True          # token-gated: never expires
+        else:
+            meta["expires"] = now + ttl
+            meta["max_age"] = ttl
         if _is_hex_id(key):
             meta["id"] = key
         else:
@@ -1976,7 +2169,7 @@ class Handler(BaseHTTPRequestHandler):
         if not m or m.get("type") != "dir":
             return None
         now = time.time()
-        if m.get("expires", 0) < now:
+        if _meta_expired(m, now):
             shutil.rmtree(dirpath, ignore_errors=True)
             return self._send(404, json.dumps({"error": "expired"}), "application/json")
         ctype = self.headers.get("Content-Type", "application/octet-stream")
@@ -2017,7 +2210,7 @@ class Handler(BaseHTTPRequestHandler):
         now = time.time()
         if not m or m.get("type") != "dir":
             return self._err(404, "not found")
-        if m.get("expires", 0) < now:
+        if _meta_expired(m, now):
             shutil.rmtree(dirpath, ignore_errors=True)
             return self._send(404, "expired\n")
         force_dl = "download=1" in query
@@ -2095,21 +2288,21 @@ class Handler(BaseHTTPRequestHandler):
             ctype = meta.get("files", {}).get(f, "application/octet-stream")
             files.append({"name": f, "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}/{quote(f)}", "size": sz,
                           "content_type": ctype, "editable": _is_editable(ctype)})
-        expires = meta.get("expires", 0)
+        expires = meta.get("expires")    # None for retained dirs
         resp = {
             "id": key,
             "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}",
             "dir": True,
             "editable": False,
             "persistence": _persistence_block("dir", expires,
-                                              max_age=meta.get("max_age", DIR_DEFAULT_AGE),
+                                              max_age=meta.get("max_age"),
                                               extendable_by="activity"),
             "files": files,
             "size": total,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("created", 0))),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("updated", meta.get("created", 0)))),
-            "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
-            "max_age": meta.get("max_age", DIR_DEFAULT_AGE),
+            "expires_at": _fmt_exp(expires),
+            "max_age": meta.get("max_age"),
         }
         if meta.get("name"):
             resp["name"] = meta["name"]
@@ -2123,7 +2316,8 @@ class Handler(BaseHTTPRequestHandler):
                                   "X-Throway-Write header or ?write=")
         if meta.get("tags"):
             resp["tags"] = meta["tags"]
-        return self._send(200, json.dumps(resp), "application/json", {"X-Expires": str(expires)})
+        hdrs = {"X-Expires": str(expires)} if expires is not None else None
+        return self._send(200, json.dumps(resp), "application/json", hdrs)
 
     def _dir_listing(self, key, dirpath, meta):
         """HTML page for a dir viewed in a browser — mobile-friendly, with
@@ -2189,9 +2383,9 @@ class Handler(BaseHTTPRequestHandler):
         now = time.time()
         if not m or m.get("type") != "dir":
             return self._err(404, "not found")
-        if m.get("expires", 0) < now:
+        if _meta_expired(m, now):
             shutil.rmtree(dirpath, ignore_errors=True)
-            return self._send(404, json.dumps({"error": "expired"}), "application/json")
+            return self._send(404, "expired\n")
         fpath = os.path.join(dirpath, fname)
         if fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp") or not os.path.isfile(fpath):
             return self._err(404, "not found")
@@ -2329,7 +2523,7 @@ class Handler(BaseHTTPRequestHandler):
                 m = _dir_meta(key)
                 if not m or not m.get("listed"):
                     continue
-                if m.get("expires", 0) < now:
+                if _meta_expired(m, now):
                     continue
                 created = m.get("created", 0); updated = m.get("updated", created)
                 tags = m.get("tags", [])
@@ -2356,8 +2550,9 @@ class Handler(BaseHTTPRequestHandler):
                     "size": size,
                     "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created)),
                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(updated)),
-                    "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(m.get("expires", 0))),
-                    "max_age": m.get("max_age", DIR_DEFAULT_AGE),
+                    "expires_at": (None if m.get("retain")
+                                   else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(m.get("expires", 0)))),
+                    "max_age": m.get("max_age"),
                     "_c": created, "_u": updated,
                 })
         def _key(e):
@@ -2406,6 +2601,9 @@ class Handler(BaseHTTPRequestHandler):
         fid = parts[0]
         fp = _id_path(fid)
         if os.path.isfile(fp):
+            denied = self._retain_write_denied(self._meta_of(fid))
+            if denied:
+                return self._send(denied[0], json.dumps(denied[1]), "application/json")
             _remove(fp); self._send(200, "deleted\n")
         else:
             self._err(404, "not found")
@@ -2435,8 +2633,8 @@ class Handler(BaseHTTPRequestHandler):
             "name": meta.get("name", fid),
             "content_type": meta.get("ctype", "text/plain"),
             "editable": _is_editable(meta.get("ctype", "text/plain")),
-            "persistence": _persistence_block("single", meta.get("expires", time.time())),
-            "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("expires", time.time()))),
+            "persistence": _persistence_block("single", meta.get("expires")),
+            "expires_at": _fmt_exp(meta.get("expires")),
         })
 
     def do_PUT(self):
@@ -2455,6 +2653,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(404, "not found")
         if not self._is_text(fid):
             return self._send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
+        denied = self._retain_write_denied(self._meta_of(fid))
+        if denied:
+            return self._send(denied[0], json.dumps(denied[1]), "application/json")
         data = self._read_body()
         if data is None:
             return self._err(411, "length required")
@@ -2462,6 +2663,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(413, "too large (max 5MB)")
         with open(fp, "wb") as f:
             f.write(data)
+        if retain.valid(retain.token_from(self)):
+            self._retain_meta(fid)     # token write implies retention
         evict(THROW_POOL_SIZE)
         self._send(200, self._text_result(fid), "application/json")
 
@@ -2481,6 +2684,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(404, "not found")
         if not self._is_text(fid):
             return self._send(400, json.dumps({"error": "only text files can be appended to"}), "application/json")
+        denied = self._retain_write_denied(self._meta_of(fid))
+        if denied:
+            return self._send(denied[0], json.dumps(denied[1]), "application/json")
         data = self._read_body()
         if data is None:
             return self._err(411, "length required")
@@ -2489,6 +2695,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(413, "too large (max 5MB)")
         with open(fp, "ab") as f:
             f.write(data)
+        if retain.valid(retain.token_from(self)):
+            self._retain_meta(fid)     # token write implies retention
         evict(THROW_POOL_SIZE)
         self._send(200, self._text_result(fid), "application/json")
 
@@ -2501,7 +2709,8 @@ class Handler(BaseHTTPRequestHandler):
 
 A no-auth, ephemeral file store for agents and programs. Upload a file, a
 bundle of files (a mini website), or a dir; get a short-lived
-URL. Everything auto-expires after {TTL_HOURS} hours.
+URL. Everything auto-expires after {TTL_HOURS} hours (unless uploaded
+with a retain token — /help/retention).
 
 USAGE
   POST {PUBLIC_BASE}/?name=file.txt   upload a file (body = file bytes)
@@ -2517,6 +2726,7 @@ USAGE
   GET  {PUBLIC_BASE}/<id>             download / view
   PUT/PATCH {PUBLIC_BASE}/<id>        edit / append text
   DELETE {PUBLIC_BASE}/<id>           delete
+  POST {PUBLIC_BASE}/<id>?retain=1    flip to indefinite (retain token)
 
 WHERE TO GET MORE
   Full usage guide : GET {PUBLIC_BASE}/write_for_agents
@@ -2534,7 +2744,8 @@ WHERE TO GET MORE
             "THROWAWAY STORE — FOR AGENTS\n",
             "You are talking to a disposable file store. It lets you upload a\n"
             "file and share a short-lived URL. Everything is open (no auth) and\n"
-            f"everything expires after {TTL_HOURS} hours.\n",
+            f"everything expires after {TTL_HOURS} hours — unless uploaded\n"
+            "with a retain token (see the retention topic below).\n",
         ]
         for key in HELP_ORDER:
             parts.append(_render_help_body(key))
@@ -2690,13 +2901,14 @@ function copyDesc() {{
             "max_file_bytes": MAX_FILE,
             "pool_bytes": THROW_POOL_SIZE,
             "rate_limit_per_min": RATE_LIMIT,
+            "retention_token": retain.ENABLED,
             "endpoints": {
                 "upload": {
                     "method": "POST",
                     "url": PUBLIC_BASE + "/?name=<filename>[&ttl=<h|d>][&share=<name>][&once=1]",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
-                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, 14d] (max 14 days); optional &share=<name> stores it under a chosen memorable name (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved) at /d/<name> with sliding lifetime (default 7d, ttl= clamped [4h,14d]); optional &once=1 = burn-after-reading (single files only, not with &share=): the file auto-deletes after the first download", 
-                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str", "extendable_by": "none|activity", "max_age": "int|null"}, "expires_in": "int", "expires_at": "str"},
+                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, 14d] (max 14 days); optional &share=<name> stores it under a chosen memorable name (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved) at /d/<name> with sliding lifetime (default 7d, ttl= clamped [4h,14d]); optional &once=1 = burn-after-reading (single files only, not with &share=): the file auto-deletes after the first download; with a retain token (Authorization: Bearer <token> or ?token=, see /help/retention) the upload NEVER expires and is exempt from pool eviction", 
+                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str|null", "extendable_by": "none|activity", "max_age": "int|null", "retention?": "indefinite"}, "expires_in": "int|null", "expires_at": "str|null"},
                 },
                 "upload_bundle": {
                     "method": "POST",
@@ -2722,6 +2934,7 @@ function copyDesc() {{
                 "delete_dir": {"method": "DELETE", "url": PUBLIC_BASE + "/d/<key>", "note": "delete a whole dir"},
                 "list_dirs": {"method": "GET", "url": PUBLIC_BASE + "/d", "note": "list dirs created with listed=1; filters ?q=<sub> (name or tag), ?created_after/before=<ts>, ?updated_after/before=<ts>; sort ?sort=created|updated|name&order=asc|desc (default created desc)"},
                 "delete": {"method": "DELETE", "url": PUBLIC_BASE + "/<id>"},
+                "retain": {"method": "POST", "url": PUBLIC_BASE + "/<id>?retain=1", "note": "flip an EXISTING file, bundle (/<id>) or dir (/d/<key>?retain=1) to indefinite retention: never expires, exempt from pool eviction, public read, but writes/deletes need the retain token. Requires the token (Authorization: Bearer <token> or ?token=). Idempotent. Token-authenticated uploads and PUT/PATCH writes retain implicitly. See /help/retention.", "response": {"id": "str", "url": "str", "retention": "indefinite", "expires_at": None, "persistence": {"type": "single|dir|bundle", "expires_at": None, "extendable_by": "none", "max_age": None, "retention": "indefinite"}}},
                 "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content"},
                 "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)"},
                 "contract": {"method": "GET", "url": PUBLIC_BASE + "/api"},
@@ -2851,12 +3064,13 @@ _INDEX_JS = r"""(function () {
     var html = '<h3>Done \u2713</h3>' + row('URL',
       '<div class=urlbox><input readonly value="' + esc(d.url) + '"><button class=btn data-copy>copy</button></div>');
     if (d.dir) {
-      html += row('Dir', d.files.length + ' files \u00b7 expires ' + esc(d.expires_at)) + filesBlock(d.files);
+      html += row('Dir', d.files.length + ' files \u00b7 ' + (d.expires_at ? 'expires ' + esc(d.expires_at) : 'retained \u221e')) + filesBlock(d.files);
     } else if (d.bundle) {
-      html += row('Bundle', d.files.length + ' files \u00b7 expires ' + esc(d.expires_at)) + filesBlock(d.files);
+      html += row('Bundle', d.files.length + ' files \u00b7 ' + (d.expires_at ? 'expires ' + esc(d.expires_at) : 'retained \u221e')) + filesBlock(d.files);
     } else {
       html += row('Name', esc(d.name)) + row('Size', d.size + ' B') +
-              row('Type', esc(d.content_type)) + row('Expires', esc(d.expires_at));
+              row('Type', esc(d.content_type)) +
+              row('Expires', d.expires_at ? esc(d.expires_at) : 'retained \u221e');
     }
     /* native share sheet on smartphones (WhatsApp, mail, …) when available */
     if (navigator.share) {

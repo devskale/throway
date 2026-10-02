@@ -19,6 +19,7 @@ are deleted. No auth required.
 | Max file size | 5 MB |
 | Pool size | 100 MB (oldest files evicted first) |
 | Rate limit | 100 req/min per IP |
+| Retention | token-gated (server-side `THROWAWAY_RETAIN_TOKEN`): token uploads **never expire**, exempt from pool eviction; public read, token-gated write (see [Retention](#retention-indefinite-objects-token-gated-since-1440)) |
 | pics gallery | own 20 GB pool (full → 507 reject, never evicts), fixed 90-day lifetime, 30 MB max/image; ≤ 2048 px stored byte-identical (JPEG metadata stripped losslessly), larger downscaled to 2048 px WebP q90 (≤ 1 MB) |
 
 ## Pics — event galleries (`/pics`, since 1.20.0)
@@ -132,6 +133,49 @@ curl -A "Mozilla" -d "id=<id>&action=hide&p=1" "$BASE/pics/g/<gid>/<secret>"
 Re-creating an existing named gallery returns it WITHOUT the token
 (`existed:true`) — guessing a name never grants admin.
 
+## Retention — indefinite objects (token-gated, since 1.44.0)
+
+throway is disposable by default. When the server has a **retain token**
+configured (`/api` limits: `"retention_token": true`), requests that
+authenticate with it create objects that **never expire** and are exempt
+from pool eviction — stable URLs for skill installs, share slugs, etc.
+
+```bash
+BASE=https://skale.dev/throway
+TOKEN=<retain-token>
+
+# upload that never expires (Bearer header preferred — query reaches logs)
+curl -X POST --data-binary @skill.tar.gz \
+     -H "Authorization: Bearer $TOKEN" \
+     "$BASE/?name=skill.tar.gz"
+# -> {"expires_at": null, "persistence": {"retention": "indefinite", ...}}
+
+# same via query param
+curl -X POST --data-binary @note.txt "$BASE/?name=note.txt&token=$TOKEN"
+
+# flip an EXISTING file/bundle to indefinite (idempotent)
+curl -X POST -H "Authorization: Bearer $TOKEN" "$BASE/<id>?retain=1"
+
+# flip a dir
+curl -X POST -H "Authorization: Bearer $TOKEN" "$BASE/d/<key>?retain=1"
+```
+
+Rules:
+
+- Works for single files, bundles, dirs, `?share=` names and `?url=`
+  server-side imports alike.
+- **Reads stay public** (anyone with the URL). **Writes and deletes on
+  retained objects require the token** (401 otherwise) — a permanent URL
+  must not be defaceable.
+- Token-authenticated `PUT`/`PATCH` (or dir writes) make the target
+  indefinite — *write implies retention*.
+- `&once=1` (burn-after-reading) cannot be combined with retention (400).
+- Retained units are never swept and never pool-evicted; when the pool
+  runs tight, only disposable units are evicted.
+- Wrong/missing token on a retention request: `401`. On servers without
+  a retain token: `401 retention is not enabled`.
+- Details: `GET /help/retention` (topic `retention`).
+
 ## Browser rendering (since 1.27.0 / 1.28.0)
 
 - **`.md` files** render as self-contained HTML for browsers (own
@@ -190,6 +234,7 @@ schlägt beim Push an.)
 | delete_dir | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
 | list_dirs | [Dirs](#dirs--one-unified-concept-under-dkey) |
 | delete | [Delete a file](#delete-a-file) |
+| retain | [Retention](#retention-indefinite-objects-token-gated-since-1440) |
 | edit_text | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
 | append_text | [Dirs — write protection](#dirs--write-protection-optional-since-1290) |
 | contract | [Contract endpoint](#contract-endpoint) |
@@ -224,7 +269,7 @@ curl -A "curl" "https://skale.dev/throway/help"
 curl -A "curl" "https://skale.dev/throway/help/markdown"
 ```
 Topics: `overview`, `files`, `bundles`, `dirs`, `markdown`, `view`,
-`edit`, `delete`, `limits`, `contract`. Browsers get an HTML index / page;
+`edit`, `delete`, `limits`, `contract`, `retention`. Browsers get an HTML index / page;
 unknown topics return `404`. Pull only the topics you need.
 
 Markdown (`/help/markdown`): any `.md`/`.markdown` upload renders as a

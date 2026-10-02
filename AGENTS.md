@@ -465,6 +465,40 @@ curl -X DELETE "https://skale.dev/throway/d/<key>/<file>"  # one file from a dir
 
 ---
 
+## Retention — indefinite objects (token-gated, seit 1.44.0, Details: `GET /help/retention`)
+
+Throway bleibt standardmäßig Wegwerf-Speicher. Mit serverseitig konfiguriertem
+**Retain-Token** (`/api` limits: `"retention_token": true`) erzeugen token-autorisierte
+Requests Objekte, die **nie ablaufen** und von der Pool-Eviction ausgenommen sind —
+stabile URLs für Skill-Installs, Share-Slugs etc.
+
+```bash
+BASE=https://skale.dev/throway
+
+# Upload ohne Ablauf (Bearer-Header bevorzugt — Query landet in Logs)
+curl -X POST --data-binary @skill.tar.gz \
+     -H "Authorization: Bearer <token>" \
+     "$BASE/?name=skill.tar.gz"
+# -> {"expires_at": null, "persistence": {"retention": "indefinite", ...}}
+
+# Bestehendes Objekt/Dir auf unbeschränkt flippen (idempotent)
+curl -X POST -H "Authorization: Bearer <token>" "$BASE/<id>?retain=1"
+curl -X POST -H "Authorization: Bearer <token>" "$BASE/d/<key>?retain=1"
+```
+
+- Gilt für Single-Files, Bundles, Dirs, `?share=`-Namen und `?url=`-Importe.
+- **Lesen bleibt öffentlich** (jeder mit der URL); **Schreiben/Löschen braucht
+  das Token** (sonst 401) — eine permanente URL darf nicht verunstaltbar sein.
+- Token-autorisiertes `PUT`/`PATCH` (auch Dir-Writes) macht das Ziel unbeschränkt
+  — *Write impliziert Retention*.
+- `&once=1` + Retention → 400 (Widerspruch).
+- Retained Units werden nie gesweept und nie evicted; nur Disposable-Units
+  weichen bei Pool-Druck.
+- Falsches/fehlendes Token bei Retention-Anfrage: 401; ohne konfiguriertes
+  Token: 401 "retention is not enabled".
+
+---
+
 ## Pics — event galleries (seit 1.20.0, Details: `GET /help/pics`)
 
 Beliebig viele Bildgalerien unter `/pics` — dirs-artig: wer anlegt, wird
@@ -512,7 +546,8 @@ Existierende benannte Galerie neu anlegen → zurück ohne Token
 
 | Code | Meaning |
 |------|---------|
-| `400` | invalid filename / not editable (e.g. image) |
+| `400` | invalid filename / not editable (e.g. image) / `once=1` + retention |
+| `401` | retention or write token required/invalid (retained objects, protected dirs) |
 | `404` | not found / expired |
 | `411` | missing `Content-Length` |
 | `413` | file too large (> 5 MB; pics: > 30 MB) |

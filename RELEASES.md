@@ -1,9 +1,56 @@
 # throway — Releases
 
-**Current version:** `1.43.2`
+**Current version:** `1.44.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.44.0 — 2026-10-02
+
+### Feature: Token-gated indefinite Retention (`retain`)
+
+Issue throway-indefinite-token (from mac@skale-skills): Skill-Installs und
+stabile Share-URLs brauchen URLs, die nicht nach 4h/7d sterben — ohne
+zweiten Dienst. Lösung: ein serverseitiges **Retain-Token**
+(`THROWAWAY_RETAIN_TOKEN`, Env, komma-getrennte Liste möglich; leer =
+Feature aus) spaltet Unbeschränktheit vom Wegwerf-Prinzip ab:
+
+- Token-autorisierte Uploads (`Authorization: Bearer <t>` oder dokumentiertes
+  `?token=`) erzeugen Objekte **ohne Ablauf**: `expires_at: null`,
+  `persistence.retention: "indefinite"`. Gilt für Singles, Bundles, Dirs,
+  `?share=` und `?url=`-Importe.
+- `POST /<id>?retain=1` (bzw. `/d/<key>?retain=1`) mit Token flippt
+  **Bestandsobjekte** auf unbeschränkt (idempotent).
+- Token-autorisierte `PUT`/`PATCH`/Dir-Writes machen das Ziel unbeschränkt
+  — *write implies retention*.
+- **Public read, token-gated write**: Lesen bleibt URL-basiert offen;
+  Schreiben/Löschen auf retained Objekten braucht das Token (401).
+- `&once=1` + Retention → 400.
+- Sweep **und** Eviction überspringen retained Units (`retain`-Flag im
+  Meta/Manifest); bei Pool-Druck weichen nur Disposable-Units.
+
+Implementierung: neues Modul `throway/retain.py` (Token-Config,
+constant-time-Vergleich, `request_retention`/`write_denied`, HELP-Topic
+`retention`); store.py bekommt minimale Touchpoints (Upload-Pfade, Write-
+Gates, `_meta_expired`/`_meta_retained`/`_dir_retain`-Helper, Listings
+null-sicher). `/api`: `retention_token`-Limit, `retain`-Endpunkt,
+`expires_at: str|null`-Schema; `/help/retention`. Sicherheits-Invarianten
+gehalten: `hmac.compare_digest`, 401 statt Enumeration, Query-Token als
+dokumentierter (Log-Warnhinweis), Header bevorzugt.
+
+### Bugfix mitgeritten: Idempotenz-Key war still tot (seit 1.42.x)
+
+Beim Retention-Umbau fiel F821 auf: `hashlib` war nie importiert,
+`_read_json` nie definiert, und `_idem_put` wurde **nie aufgerufen** —
+die try/except-Blöcke fraßen die NameErrors, der Replay lieferte
+stillschweigend immer neue IDs. Es gab keinen Test dafür. Gefixt:
+Import + `json.load` + Persistenz-Hook in `_send` (erste 200-JSON-
+Antwort unter dem Key); Regressionstest `test_idempotency_replay`.
+
+Tests: `tests/test_retain.py` (19 neue, HTTP-Level + in-process
+sweep/evict-Immunität) + `test_idempotency_replay`; Suite 115/115 grün.
 
 ---
 

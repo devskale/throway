@@ -405,3 +405,16 @@ def test_dir_write_token_backward_compatible(srv):
     st, _, _ = srv.delete("/d/custom", headers={"X-Throway-Write": "my-own-token-123"})
     assert st == 200
 
+
+
+# --- idempotency (1.44.0 regression: hashlib/_read_json NameError ate the
+# feature silently since 1.42.x — replay never worked in production) ------
+
+def test_idempotency_replay(srv):
+    hdrs = {**AGENT, "Idempotency-Key": "idem-fixed-1"}
+    st1, b1 = srv.jpost("/?name=i.txt", data=b"v1", headers=hdrs)
+    assert st1 == 200
+    st2, b2 = srv.jpost("/?name=i.txt", data=b"v1", headers=hdrs)
+    assert st2 == 200
+    assert b1["id"] == b2["id"]
+    assert b2.get("idempotent_replay") is True

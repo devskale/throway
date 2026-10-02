@@ -47,6 +47,11 @@ curl -X POST --data-binary @note.txt \
 # burn-after-reading: auto-deletes after the first download
 curl -X POST --data-binary @secret.txt \
   "https://skale.dev/throway/?name=secret.txt&once=1"
+
+# never-expiring upload (needs a server-side retain token)
+curl -X POST --data-binary @skill.tar.gz \
+     -H "Authorization: Bearer <retain-token>" \
+     "https://skale.dev/throway/?name=skill.tar.gz"
 ```
 
 ```bash
@@ -120,6 +125,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | Max file size | **5 MB** |
 | Pool size | **100 MB** (oldest evicted first) |
 | Rate limit | **100 req/min** per IP |
+| **Retention** | token-gated: uploads with the retain token **never expire** & are never evicted; public read, token-gated write ([details](API.md#retention-indefinite-objects-token-gated-since-1440)) |
 | **pics galleries** | shared pool **20 GB** (full = uploads rejected with 507, never evicted), images fixed **90 days** (gallery slides on upload), max **30 MB** per image, recompressed to ≤ 2048 px WebP (GIFs pass through, HEIC supported) |
 
 ## 🖼️ Behavior
