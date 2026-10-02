@@ -30,6 +30,10 @@ A trailing slash on the package dir flattens its contents into
   (Code-Default von `THROWAWAY_ROOT`). ssh-Aufräumen am falschen Ort
   läuft *still ins Leere* (rm erfolgreich, Objekt lebt weiter) — erst
   `systemctl cat`/`find` nach dem echten ROOT, dann rm.
+- **Retain-Token-Verlust** (Retro hard-validate): das Token steht
+  shuttle-frei im Drop-in — `ssh lubu 'sudo cat
+  /etc/systemd/system/throway-store.service.d/retain.conf'`. Die /tmp-Kopie
+  stirrt beim Reboot; ohne Token sind retained Objekte nur per ssh administrierbar.
 - Secrets live in the systemd drop-in
   (`/etc/systemd/system/throway-store.service.d/`), never in the repo.
 - Verify, in order: `grep ^VERSION` on lubu, `systemctl is-active`,
@@ -205,6 +209,7 @@ Non-negotiable; each guards a real hole found this session:
 
 ```
 [ ] tests green — confirmed via ${PIPESTATUS[0]}, not a piped echo
+[ ] scripts/validate-live.py green (Spawner-Modus; live nach Deploy nochmal mit --base)
 [ ] browser feature? -> rodney flow that triggers it (not markup-grep)
 [ ] scripts/release-check.sh green (version + docs drift; CI runs it too)
 [ ] VERSION + RELEASES.md + docs (api/help/API.md/AGENTS/README) current

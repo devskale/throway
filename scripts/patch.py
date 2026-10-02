@@ -23,6 +23,35 @@ import sys
 import tempfile
 
 
+def _near_misses(src, old, limit=3):
+    """Bei Anker-Fehlschlag: aehnlichste Zeilen mit Kontext melden.
+    Retro 2026-10-02: ~6 Session-Round-Trips gingen in Anker-Debugging
+    (trailing space, falsche Fehlerformate, Quote-Ebenen) — der Report
+    nennt die Stelle, die der Anker-aehnelt, statt sie suchen zu lassen.
+    Whitespace-normalisierter difflib-Vergleich der ersten Anker-Zeile."""
+    import difflib
+    import re
+    first = re.sub(r"\s+", " ", old.split("\n", 1)[0]).strip()
+    if len(first) < 8:
+        return []
+    lines = src.split("\n")
+    scored = []
+    for i, ln in enumerate(lines):
+        cand = re.sub(r"\s+", " ", ln).strip()
+        if len(cand) < 8:
+            continue
+        ratio = difflib.SequenceMatcher(None, first, cand).ratio()
+        if ratio >= 0.72 or first[:40] in cand:
+            scored.append((ratio, i, ln))
+    scored.sort(key=lambda t: -t[0])
+    out = []
+    for ratio, i, ln in scored[:limit]:
+        out.append(f"Zeile {i+1} (Aehnlichkeit {ratio:.2f}): {ln[:100]}")
+        if len(lines) > i + 1:
+            out.append(f"  danach: {lines[i+1][:100]}")
+    return out
+
+
 def apply(path, edits, quiet=False):
     """edits: Liste von (old, new, label). Jeder Anker muss exakt 1x
     vorkommen. Kompiliert das Ergebnis im SPEICHER, bevor geschrieben
@@ -31,9 +60,12 @@ def apply(path, edits, quiet=False):
     for old, new, label in edits:
         n = src.count(old)
         if n != 1:
+            near = _near_misses(src, old)
+            hint = ("\n  Near-Miss:\n" + "\n".join("    " + x for x in near)
+                    if near else "")
             raise SystemExit(
                 f"patch.py: Anker '{label}' kommt {n}x vor (erwartet 1) — "
-                f"nichts geändert.")
+                f"nichts geändert.{hint}")
         src = src.replace(old, new)
         if not quiet:
             print(f"ok: {label}")

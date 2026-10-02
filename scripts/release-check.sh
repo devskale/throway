@@ -57,6 +57,12 @@ for t in $TOPICS; do
 done
 rm -rf "$ROOT"
 
+# Atomic-Write-Guard (Retro 2026-10-02, hard-validate): Persistenz-
+# Schreiben nur via _atomic_json (tmp + os.replace) — die Data-Loss-Race
+# von 1.45.2 war genau die Form json.dump(x, open(y, "w")).
+DIRECT=$(grep -nE 'json\.dump\([^)]*open\(' store.py throway/*.py | grep -v '\.part' || true)
+[ -z "$DIRECT" ] || { echo "FAIL: nicht-atomare json.dump-Schreiben (→ _atomic_json):"; echo "$DIRECT"; FAIL=1; }
+
 # CSS-Klammer-Balance (Retro 2026-10-02): Verwaiste/doppelte } legen die
 # FOLGENDE Regel still weg (in throway 2× passiert). Die CSS-Strings liegen
 # als Python-String-Literale in pics.py (_GALLERY_CSS, _EMBED_CSS, _LB_CSS,

@@ -30,6 +30,10 @@ Auth:      none
 > Paket: `store.py` (Entry) + `throway/`) — dann
 > `sudo systemctl restart throway-store`.
 
+> **Issues finden:** pi-adressierte Issues (`to: pi@throway`) erscheinen
+> NICHT in `issues todo` (Maschinen-Identität ist `mac`) — pi-Sessions
+> nutzen `HANDOFF_ME=pi issues todo` oder `issues ls --to pi`.
+
 > **Koordination (Pflicht vor jedem Bumppush):** Parallele Sessions
 > arbeiten im selben Working-Tree (Retro 2026-10-01: 1.39.3–1.40.2 wurden
 > überholt, eine versionenlose Commit-Kette). Wer an throway arbeitet,
@@ -260,9 +264,8 @@ curl -F "f=@index.html;type=text/html" \
 A **dir** is a collection of files you keep adding to and editing over time
 — a disposable workspace for an agent. One concept, addressable by an
 **opaque id** (unnamed) or a **memorable name** (named), always under
-`/d/<key>`. It has a **sliding lifetime** (default 7 days) and a lightweight
-`/d/<key>`. It has a **sliding lifetime** (default 7 days, **max 14 days**) and a lightweight
-**edit history**.
+`/d/<key>`. It has a **sliding lifetime** (default 7 days, **max 14 days**)
+and a lightweight **edit history**.
 
 ```bash
 # create an unnamed dir (opaque hex id)

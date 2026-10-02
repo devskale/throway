@@ -131,6 +131,9 @@ class Server:
         return self.request("DELETE", path, headers=headers)
 
     def jpost(self, path, data=None, headers=None):
+        """(status, parsed-json) — ZWEI Werte, KEIN headers-Element!
+        get/post/put/patch/delete liefern (status, headers, raw-bytes);
+        sechsmal pro Session hier falsch entpackt — immer zweimal lesen."""
         st, hd, body = self.post(path, data=data, headers=headers)
         return st, json.loads(body) if body else {}
 

@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: pip install pytest pillow pillow-heif
+      - run: pip install pytest pillow pillow-heif websockets  # websockets: scripts/browser-probe.py
       - run: python -m pytest tests/ -q
 
   lint:
