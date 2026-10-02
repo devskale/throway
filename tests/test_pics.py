@@ -1146,3 +1146,27 @@ def test_embed_and_page_carry_star_ui(srv):
         assert "ty_stars_" in h, qs
         assert f"data-pid={a} aria-label" in h and "data-star" in h, qs
         assert "class=lk" in h, qs  # like buttons still present
+
+
+def test_stars_recipient_marking_injected(srv):
+    """1.43.1: Der Empfänger eines ?stars=-Links muss die geteilten Fotos
+    markiert sehen, auch ohne eigene Sterne im localStorage. Der Server
+    injiziert die URL-PIDs als RECEIVED-Set ins JS; paintStar markiert aus
+    starmine() ODER RECEIVED. Die Markierung wird NIE persistiert — der
+    shareSet-Button baut seine Auswahl nur aus den eigenen Sternen."""
+    g = _mk_gal(srv, "starsrec")
+    a = _up(srv, g["id"], "a.jpg", (120, 40, 200))["id"]
+    b = _up(srv, g["id"], "b.jpg", (10, 200, 30))["id"]
+    for qs in ("embed=1", ""):
+        sep = "&" if qs else ""
+        st, _, html = srv.get(f"/pics/g/{g['id']}?{qs}{sep}stars={a},{b}",
+                              headers=BROWSER)
+        h = html.decode()
+        assert st == 200
+        # RECEIVED-Set injiziert mit beiden URL-PIDs (kein toter STARS-Regex)
+        assert f"RECEIVED={{}},_rs=[\"{a}\", \"{b}\"]" in h, qs
+        assert "location.search.match(/[?&]stars=" not in h, qs  # P2: toter Code weg
+        # CSS markiert [data-star] (P1: Empfänger-Markierung sichtbar)
+        assert ".grid a[data-star]" in h, qs
+        # paintStar wertet starmine() ODER RECEIVED aus
+        assert "starmine()[pid]||RECEIVED[pid]" in h, qs

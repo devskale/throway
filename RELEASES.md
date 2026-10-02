@@ -1,9 +1,41 @@
 # throway — Releases
 
-**Current version:** `1.43.0`
+**Current version:** `1.43.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.43.1 — 2026-10-02
+
+### Bugfix (Review P1): Empfänger-Markierung im ?stars=-Link
+
+Review-Befund (pics-star-set-teilen): Der geteilte Link sortierte die
+gestarrten Fotos zwar korrekt zuerst, aber ein Empfänger ohne eigene
+Sterne sah sie **nicht markiert** — die Markierung hing nur am
+localStorage des aktuellen Besuchers. Kernanforderung war „derselbe
+View“. Behoben:
+
+- **P1:** Der Server injiziert die URL-PIDs als `RECEIVED`-Set ins JS;
+  `paintStar` markiert eine Zelle, wenn sie im eigenen `starmine()`
+  **oder** im `RECEIVED`-Set liegt. Der Empfänger sieht die geteilten
+  Fotos jetzt mit gefülltem Stern — auch ohne sie selbst gestarrt zu
+  haben.
+- **P1/P3:** Die Empfänger-Markierung wird **nie** in localStorage
+  geschrieben — der „Als Set teilen“-Button baut seine Auswahl weiterhin
+  nur aus den eigenen Sternen, übernimmt also keine fremden.
+- **P2:** Toten `STARS`-Regex entfernt (war nie verwendet); das
+  `RECEIVED`-Set kommt aus der bereits injizierten `__STARS__`.
+- **CSS:** `.grid a[data-star]` als statische Markierung ergänzt
+  (vorher nur `.starred`, das ebenfalls nur via localStorage gesetzt
+  wurde).
+
+Browser-Flow (rodney/CDP) verifiziert: frischer Empfänger sieht die
+getrennten Fotos markiert (Grid + Lightbox), localStorage bleibt leer,
+Share-URL enthält nur eigene Sterne.
+
+Suite: 92 Tests grün, ruff grün.
 
 ---
 
