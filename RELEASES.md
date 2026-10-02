@@ -1,9 +1,33 @@
 # throway — Releases
 
-**Current version:** `1.41.0`
+**Current version:** `1.41.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.41.1 — 2026-10-01
+
+### Koordinations-Guardrail: Bumppush gegen parallele Sessions absichern
+
+Der Vorfall aus 1.40.3 war nicht die Ursache, sondern die Symptom-
+huelle: Zwei Sessions im selben Working-Tree haben sich die Versions-
+kette gegenseitig überschrieben, ohne es zu merken. Der Übeltäter war
+fehlende Koordination — also mechanisch gelöst statt dokumentiert:
+
+- **`scripts/bumppush-check.sh`:** Ein Bumppush ist nur erlaubt, wenn
+  `<handoff>/issues/active/` leer ist (kein fremder Agent arbeitet) oder
+  der eigene Claim-Slug im Commit-Betreff steht. Verweigert sonst mit
+  klarer Meldung (inkl. Hinweis auf stale Claims).
+- **In `release-check.sh` verdrahtet**, läuft also in jedem Release
+  und in CI; ohne Handoff-Struktur (CI-Runner) wird er übersprungen.
+- **Regel in `AGENTS.md`** beim Bumppush-Abschnitt: wer an throway
+  arbeitet, legt einen Claim in `.handoff/issues/active/` an. Der
+  Mechanismus ist das vorhandene issues-Kanban (`issues start <slug>`),
+  keine neue Infrastruktur.
+
+Suite: 86 Tests grün, ruff grün.
 
 ---
 

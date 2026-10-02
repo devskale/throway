@@ -30,6 +30,12 @@ Auth:      none
 > Paket: `store.py` (Entry) + `throway/`) — dann
 > `sudo systemctl restart throway-store`.
 
+> **Koordination (Pflicht vor jedem Bumppush):** Parallele Sessions
+> arbeiten im selben Working-Tree (Retro 2026-10-01: 1.39.3–1.40.2 wurden
+> überholt, eine versionenlose Commit-Kette). Wer an throway arbeitet,
+> legt einen Claim in `.handoff/issues/active/` an; `release-check.sh`
+> (läuft in jedem Release) verweigert den Bumppush bei fremdem Claim.
+
 1. `POST` a file → get back JSON with an `id` and `url`.
 2. Share that `url`. It's valid for 4 hours.
 3. `GET` to download, `PUT`/`PATCH` to edit text, `DELETE` to remove.

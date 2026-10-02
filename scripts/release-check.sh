@@ -18,6 +18,16 @@ if [ -n "$V_COMMIT" ] && [ "$V_COMMIT" != "$V_STORE" ]; then
 fi
 
 # /api-Spec dynamisch ziehen (Server auf freiem Port, tmp-root)
+# Vorab: Koordinations-Guardrail (parallele Sessions im selben Baum) —
+# Retro 2026-10-01: zwei Sessions, ein Working-Tree, eine versionslose
+# Commit-Kette. Lokal mit .handoff/ vorhanden: eigener Claim nötig.
+# Ohne Handoff-Struktur (CI-Runner) wird der Check übersprungen.
+if [ -d .handoff/issues/active ] || [ -d "$HOME/code/handoffs/throway/issues/active" ]; then
+  bash scripts/bumppush-check.sh "$CLAIM" || { echo "FAIL: bumppush-check"; FAIL=1; }
+else
+  echo "bumppush-check: uebersprungen (keine issues-Struktur — CI)"
+fi
+
 ROOT=$(mktemp -d); PORT=$(python3 - <<'PY'
 import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()
 PY
