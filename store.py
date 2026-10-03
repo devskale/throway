@@ -88,7 +88,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.48.1"
+VERSION = "1.48.2"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -981,9 +981,9 @@ Every error response is JSON with an `error` message and a stable `code`:
   403 forbidden          action not allowed on this object         -> do not retry
   404 not_found          id/name unknown, expired or deleted       -> do not retry with the same id
   411 missing_length     no Content-Length on a bodied request     -> send Content-Length, then retry
-  413 too_large          file > {MAX_FILE_MB}MB (pics: 30MB)       -> do not retry unchanged
+  413 too_large          file > {MAX_FILE_MB}MB (pics: {PICS_MAX_FILE_MB}MB) -> do not retry unchanged
   429 rate_limited       too many requests ({RATE_LIMIT}/min/IP)       -> WAIT: `Retry-After` header (seconds) + `retry_after` field; then retry unchanged
-  507 pool_full          pics pool exhausted                       -> WAIT: `Retry-After` (300s); admin must delete or wait for expiry
+  507 pool_full          pics pool exhausted                       -> WAIT: `Retry-After` ({PICS_RETRY_AFTER}s); admin must delete or wait for expiry
   501 unsupported        method/encoding not supported             -> do not retry
 
 Retry rule of thumb: only 429/507 are "later again" — every other code
@@ -1012,6 +1012,8 @@ def _render_help_body(key):
         HISTORY_LIMIT=HISTORY_LIMIT,
         PICS_DAYS=pics.PICS_TTL // 86400,
         PICS_GB=pics.PICS_POOL // 1024**3,
+        PICS_MAX_FILE_MB=pics.PICS_MAX_FILE // 1024**2,
+        PICS_RETRY_AFTER=pics.PICS_RETRY_AFTER,
         PICS_EDGE=pics.PICS_EDGE,
         PICS_QUALITY=pics.PICS_QUALITY,
     )
@@ -1230,9 +1232,11 @@ class Handler(BaseHTTPRequestHandler):
         Browser-/HTML-Ansicht — auch gegen die UA-Heuristik (Custom-UAs und
         Parser bekommen sonst die falsche Representation). Default: UA."""
         q = self.path.split("?", 1)[1] if "?" in self.path else ""
-        if "json=1" in q:
+        # exakte Params — Substring ("json=1" in q) matchte auch ?notjson=1
+        params = set(kv for kv in q.split("&") if "=" in kv)
+        if "json=1" in params:
             return True
-        if "html=1" in q:
+        if "html=1" in params:
             return False
         return self._is_agent()
 
@@ -2199,13 +2203,15 @@ class Handler(BaseHTTPRequestHandler):
                             return True   # 401 bereits gesendet
                         meta = _dir_meta(key) or existing
                         dp = _dir_path(key)
+                        # pre-check: einzelne Datei zu gross -> praezise 413
+                        # (CR 1.48.2: _dir_write_files-None vermengte das
+                        # mit "pool full" — _dir_add unterscheidet korrekt)
+                        for n, d, _c in initial_files:
+                            if len(d) > MAX_FILE:
+                                return self._err(413, f"too large (max 5MB): {_safe_name(n)}")
                         files_map, _, _ = self._dir_write_files(key, dp, meta, initial_files)
                         if files_map is None:
                             return self._err(413, "dir too large (pool max 100MB)")
-                        for n, _, _ in initial_files:
-                            safe = _safe_name(n)
-                            if safe:
-                                _dir_append_history(key, {"ts": time.time(), "action": "add", "file": safe})
                         evict(THROW_POOL_SIZE)
                         return self._dir_response(key, dp, meta)
                     return self._dir_response(key, dirpath, existing)
@@ -2252,10 +2258,6 @@ class Handler(BaseHTTPRequestHandler):
         # write initial files (+ history: P5 verlangt 3 adds bei 3 Parts)
         if initial_files:
             self._dir_write_files(key, dirpath, meta, initial_files, create=True)
-            for n, _, _ in initial_files:
-                safe = _safe_name(n)
-                if safe:
-                    _dir_append_history(key, {"ts": now, "action": "add", "file": safe})
         evict(THROW_POOL_SIZE)
         return self._dir_response(key, dirpath, meta, write_token=write_token)
 
@@ -2284,6 +2286,7 @@ class Handler(BaseHTTPRequestHandler):
         existing.discard(key + ".history")
         added = 0
         added_bytes = 0
+        written = []
         for n, d, c in clean:
             safe = _safe_name(n)
             if not safe:
@@ -2293,11 +2296,16 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(d)
             files_map[name] = mimetypes.guess_type(name)[0] or c or "application/octet-stream"
             existing.add(name)
+            written.append(name)
             added += 1
             added_bytes += len(d)
         meta["files"] = files_map
         _dir_touch(meta, time.time())
         _atomic_json(_dir_meta_path(key), meta)
+        # History am ERFOLGsort (CR 1.48.2): NUR die neu geschriebenen
+        # Namen (deduped) — files_map enthaelt auch die alten Dateien
+        for name in written:
+            _dir_append_history(key, {"ts": time.time(), "action": "add", "file": name})
         s = _load_stats()
         s["files"] += added
         s["bytes"] += added_bytes
@@ -2349,10 +2357,6 @@ class Handler(BaseHTTPRequestHandler):
         files_map, _, _ = self._dir_write_files(key, dirpath, m, named)
         if files_map is None:
             return self._send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
-        for n, _, _ in named:
-            safe = _safe_name(n)
-            if safe:
-                _dir_append_history(key, {"ts": now, "action": "add", "file": safe})
         evict(THROW_POOL_SIZE)
         return self._dir_response(key, dirpath, m)
 

@@ -7,10 +7,11 @@ Read before changing code; the checklist at the end gates every release.
 
 1. `VERSION` in `store.py` up, `RELEASES.md` entry on top (date, what,
    why, test count). Minor = feature, patch = bugfix, major = breaking.
-2. Same-commit doc sweep — drift is a release blocker, not a follow-up:
-   the `/api` spec (in code), HELP topics (in code), `API.md`,
-   `README.md`. `AGENTS.md` carries semantics + pointers only (since
-   1.48.0) and needs no per-release API sync. API.md once silently lost
+2. Same-commit doc sweep — drift is a release blocker, not a follow-up.
+   Three surfaces: **code** (`/api` spec + HELP topics — live values via
+   `_render_help_body`, never hardcoded), `API.md`, `README.md`.
+   `AGENTS.md` carries semantics + pointers only (since 1.48.0) and
+   needs no per-release API sync. API.md once silently lost
    whole sections in a rewrite; the validation only caught it weeks
    later in review.
 3. Commit subject carries the version: `1.30.0: …`. Push before deploy.

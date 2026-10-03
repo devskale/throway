@@ -476,3 +476,29 @@ def test_dir_create_multipart_adds_to_existing(srv):
     st, _, raw = srv.get("/d/bridge/history", headers=AGENT)
     hist = _j.loads(raw)["history"]
     assert sum(1 for h in hist if h["action"] == "add") == 5
+
+
+def test_repr_override_exact_params_only(srv):
+    """CR 1.48.2: P6-Override matcht nur EXAKTE Params — ?notjson=1
+    durfte JSON nie erzwungen haben (Substring-Falle, Spec-Achse)."""
+    srv.post("/?dir=1&name=ovrx&listed=1", data=b"", headers=AGENT)
+    browser = {"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/120.0"}
+    # notjson=1 ist KEIN json=1 -> Browser kriegt HTML
+    st, _, raw = srv.get("/d/ovrx?notjson=1", headers=browser)
+    assert st == 200
+    assert b"<html" in raw.lower() or b"<!doctype" in raw.lower()
+    # foohtml=1 ist KEIN html=1 -> curl kriegt JSON
+    st, _, raw = srv.get("/d/ovrx?foohtml=1", headers=AGENT)
+    assert st == 200
+    assert raw.startswith(b"{")
+
+
+def test_bridge_413_precise_for_single_oversize(srv):
+    """CR 1.48.2: die P5-Bridge meldet 'too large (max 5MB)' bei einer
+    einzelnen Ueber-Datei — nicht pauschal 'pool max 100MB'."""
+    mp, ct = multipart([("big.bin", b"\x00" * (5 * 1024 * 1024 + 10), "application/octet-stream")])
+    st, _, raw = srv.post("/?dir=1&name=bridgebig", data=b"", headers=AGENT)
+    assert st == 200
+    st, _, raw = srv.post("/?dir=1&name=bridgebig", data=mp, headers={**AGENT, "Content-Type": ct})
+    assert st == 413
+    assert b"max 5MB" in raw

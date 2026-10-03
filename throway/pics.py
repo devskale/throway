@@ -61,6 +61,7 @@ NS = "pics"
 PICS_TTL = int(os.environ.get("THROWAWAY_PICS_TTL", "") or 90 * 24 * 3600)
 PICS_POOL = int(os.environ.get("THROWAWAY_PICS_POOL_BYTES", "") or 20 * 1024**3)
 PICS_MAX_FILE = int(os.environ.get("THROWAWAY_PICS_MAX_FILE_BYTES", "") or 30 * 1024**2)
+PICS_RETRY_AFTER = 300          # 507 Retry-After — eine Quelle, help + _err nutzen sie (CR 1.48.2)
 PICS_EDGE = int(os.environ.get("THROWAWAY_PICS_EDGE_PX", "") or 2048)
 # 1.39.2: erlaubte srcset-Thumb-Breiten (?thumb=N). Der Default (thumb=1)
 # bleibt store.THUMB_PX (96px); grid-zellen liefern 3 Kandidaten.
@@ -2253,7 +2254,7 @@ def _url_import(h, store, root, gid, qp):
     except PicError as ex:
         # 1.41.2/P1: code + ggf. Retry-After (507 Pool voll -> wartet nicht
         # von selbst, aber der Admin kann freigeben; Hinweis an den Agenten)
-        return h._err(ex.code, ex.msg, retry_after=300 if ex.code == 507 else None)
+        return h._err(ex.code, ex.msg, retry_after=PICS_RETRY_AFTER if ex.code == 507 else None)
     resp = dict(public_meta(store, pid, m))
     if dup:
         resp["duplicate"] = True
@@ -2321,7 +2322,7 @@ def _upload(h, store, root, gid, qp):
     except PicError as ex:
         # 1.41.2/P1: code + ggf. Retry-After (507 Pool voll -> wartet nicht
         # von selbst, aber der Admin kann freigeben; Hinweis an den Agenten)
-        return h._err(ex.code, ex.msg, retry_after=300 if ex.code == 507 else None)
+        return h._err(ex.code, ex.msg, retry_after=PICS_RETRY_AFTER if ex.code == 507 else None)
     resp = dict(public_meta(store, pid, m))
     if dup:
         resp["duplicate"] = True

@@ -1,9 +1,39 @@
 # throway — Releases
 
-**Current version:** `1.48.1`
+**Current version:** `1.48.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.48.2 — 2026-10-03
+
+### Code-Review 1.45.4→1.48.1 (2 Sub-Agents: Standards + Spec) — Fixes
+
+**Spec-Achse (echte Abweichungen):**
+* P6-Override matcht jetzt **exakte Query-Params** — `?notjson=1`
+  erzwang fälschlich JSON (Substring-Falle).
+* P5-Bridge meldet bei einzelner Übergroß-Datei präzise
+  `too large (max 5MB)` statt pauschal `pool max 100MB`.
+
+**Standards-Achse:**
+* `/help/errors` substituiert pics-Limit + 507-Retry **live**
+  (`{PICS_MAX_FILE_MB}`, `{PICS_RETRY_AFTER}` aus `pics.py`-
+  Konstante — vorher hartcodiert 30MB/300s, drift-gefährdet da
+  env-tunable).
+* History-Add-Loop **dedupliziert**: lebt jetzt einmal im Erfolgs-
+  pfad von `_dir_write_files` (nur neu geschriebene, deduped Namen —
+  vorher 3 identische Loops an Aufrufern). Erster Entwurf loggte
+  versehentlich alle Bestandsdateien mit — Suite fing es.
+* CODING_RULES: Flächen-Zählung präzisiert (3 Flächen: code, API.md,
+  README.md; live Werte nie hartcodieren).
+
+Dokumentiert-behalten (bewusste Entscheidungen, nicht geändert):
+P5-Add-auf-existierendem-Dir (retry-safe, in /api+AGENTS dokumentiert)
+und das breite close-on-error (konservativ).
+
+Suite 140/140, matrix 28/28, gaps 16/16.
 
 ---
 
