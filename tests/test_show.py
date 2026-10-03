@@ -267,6 +267,27 @@ def test_chunked_error_closes_connection(srv):
     except _s.timeout:
         pass
     assert data.count(b"HTTP/1.1") == 1, data[:400]
+    # _dir_add-Pfad: ctype-Check (400) kommt VOR dem Body-Read (411)
+    assert data.startswith(b"HTTP/1.1 400")
+    assert b"connection: close" in data.lower()
+    sock.close()
+
+    # Und der generische Upload-Pfad (POST /): kein CL -> 411 + close
+    payload = (b"POST /?name=y.txt HTTP/1.1\r\nHost: t\r\nContent-Type: text/plain\r\n"
+               b"Transfer-Encoding: chunked\r\n\r\n" + chunk)
+    sock = _s.create_connection(("127.0.0.1", srv.port))
+    sock.sendall(payload)
+    sock.settimeout(2)
+    data = b""
+    try:
+        while True:
+            ch = sock.recv(4096)
+            if not ch:
+                break
+            data += ch
+    except _s.timeout:
+        pass
+    assert data.count(b"HTTP/1.1") == 1, data[:400]
     assert data.startswith(b"HTTP/1.1 411")
     assert b"connection: close" in data.lower()
     sock.close()

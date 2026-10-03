@@ -1,9 +1,22 @@
 # throway — Releases
 
-**Current version:** `1.45.6`
+**Current version:** `1.45.7`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.7 — 2026-10-03
+
+### Testfix zu 1.45.6 (im Release-Commit versehentlich rot)
+
+Der neue chunked-Regressionstest erwartete 411, lief aber durch
+`_dir_add` ( ctype-Check → 400 kommt VOR dem Body-Read). Der adv4-Nachweis
+traf durch den `/throway`-Prefix stattdessen den generischen Upload-Pfad
+(411) — beide Pfade korrekt und single-response, nur die Testerwartung
+war am falschen Pfad orientiert. Test deckt jetzt BEIDE Pfade (400 + 411,
+je einmal, mit `Connection: close`). Keine Serveränderung. Suite 133/133.
 
 ---
 
