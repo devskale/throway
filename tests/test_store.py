@@ -418,3 +418,12 @@ def test_idempotency_replay(srv):
     assert st2 == 200
     assert b1["id"] == b2["id"]
     assert b2.get("idempotent_replay") is True
+
+
+def test_once_and_share_rejected(srv):
+    """1.45.8: once=1 gilt nur fuer Einzeldateien — /api und AGENTS.md
+    sagen 'not with &share=', der Code nahm es vorher still an und
+    ignorierte once (Luecken-Batterie: Vertragsbruch)."""
+    st, _, raw = srv.post("/?once=1&share=oncekey", data=b"x", headers=AGENT)
+    assert st == 400
+    assert "mutually exclusive" in raw.decode()

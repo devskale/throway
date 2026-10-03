@@ -88,7 +88,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.45.7"
+VERSION = "1.45.8"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1638,6 +1638,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(denied[0], json.dumps(denied[1]), "application/json")
         if retained and once:
             return self._err(400, "once=1 (burn-after-reading) and retention are mutually exclusive")
+        # once=1 gilt nur fuer Einzeldateien (Doku: "not with &share=") —
+        # vorher wurde share= still angenommen und once ignoriert (Luecken-
+        # Batterie 2026-10-03, Vertragsbruch /api vs Code)
+        if once and share:
+            return self._err(400, "once=1 (burn-after-reading) and share= are mutually exclusive")
 
         path = self.path.split("?", 1)[0].rstrip("/")
         parts = path.lstrip("/").split("/")

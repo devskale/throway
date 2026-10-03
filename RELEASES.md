@@ -1,9 +1,22 @@
 # throway — Releases
 
-**Current version:** `1.45.7`
+**Current version:** `1.45.8`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.8 — 2026-10-03
+
+### Luecken-Batterie: once=1&share= war ein Vertragsbruch
+
+Test-Inventur (133 Suite + 50 validate-live + 27 Matrix) gegen /api
+gedifft: ttl=-Clamps (Upload min/max, Dir-TTL), download=1, Zip-INHALTE
+(erstmals entpackt statt nur Status geprueft), /d-Filter+sort, Leer-
+Upload, idem=-Query — alles korrekt. Ein Fund: `/api` + AGENTS.md
+versprechen "once=1 not with &share=", der Code nahm es still an und
+ignorierte once. Fix: 400 wie bei once+retain. Suite 134/134.
 
 ---
 
