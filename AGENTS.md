@@ -1,8 +1,10 @@
 # 🤖 AGENTS.md — Guide for Agents & Programs
 
-This file is written for **agents, bots, and scripts** that want to use throway.
-It tells you exactly how to upload, share, and manage files — and how to make
-your agent discover the API by itself.
+This file is written for **agents, bots, and scripts** that want to use
+throway. It carries the **semantics** (rules that are not obvious from
+any single response) plus **pointers** — the full reference lives on the
+live server, always current (PRIO 1). No API examples are cached here on
+purpose: docs-drift incidents have proven the copy wrong twice.
 
 ---
 
@@ -10,586 +12,127 @@ your agent discover the API by itself.
 
 ```
 Base URL:  https://skale.dev/throway
-Lifetime:  4 hours (files auto-delete)
-Auth:      none
+Lifetime:  4 hours (files auto-delete); dirs 7d sliding; retained = never
+Auth:      none (public). Optional retain token for indefinite objects.
 ```
 
 > **CODING_RULES.md lesen vor jeder Code-Änderung** — Release-Checkliste,
-> Deploy-Ritual (rsync-Falle), Test-Disziplin (`${PIPESTATUS[0]}`!), Security-
-> Invarianten (Token einmal, constant-time, 404), Edit-Disziplin (UTF-8-Anker).
-> Gilt für: Code ändern, Deployen, Tests, neue Features, Security-relevante Stellen.
+> Deploy-Ritual (rsync-Falle), Test-Disziplin (`${PIPESTATUS[0]}`!),
+> Security-Invarianten, Edit-Disziplin.
 
-> **Bumppush-Pflicht:** Jede Änderung am Code wird immer als **Bumppush**
-> gelandet — Version nach Semantik: **Bugfix → Patch** (`1.12.0` →
-> `1.12.1`), **Feature → Minor** (`1.11.0` → `1.12.0`), **Breaking →
-> Major**. Unsicher, ob eine Änderung Feature oder Bugfix ist? Nachfragen
-> statt raten. Das heißt: `VERSION` in `store.py` hochziehen, Release-Note
-> in `RELEASES.md` ergänzen, committen (mit `(x.y.z)` im Betreff), pushen
-> und auf lubu deployen — exakt der Befehl in `CODING_RULES.md`
-> (rsync-Falle: **kein** Trailing Slash; seit 1.19.0 ist der Code ein
-> Paket: `store.py` (Entry) + `throway/`) — dann
+> **Bumppush-Pflicht:** Jede Änderung = eigenes Release (Bugfix → Patch,
+> Feature → Minor, Breaking → Major; unsicher → fragen): `VERSION` hoch,
+> Release-Note in `RELEASES.md`, Commit `x.y.z: …`, push, Deploy-Ritual
+> (`store.py` + `throway/` — **kein trailing slash auf throway/**), dann
 > `sudo systemctl restart throway-store`.
 
-> **Issues finden:** pi-adressierte Issues (`to: pi@throway`) erscheinen
-> NICHT in `issues todo` (Maschinen-Identität ist `mac`) — pi-Sessions
-> nutzen `HANDOFF_ME=pi issues todo` oder `issues ls --to pi`.
+> **Koordination (Pflicht vor jedem Bumppush):** Claim in
+> `.handoff/issues/active/` anlegen; `release-check.sh` verweigert bei
+> fremdem Claim.
 
-> **Koordination (Pflicht vor jedem Bumppush):** Parallele Sessions
-> arbeiten im selben Working-Tree (Retro 2026-10-01: 1.39.3–1.40.2 wurden
-> überholt, eine versionenlose Commit-Kette). Wer an throway arbeitet,
-> legt einen Claim in `.handoff/issues/active/` an; `release-check.sh`
-> (läuft in jedem Release) verweigert den Bumppush bei fremdem Claim.
-
-1. `POST` a file → get back JSON with an `id` and `url`.
-2. Share that `url`. It's valid for 4 hours.
-3. `GET` to download, `PUT`/`PATCH` to edit text, `DELETE` to remove.
-4. `POST` 2+ files in one multipart body → a **bundle** (e.g. a website)
-   under one URL, served at `/throway/<id>/<filename>`.
+1. `POST` a file → get back JSON with `id` and `url`. Share the `url`.
+2. `GET` download · `PUT`/`PATCH` edit text · `DELETE` remove.
+3. 2+ multipart parts in one POST → a **bundle** under one URL.
+4. `POST /?dir=1[&name=]` → a **dir** (workspace: add/edit/delete over
+   time); multipart parts on create = initial files, on an existing
+   named dir = **add** (retry-safe).
 
 ---
 
-## ⭐ PRIO 1 — Self-service: pull everything from the HTML pages, then `/api` + `/help`
+## ⭐ PRIO 1 — Self-service: discover, don't assume
 
-**This is the core principle of throway.** The service is designed so an
-agent needs **nothing pre-loaded** to use it — it can discover everything
-itself, at runtime, from the live server. Never assume you know the API;
-never hardcode endpoints. Instead:
-
-1. **`curl` the HTML pages** — the human-facing pages (homepage, dir
-   listing, help) are the primary source of what throway can do. They carry
-   the full usage guide, so pulling them gives you everything needed to use
-   the service. Browser pages carry a collapsed **“agent hint”** block with
-   ready-to-run curl lines (dir listing: JSON listing, single file, zip,
-   PUT/PATCH edit, history; bundle listing: files + zip; browse: filters +
-   upload; help: topic index; history page: JSON). Every JSON response and
-   every agent file download also carries a `Link: <…/api>; rel="help"`
-   header pointing at the machine-readable contract.
-2. **Then confirm / go deeper via the machine-readable contract:**
-   - `GET /api` — the authoritative JSON spec: current limits + every
-     endpoint (method, URL, body, response shape).
-   - `GET /help` + `GET /help/<topic>` — modular plain-text topics
-     (`overview`, `files`, `bundles`, `dirs`, `view`, `edit`, `delete`,
-     `limits`, `contract`) so you pull only what you need.
-
-So the recommended flow for any agent:
+The service is designed so an agent needs **nothing pre-loaded**. Never
+hardcode the contract — pull it from the live server:
 
 ```
-curl the HTML pages  →  learn the surface  →  GET /api for exact endpoints
-                     →  GET /help/<topic> for details  →  act
+curl the HTML pages          # homepage + dir listing + help carry the guide
+curl /throway/api            # THE spec: limits + every endpoint (JSON)
+curl /throway/help           # topic index
+curl /throway/help/<topic>   # overview files bundles dirs markdown view
+                             # edit delete limits contract errors retention pics
 ```
 
-If you can reach the site, you can use the site — no setup, no prior
-knowledge, no hardcoded contract.
+Every JSON response and file download carries
+`Link: <…/api>; rel="help"`. Browser pages carry a collapsed **“agent
+hint”** block with ready-to-run curl lines.
+
+**Feature discovery from responses:** every upload/listing tells you per
+file `editable` (`text/*` + `application/json` → PUT/PATCH work; binaries
+→ 400) and `persistence` (`type` single|dir|bundle, `expires_at`,
+`extendable_by` none|activity, `max_age`). Trust those over any doc.
+
+**Errors:** every error JSON has a stable `code` (400 `bad_request`,
+401 `write_denied`, 404 `not_found`, 413 `too_large`, 429 `rate_limited`,
+507 `pool_full`, …). Only **429/507** mean „later again" (they carry
+`Retry-After`); every other code means the request itself is wrong.
+Full table: `GET /help/errors`.
 
 ---
 
-## Self-discovery — how an agent learns the API
-
-**Don't hardcode the contract. Discover it from the live server** — the
-HTML pages first, then the machine-readable spec to confirm exact details.
-
-**Start by curling the HTML pages** — they carry the full usage guide and are
-the primary way an agent learns what throway can do (see PRIO 1 above):
-
-```
-GET /throway/                  # homepage: upload UI + embedded Agent info
-GET /throway/d/<key>           # a dir listing (HTML for browsers, JSON for agents)
-GET /throway/help              # modular help index (JSON for agents, HTML for browsers)
-GET /throway/help/<topic>      # one help topic (plain text for agents)
-```
-
-**Then confirm exact endpoints via the machine-readable contract:**
-
-```
-GET /throway/api               # THE API SPEC — limits + all endpoints (JSON)
-GET /throway/write_for_agents  # full plain-text usage guide
-```
-
-`/api` tells you everything an agent needs to know about what this service
-can do, right now: the current limits (`ttl_seconds`, `max_file_bytes`,
-`pool_bytes`, `rate_limit_per_min`) and **every endpoint** (`upload`,
-`upload_bundle`, `create_dir`, `edit_text`,
-`append_text`, `delete`, …) with its method, URL, body, and response shape.
-Because it's generated from the running server, it never drifts from what's
-actually implemented. **If it's not in `/api`, it doesn't exist.**
-
-**Curling the homepage** (`GET /throway/` as a non-browser client) returns a
-compact, structured `--help` style summary: the essential usage commands plus
-pointers to the full guide and the API index.
-
-### Feature discovery — what can this API do?
-
-Every response and the `/api` spec carry two fields that tell an agent what
-it can do with a resource, so it never has to guess:
-
-- **`editable`** (boolean, per file) — can you `PUT`/`PATCH` it? `true` for
-  `text/*` and `application/json`; `false` for images/binaries.
-- **`persistence`** (object) — how long it lives and how to keep it alive:
-  `type` (`single`|`dir`|`bundle`), `expires_at`, `extendable_by`
-  (`none`), `max_age`.
-
-So the flow for any agent is simply: **`GET /api` → see what endpoints exist
-→ upload → read `editable`/`persistence` from the response → act accordingly.**
-
-### Modular help — gather only what you need
-
-Help is split into **topics** you can fetch individually:
-
-```
-GET https://skale.dev/throway/help          # JSON index of topics (agents)
-GET https://skale.dev/throway/help/<topic>  # one topic as plain text
-```
-
-Topics: `overview`, `files`, `bundles`, `dirs`, `markdown`, `view`,
-`edit`, `delete`, `limits`, `contract`. Fetch the index, pick the topics you
-need, and pull only those — no need to load the whole description.
-
----
-
-## Upload a file
-
-### Raw body (simplest)
-```bash
-curl -X POST --data-binary @photo.png \
-  "https://skale.dev/throway/?name=photo.png"
-```
-
-### Multipart form
-```bash
-curl -F "file=@photo.png" "https://skale.dev/throway/"
-```
-
-### Lifetime override (optional)
-Default is **4 hours**. Pass `&ttl=<h|d>` to extend a single file (clamped
-to a **max of 14 days**):
-```bash
-curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=24h"
-curl -X POST --data-binary @note.txt "https://skale.dev/throway/?name=note.txt&ttl=14d"   # max
-```
-
-### Share name (optional)
-Pass `&share=<name>` to store the upload under a **chosen, memorable name**
-(create-or-get, like a named dir) at `/d/<name>` instead of a random hex id:
-```bash
-curl -X POST --data-binary @note.txt "https://skale.dev/throway/?share=my-note"
-# -> {"id":"my-note","url":"https://skale.dev/throway/d/my-note","dir":true,"files":[...],...}
-```
-Rules: 5-32 chars `[a-z0-9-]`, at least one letter, not a reserved word.
-Uses the sliding dir lifetime (default 7 days, `&ttl=` clamped to `[4h, 14d]`).
-
-### Download once (burn-after-reading, optional)
-Pass `&once=1` to make a **single file** auto-delete after the first
-successful download — a second GET returns 404. Not combinable with
-`&share=` (dirs):
-```bash
-curl -X POST --data-binary @secret.txt "https://skale.dev/throway/?name=secret.txt&once=1"
-# first GET serves the bytes; the file is then removed
-```
-
-### Response (JSON)
-```json
-{
-  "id": "4f2a1c9d0e3b8a77",
-  "url": "https://skale.dev/throway/4f2a1c9d0e3b8a77",
-  "size": 148,
-  "name": "photo.png",
-  "content_type": "image/png",
-  "editable": false,
-  "persistence": {
-    "type": "single",
-    "expires_at": "2026-08-10T14:57:09Z",
-    "extendable_by": "none",
-    "max_age": null
-  },
-  "expires_in": 14400,
-  "expires_at": "2026-08-10T14:57:09Z"
-}
-```
-
-- The **`id`** is the file's document ID — use it in the path of every other call.
-- The **`url`** is what you share. Valid until `expires_at`.
-- **`editable`** — `true` for `text/*` and `application/json` (PUT/PATCH work); `false` for images and binaries.
-- **`persistence`** — how long it lives (`type`), and how to keep it alive (`extendable_by`).
-
----
-
-## Upload a bundle (multiple files)
-
-`POST` 2+ file parts in a single multipart body to create a **bundle** — one
-URL that holds several files (e.g. an `index.html` + `style.css` website).
-
-```bash
-curl -F "f=@index.html;type=text/html" \
-     -F "f=@style.css;type=text/css" \
-     "https://skale.dev/throway/"
-```
-
-### Response (JSON)
-```json
-{
-  "id": "9c0f2b8a1d4e6f03",
-  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03",
-  "bundle": true,
-  "editable": false,
-  "persistence": {
-    "type": "bundle",
-    "expires_at": "2026-08-12T12:19:14Z",
-    "extendable_by": "none",
-    "max_age": null
-  },
-  "files": [
-    {"name": "index.html", "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/index.html", "size": 202, "content_type": "text/html", "editable": true},
-    {"name": "style.css",  "url": "https://skale.dev/throway/9c0f2b8a1d4e6f03/style.css",  "size": 75,  "content_type": "text/css", "editable": true}
-  ],
-  "size": 277,
-  "expires_in": 14400,
-  "expires_at": "2026-08-12T12:19:14Z"
-}
-```
-
-- **Bundle root** `GET /throway/<id>` serves `index.html` inline to browsers
-  (a real mini-website), or the whole bundle as a **zip** to agents/curl.
-- **Each file** is reachable at `GET /throway/<id>/<filename>` (inline for
-  text/images, download otherwise). Relative links between files just work.
-- **`?download=1`** forces the whole bundle as a zip.
-- If a bundle has no `index.html`, browsers get a simple file listing instead.
-- The whole bundle shares one 4-hour expiry and is evicted as one unit.
-- A **bundle itself is immutable** (`editable:false`); individual `text/*` or
-  `application/json` files within it are editable (`editable:true` in `files[]`).
-
----
-
-## Dirs (one unified concept, under /d/<key>)
-
-A **dir** is a collection of files you keep adding to and editing over time
-— a disposable workspace for an agent. One concept, addressable by an
-**opaque id** (unnamed) or a **memorable name** (named), always under
-`/d/<key>`. It has a **sliding lifetime** (default 7 days, **max 14 days**)
-and a lightweight **edit history**.
-
-```bash
-# create an unnamed dir (opaque hex id)
-curl -X POST "https://skale.dev/throway/?dir=1"
-# -> {"id":"…","url":"…/d/<id>","dir":true,"files":[],…}
-
-# create a named dir (create-or-get, idempotent)
-curl -X POST "https://skale.dev/throway/?dir=1&name=team7"
-# -> {"id":"team7","name":"team7","url":"…/d/team7","dir":true,…}
-
-BASE=https://skale.dev/throway
-
-# add files (multipart) — slides expires_at forward by ttl
-curl -F "f=@note.txt" "$BASE/d/team7"
-
-# list (JSON for agents, HTML for browsers)
-curl -A "curl" "$BASE/d/team7"
-
-# fetch one file
-curl "$BASE/d/team7/note.txt"
-
-# whole dir as zip
-curl "$BASE/d/team7?zip=1"
-
-# edit / append text (slides expires_at forward by ttl)
-curl -X PUT   --data-binary "new text"  "$BASE/d/team7/note.txt"
-curl -X PATCH --data-binary " more"     "$BASE/d/team7/note.txt"
-
-# edit history (date, file, action, byte deltas)
-curl -A "curl" "$BASE/d/team7/history"
-
-# delete one file or the whole dir
-curl -X DELETE "$BASE/d/team7/note.txt"
-curl -X DELETE "$BASE/d/team7"
-```
-
-- **Lifetime:** sliding, default **7 days** (override `ttl=` clamped to
-  [4h, 14d]). `expires_at` slides forward by `ttl` on each add/edit/delete,
-- **Lifetime:** sliding, default **7 days**, **max 14 days** (override `ttl=`
-  clamped to [4h, 14d]). `expires_at` slides forward by `ttl` on each add/edit/delete,
-  capped at 30 days total from creation.
-- **`updated_at`** = last add/edit/delete. Slides `expires_at` forward.
-- **Listing:** `GET /d/<key>` returns JSON (`dir:true`,
-  `files:[{name,url,size,content_type,editable}]`, `persistence`,
-  `expires_at`) to agents, an HTML page to browsers.
-- **Zip:** `?zip=1` (or `?download=1`) downloads the whole dir.
-- **Persistence:** the dir's `persistence` block has `type:"dir"`,
-  `extendable_by:"activity"` (sliding lifetime) and `max_age`. The dir object
-  itself is `editable:false`; individual `text/*`/`application/json` files
-  are editable.
-
-### Naming (for named dirs)
-
-Rejected if any of:
-- shorter than **5** or longer than **32** chars
-- not `[a-z0-9-]` (lowercase letters, digits, hyphens)
-- contains **no letter** (all digits)
-- is a **reserved word** (`api`, `index`, `d`, `releases`, `llms`, `store`, …)
-
-### Create flags (immutable at create)
-
-```bash
-# listed: appears in the public GET /d listing
-curl -X POST "…/?dir=1&name=team7&listed=1"
-
-# tags: up to 5 discoverability tags (lowercase [a-z0-9-], 1-24 chars)
-curl -X POST "…/?dir=1&name=team7&listed=1&tag=docs&tag=2026"
-
-# ttl: FIXED lifetime, clamped to [4h, 14d], default 7 days
-# ttl: sliding lifetime, clamped to [4h, 14d] — MAX is 14 days; default 7 days
-curl -X POST "…/?dir=1&name=team7&ttl=2d"   # 2 days
-curl -X POST "…/?dir=1&name=team7&ttl=48h"  # 48 hours
-curl -X POST "…/?dir=1&name=team7&ttl=24"   # 24 hours
-```
-
-**Create-or-get** means any agent can call the same create and converge on
-the shared dir — idempotent. Create flags are honored **only on first
-creation**. Multipart parts on the create call become the dir's initial
-files; posting parts to an EXISTING named dir **adds** them (retry-safe,
-write gates apply) — a create is never a silent data drop (since 1.47.0).
-Listing endpoints honor `?json=1`/`?html=1` against the UA heuristic.
-
-### Edit history
-
-Every dir keeps a lightweight history of its last edits — no full-text
-versions, no revert, just an overview. `GET /d/<key>/history` returns JSON
-for agents (HTML for browsers), newest first, capped at the last **50**
-entries:
-
-```json
-{
-  "dir": "team7",
-  "history": [
-    {"ts": 1787051638, "file": "note.txt", "action": "put", "old_bytes": 5, "new_bytes": 16},
-    {"ts": 1787051638, "file": "note.txt", "action": "add"}
-  ],
-  "total": 2
-}
-```
-
-Actions: `add` (file uploaded), `put` (replaced), `append` (appended to),
-`delete` (removed). This tells an agent *what* changed, *when*, and roughly
-*how much* — enough to keep track without storing everything.
-
-### Listing `GET /d` (only listed dirs)
-
-```bash
-# all listed dirs (JSON for agents, HTML for browsers)
-curl -A "curl" "$BASE/d"
-
-# filter by name/tag substring
-curl -A "curl" "$BASE/d?q=team"
-
-# filter by creation / update time (unix timestamps)
-curl -A "curl" "$BASE/d?created_after=1750000000"
-curl -A "curl" "$BASE/d?updated_before=1750000000"
-
-# sort (default created desc)
-curl -A "curl" "$BASE/d?sort=updated&order=asc"
-curl -A "curl" "$BASE/d?sort=name&order=asc"
-```
-
-JSON entries: `{name, url, tags, files, size, created_at, updated_at,
-expires_at, max_age, persistence}` plus `total`. Each entry's `files[]`
-carries a per-file `editable` boolean; the dir's `persistence` block has
-`type:"dir"`, `extendable_by:"activity"` (sliding lifetime) and `max_age`.
-
-- **Privacy:** dirs are **unlisted by default**. Only dirs created with
-  `listed=1` appear in `GET /d`; names are never enumerated otherwise.
-
----
-
-## Download / view
-
-```bash
-curl "https://skale.dev/throway/<id>"
-```
-
-- **Images and text-like types** (text, html, json, pdf, svg) render inline
-  in a browser (viewer).
-- **Everything else** downloads.
-- Append `?download=1` to force a download of any file.
-- For a **bundle**, `GET /throway/<id>` renders `index.html` inline (browser)
-  or returns a zip (agent); `GET /throway/<id>/<file>` serves one file.
-
----
-
-## Edit text (text files only)
-
-Images and other binaries are **immutable** — these return `400`.
-
-```bash
-# replace the whole content
-curl -X PUT --data-binary "new full text" \
-  "https://skale.dev/throway/<id>"
-
-# append to the content
-curl -X PATCH --data-binary "text to add" \
-  "https://skale.dev/throway/<id>"
-```
-
-Both return updated JSON metadata (`size`, `url`, `expires_at`, …).
-
-### How an agent knows what's editable
-
-Every upload and listing response includes an **`editable`** boolean **per file**
-and a **`persistence`** block describing how long it lives. Read these instead
-of guessing:
-
-```json
-{
-  "id": "…",
-  "editable": true,
-  "persistence": {
-    "type": "single",
-    "expires_at": "…",
-    "extendable_by": "none",
-    "max_age": null
-  }
-}
-```
-
-- **`editable`** — `true` for `text/*` and `application/json` (PUT/PATCH work);
-  `false` for images and other binaries (they return `400`).
-- **`persistence.type`** — `single` | `dir` | `bundle`.
-- **`persistence.extendable_by`** — how to keep it alive:
-  - `none` — fixed lifetime, cannot be extended.
-  - `activity` — sliding lifetime, each add/edit/delete slides `expires_at` forward (dirs only).
-- **`persistence.max_age`** — max total lifetime in seconds (`null` for single files/bundles; dirs have a TTL value).
-
-A **bundle** or **dir object** itself is `editable:false`; only its `text/*` or
-`application/json` files are editable (those appear as `editable:true` in the
-`files[]` list).
-
----
-
-## Delete
-
-```bash
-curl -X DELETE "https://skale.dev/throway/<id>"   # file or whole bundle/dir
-curl -X DELETE "https://skale.dev/throway/d/<key>/<file>"  # one file from a dir
-```
-
----
-
-## Retention — indefinite objects (token-gated, seit 1.44.0, Details: `GET /help/retention`)
-
-Throway bleibt standardmäßig Wegwerf-Speicher. Mit serverseitig konfiguriertem
-**Retain-Token** (`/api` limits: `"retention_token": true`) erzeugen token-autorisierte
-Requests Objekte, die **nie ablaufen** und von der Pool-Eviction ausgenommen sind —
-stabile URLs für Skill-Installs, Share-Slugs etc.
-
-```bash
-BASE=https://skale.dev/throway
-
-# Upload ohne Ablauf (Bearer-Header bevorzugt — Query landet in Logs)
-curl -X POST --data-binary @skill.tar.gz \
-     -H "Authorization: Bearer <token>" \
-     "$BASE/?name=skill.tar.gz"
-# -> {"expires_at": null, "persistence": {"retention": "indefinite", ...}}
-
-# Bestehendes Objekt/Dir auf unbeschränkt flippen (idempotent)
-curl -X POST -H "Authorization: Bearer <token>" "$BASE/<id>?retain=1"
-curl -X POST -H "Authorization: Bearer <token>" "$BASE/d/<key>?retain=1"
-```
-
-- Gilt für Single-Files, Bundles, Dirs, `?share=`-Namen und `?url=`-Importe.
-- **Lesen bleibt öffentlich** (jeder mit der URL); **Schreiben/Löschen braucht
-  das Token** (sonst 401) — eine permanente URL darf nicht verunstaltbar sein.
-- Token-autorisiertes `PUT`/`PATCH` (auch Dir-Writes) macht das Ziel unbeschränkt
-  — *Write impliziert Retention*.
-- `&once=1` + Retention → 400 (Widerspruch).
-- Retained Units werden nie gesweept und nie evicted; nur Disposable-Units
-  weichen bei Pool-Druck.
-- Falsches/fehlendes Token bei Retention-Anfrage: 401; ohne konfiguriertes
-  Token: 401 "retention is not enabled".
-
-### Show-Dirs — permanent + öffentlich beschreibbar (`&show=1`)
-
-```bash
-# Show-Dir anlegen (Token) — danach darf JEDER mit der URL read+editen
-curl -X POST -H "Authorization: Bearer <token>" \
-     "$BASE/?dir=1&show=1&name=team-board"
-
-# Bestands-Dir zum Show-Dir flippen (idempotent)
-curl -X POST -H "Authorization: Bearer <token>" "$BASE/d/<key>?show=1"
-```
-
-- Show-Dir = `{retain: true, open: true}`: unbegrenzt lebend **und** öffentlich
-  beschreibbar — Dateien adden/editen/löschen ohne Token, beliebige Typen.
-- **Ganzer-Dir-Delete nur mit Token** (File-Deletes bleiben offen).
-- `write_token` (falls bei Create gesetzt) schlägt `open`.
-- Responses carry `"open": true`; History protokolliert jede Änderung.
-
----
-
-## Pics — event galleries (seit 1.20.0, Details: `GET /help/pics`)
-
-Beliebig viele Bildgalerien unter `/pics` — dirs-artig: wer anlegt, wird
-über einen **per-Galerie-Token** Admin. Eigenes Budget (20 GB geteilt),
-eigene Lifetime (fest 90 Tage pro Bild, Galerie sliding ab letztem
-Upload), unabhängig vom 4h-Werfen-Pool. Bilder ≤ 2048px werden **byte-identisch** gespeichert (JPEG-Metadaten
-lossless entfernt, GPS weg); nur größere werden auf 2048px WebP q90
-komprimiert (≤ 1 MB; GIFs pass through, HEIC via pillow-heif). Voller
-Pool → Uploads abgelehnt (507), nie Eviction.
-
-```bash
-BASE=https://skale.dev/throway
-
-# Galerie anlegen (create-or-get bei dir-style Namen; token genau einmal!)
-curl -X POST "$BASE/pics?create=1&name=hochzeit-2026"
-# -> {"id":"hochzeit-2026", "url":"…/pics/g/hochzeit-2026",
-#     "admin_url":"…/pics/g/hochzeit-2026/<token>", "token":"…"}
-
-# Upload (roh oder multipart für Batches; sofort öffentlich)
-curl --data-binary @photo.jpg "$BASE/pics/g/hochzeit-2026?name=photo.jpg"
-
-# Galerie / Index (JSON für Agenten, HTML für Browser)
-curl -A curl "$BASE/pics/g/hochzeit-2026"
-curl -A curl "$BASE/pics"                # nur listed=1-Galerien
-
-# ein Bild / Thumbnail
-curl "$BASE/pics/i/<id>"
-curl "$BASE/pics/i/<id>?thumb=1"
-
-# Remote-Bild serverseitig importieren (auch: Bild aus anderem Tab in die
-# Dropzone ziehen, z.B. direkt aus Google Photos)
-curl -X POST "$BASE/pics/g/<gid>?url=https%3A%2F%2Fexample.com%2Fphoto.jpg"
-```
-
-**Admin** (per-Galerie-Token aus dem Anlegen oder Superadmin-Env-Token,
-nie in der Query): GET `/pics/g/<gid>/<secret>` (Admin-Page bzw. `/json`),
-POST-Form `id` + `action=` `hide` | `unhide` | `delete` | `up` | `down`.
-Verborgene Bilder: 404 für alle außer dem Admin. Falsches Token: 404.
-Existierende benannte Galerie neu anlegen → zurück ohne Token
-(`existed:true`) — Name erraten ist keine Admin-Übernahme.
-
----
+## Semantics (the non-obvious rules)
+
+- **The store is ephemeral and shared.** Anyone with a URL can read,
+  edit or delete that object. Never put secrets in it.
+- **IDs are opaque.** Never parse meaning into an id.
+- **Use `?name=`** on uploads so content type + download filename are
+  right (especially images).
+- **Lifetime:** files/bundles default 4h, `ttl=` clamped [4h, 14d].
+  Dirs: sliding 7d default (every add/edit/delete slides `expires_at`
+  forward, capped 14d per slide / max age overall). `once=1` =
+  burn-after-reading (single files only — not with `&share=`, not with
+  retention).
+- **Dirs are create-or-get** (named: 5–32 chars `[a-z0-9-]`, ≥1 letter,
+  not reserved). Create flags (`listed=`, `tag=`, `ttl=`, `write=`,
+  `show=`) are honored **only on first creation**; re-calling create on
+  an existing name returns it — multipart parts are **added** (since
+  1.47.0, write gates apply).
+- **Optional write protection** (`&write=1`): token shown exactly once;
+  writes then need `X-Throway-Write` header or `?write=`; reads stay
+  open. Whole-dir **delete always** needs the dir's token (or retain
+  token) — even on open dirs.
+- **`?json=1` / `?html=1`** force the listing representation on
+  `/d/<key>`, `/d`, history, browse — against the UA heuristic (since
+  1.47.0).
+- **Unlisted by default.** Only dirs created with `listed=1` appear in
+  `GET /d`; names are never enumerated otherwise.
+- **Listing `GET /d`:** filters `?q=`, `?created_after/before=`,
+  `?updated_after/before=`, sort `?sort=created|updated|name&order=`.
+
+## Retention — indefinite objects (token-gated, seit 1.44.0)
+
+Server-side token (`THROWAWAY_RETAIN_TOKEN`, comma-list for several).
+Token-authenticated requests create/flip objects that **never expire**
+and are **exempt from pool eviction** — public read, token-gated write
+(`Authorization: Bearer <token>` or `?token=`). Details, Beispiele und
+Show-Dirs (indefinite + public write, seit 1.45.0):
+**`GET /help/retention`**.
+
+Kernregeln: `?retain=1` ohne Token → 401 · Token-Upload und Token-Write
+implizieren Retention („write implies retention") · `once=1` +
+Retention → 400 · Flip-Routen `POST /<id>?retain=1` /
+`POST /d/<key>?retain=1` (idempotent) · reservierte Namespaces
+(`d`, `pics`) flippen nicht.
+
+## Pics — event galleries (seit 1.20.0)
+
+Beliebig viele Bildgalerien unter `/pics`: create-or-get, Admin per
+per-Galerie-Token (genau einmal gezeigt), eigenes 20-GB-Budget, 90 Tage
+pro Bild, eigene Limits (30 MB/Bild). Bilder ≤ 2048px byte-identisch
+(Metadaten/GPS lossless entfernt), größere → 2048px WebP q90. Remote-
+Import via `?url=`. Pool voll → 507, nie Eviction. Details:
+**`GET /help/pics`**.
 
 ## Error codes
 
-| Code | Meaning |
-|------|---------|
-| `400` | invalid filename / not editable (e.g. image) / `once=1` + retention |
-| `401` | retention or write token required/invalid (retained objects, protected dirs) |
-| `404` | not found / expired |
-| `411` | missing `Content-Length` |
-| `413` | file too large (> 5 MB; pics: > 30 MB) |
-| `429` | rate limit exceeded (100 req/min/IP) |
-| `507` | pics pool full (20 GB) — admin must delete or wait for expiry |
+Siehe **`GET /help/errors`** (Code-Tabelle + Retry-Strategie, seit
+1.47.0). Kurz: nur 429 (`rate_limited`, `Retry-After`) und 507
+(`pool_full`) sind „später nochmal" — alles andere heißt Request falsch.
 
 ---
 
-## Semantic notes for agents
+## Self-check before acting
 
-- **The store is ephemeral and shared.** Anyone with a URL can read, edit, or
-  delete that file. Don't put secrets in it.
-- **IDs are opaque.** Treat `id` as an opaque token, never parse meaning into it.
-- **Self-service is core (PRIO 1).** Pull what you need from the HTML pages,
-  then confirm exact endpoints via `/api` and details via `/help/<topic>`.
-  Never hardcode the contract — it can change.
-- **Prefer the API contract** (`/api`) over this doc if you can — it's the
-  source of truth for current limits and the full endpoint list.
-- **Discover capabilities from the response, not the docs.** Every response
-  tells you `editable` and `persistence` — trust those over any assumptions.
-- **Use `?name=`** when uploading so the content type and download filename
-  are correct (especially for images).
+1. `GET /api` — limits + endpoints, jetzt und hier.
+2. `GET /help/<topic>` — das Detail, das du gerade brauchst.
+3. Response lesen: `editable` + `persistence` entscheiden, nicht raten.
+4. Fehler: `code` lesen — nur 429/507 sind ein „später".

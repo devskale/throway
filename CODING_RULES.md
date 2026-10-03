@@ -9,17 +9,21 @@ Read before changing code; the checklist at the end gates every release.
    why, test count). Minor = feature, patch = bugfix, major = breaking.
 2. Same-commit doc sweep — drift is a release blocker, not a follow-up:
    the `/api` spec (in code), HELP topics (in code), `API.md`,
-   `AGENTS.md`, `README.md`. API.md once silently lost whole sections in
-   a rewrite; the validation only caught it weeks later in review.
+   `README.md`. `AGENTS.md` carries semantics + pointers only (since
+   1.48.0) and needs no per-release API sync. API.md once silently lost
+   whole sections in a rewrite; the validation only caught it weeks
+   later in review.
 3. Commit subject carries the version: `1.30.0: …`. Push before deploy.
 
-Done = version bumped, note written, all five doc surfaces current, pushed.
+Done = version bumped, note written, the doc surfaces current (AGENTS.md
+only when semantics change), pushed.
 
 ## Deploy
 
 ```bash
-rsync -a store.py lubu:/var/www/store/
+rsync -a store.py AGENTS.md API.md README.md lubu:/var/www/store/
 rsync -a --delete throway lubu:/var/www/store/   # NO trailing slash on throway/
+# AGENTS.md/API.md/README.md: die lubu-Kopien sind Agent-/Leser-Kontext
 ```
 
 A trailing slash on the package dir flattens its contents into

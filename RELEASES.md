@@ -1,9 +1,25 @@
 # throway — Releases
 
-**Current version:** `1.47.0`
+**Current version:** `1.48.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.48.0 — 2026-10-03
+
+### AGENTS.md strukturell verschlankt (Issue throway-agents-slim)
+
+595 → 138 Zeilen: Semantik + Pointer statt API-Beispielwüsten. Der
+Dienst serviert die Details selbst (`/help/*`, `/api` — PRIO 1), und die
+gedoppelte API im AGENTS.md war schon zweimal gelogen (Bundle-Delete-
+Doku-Lüge, Duplikat-Zeilen). Kernregeln (Lifetime-Clamps, create-or-get,
+write-Gates, once/retain-Kombos, Fehler-Retry-Semantik) bleiben —
+Beispiel-Responses und curl-Varianten raus. Reduziert die Release-
+Doku-Pflicht von 5 auf 3 Flächen (CODING_RULES aktualisiert); Deploy-
+Ritual synct AGENTS.md/API.md/README.md jetzt explizit mit (lubu-Kopie
+ist Agent-Kontext). Suite 137/137.
 
 ---
 
