@@ -242,3 +242,31 @@ def test_dir_add_success_single_response(srv):
     sock.sendall(b"GET /api HTTP/1.1\r\nHost: t\r\n\r\n")
     assert sock.recv(65536).startswith(b"HTTP/1.1 200")
     sock.close()
+
+
+def test_chunked_error_closes_connection(srv):
+    """1.45.6: chunked-Requests enden in 411, der Body wird nie gelesen —
+    ohne Close wurde er als naechste Anfrage geparsed (411 + Phantom-400,
+    Doppel-Response raw bewiesen). Close-Bedingung greift seit 1.45.6 auch
+    bei Transfer-Encoding: chunked."""
+    import socket as _s
+    srv.post("/?dir=1&name=ckd", data=b"", headers=AGENT)
+    chunk = b"4\r\nWiki\r\n0\r\n\r\n"
+    payload = (b"POST /d/ckd HTTP/1.1\r\nHost: t\r\nContent-Type: text/plain\r\n"
+               b"Transfer-Encoding: chunked\r\n\r\n" + chunk)
+    sock = _s.create_connection(("127.0.0.1", srv.port))
+    sock.sendall(payload)
+    sock.settimeout(2)
+    data = b""
+    try:
+        while True:
+            ch = sock.recv(4096)
+            if not ch:
+                break
+            data += ch
+    except _s.timeout:
+        pass
+    assert data.count(b"HTTP/1.1") == 1, data[:400]
+    assert data.startswith(b"HTTP/1.1 411")
+    assert b"connection: close" in data.lower()
+    sock.close()

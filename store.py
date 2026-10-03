@@ -88,7 +88,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.45.5"
+VERSION = "1.45.6"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1154,7 +1154,10 @@ class Handler(BaseHTTPRequestHandler):
                 cl = int((self.headers or {}).get("Content-Length") or 0)
             except (TypeError, ValueError):
                 cl = 0
-            if cl > 0:
+            te = (self.headers or {}).get("Transfer-Encoding") or ""
+            # chunked-Body hat keinen Content-Length, wird nie gelesen
+            # (411) und vergiftet sonst equally den Socket — 1.45.6
+            if cl > 0 or "chunked" in te.lower():
                 self.close_connection = True
                 headers.setdefault("Connection", "close")
         for k, v in headers.items():

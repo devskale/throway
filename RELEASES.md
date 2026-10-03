@@ -1,9 +1,25 @@
 # throway — Releases
 
-**Current version:** `1.45.5`
+**Current version:** `1.45.6`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.6 — 2026-10-03
+
+### Validierungsrunde 4: chunked-Loch im Close-on-Error
+
+Adversarial-Runde gegen Protokoll-Ränder: `Transfer-Encoding: chunked`-
+Requests enden in 411 (Body wird nie gelesen), aber die 1.45.5-Close-
+Bedingung griff nur bei `Content-Length > 0` — der ungelesene Chunk-Body
+wurde als nächste Anfrage geparsed: **Doppel-Response** (411 +
+Phantom-400, raw bewiesen). Fix: Close auch bei `Transfer-Encoding:
+chunked` im Request. Daneben verifiziert: Restart-Persistenz des
+Retain-Gates, Müll-Request-Lines, CL-Lügen. Neue Batterie
+`/tmp/matrix_validate.py` (27 Routen × 1-Response-Invariante) 27/27,
+Suite 133/133.
 
 ---
 
