@@ -1764,7 +1764,7 @@ def gallery_html(store, gid, g, items, page, pages, total,
                  + _DROP_ICON
                  + "<div class=big>Bilder hierher ziehen oder klicken</div>"
                  + "<div class=sub>JPG &#183; PNG &#183; WebP &#183; GIF &#183; HEIC — auch mehrere auf einmal (1000+), max "
-                 + _fmt(PICS_MAX_FILE) + " pro Bild</div>"
+                 + _fmt(PICS_MAX_FILE) + " pro Bild — Bild-Links (auch aus Google-Photos-Tabs) hierher ziehen oder als Text einf\u00fcgen (Strg+V)</div>"
                  + "<div class=meta id=upstat></div>"
                  + "</label>"
                  + _star_bar(store, sort_likes)

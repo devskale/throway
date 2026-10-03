@@ -1280,3 +1280,15 @@ def test_rendered_scripts_node_check(srv):
     # Sanity: wir haben wirklich die JS-Konstanten geprüft
     assert seen, "keine Inline-Scripts gefunden — Render-Pfad geändert?"
     assert any("paintStar" in s for s in seen), "paintStar fehlt — _SOCIAL_JS nicht gerendert?"
+
+
+def test_dropzone_url_hint(srv):
+    """google-photos-import Stufe 0: die Dropzone erwaehnt den Link-Drop
+    und Paste-Import (Copy-Paste aus Google-Photos-Tabs funktioniert
+    seit 1.36.x — jetzt sichtbar gemacht)."""
+    _, g = create(srv)
+    st, _, html = srv.get(f"/pics/g/{g['id']}", headers=BROWSER)
+    p = html.decode()
+    assert st == 200
+    assert "Google-Photos" in p            # Stufe-0-Hinweis
+    assert "ziehen" in p and "Strg+V" in p

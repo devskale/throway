@@ -1,9 +1,22 @@
 # throway — Releases
 
-**Current version:** `1.48.0`
+**Current version:** `1.48.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.48.1 — 2026-10-03
+
+### google-photos-import Stufe 0 (Issue-Audit)
+
+Audit des Issues: Stufe 1 (Server-`?url=`-Import + Dropzone-URL-Drop +
+Paste-Import) war bereits vollständig umgesetzt und bewacht
+(test_url_import_into_gallery u.a.) — der Plan hinkte dem Code hinterher.
+Neu ist nur der Stufe-0-Hinweis in der Dropzone: Bild-Links (auch aus
+Google-Photos-Tabs) ziehen/einfügen. Suite 138/138. Stufe 2 (Picker API)
+wartet auf Google-Cloud-Zugangsdaten (siehe Issue).
 
 ---
 
