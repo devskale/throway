@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.45.8`
+**Current version:** `1.46.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.46.0 — 2026-10-03
+
+### Batterien permanent: validate-matrix + validate-gaps in CI
+
+Die beiden Ad-hoc-Batterien aus den Validierungsrunden sind jetzt
+Dauerbewacher als Skripte + CI-Jobs:
+
+- `scripts/validate-matrix.py` (28 Checks): Ein-Response-Invariante über
+  die ganze Routen-Oberfläche inkl. chunked und 429 — bewacht die
+  1.45.5/1.45.6-Bugklassen (Doppel-Response, Socket-Gift).
+- `scripts/validate-gaps.py` (16 Checks): der /api-Vertrag außerhalb
+  Suite/validate-live/Matrix — ttl-Clamps, download=1, Zip-Inhalte
+  (entpackt, nicht nur Status), /d-Filter+sort, Leer-Upload, PATCH-404,
+  idem=-Query — bewacht die 1.45.8-Klasse (stiller Vertragsbruch).
+
+Beide spawnen eigene Server (Ports 8150/8152, atexit-Cleanup, hohes
+Rate-Limit) und sind parallel-sicher. CI-Jobs `validate-matrix` +
+`validate-gaps`. Keine Serveränderung.
 
 ---
 

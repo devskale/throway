@@ -45,3 +45,25 @@ jobs:
         with:
           python-version: "3.12"
       - run: python scripts/validate-live.py
+
+  validate-matrix:
+    # Ein-Response-Invariante: 1 Statuszeile pro Anfrage, Socket danach
+    # gesund (bzw. gezielt geschlossen) — roehrt 1.45.5/1.45.6-Bugklassen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/validate-matrix.py
+
+  validate-gaps:
+    # /api-Vertrag ausserhalb Suite/validate-live/Matrix: ttl-Clamps,
+    # download=1, Zip-INHALTE, /d-Filter, Leer-Upload, idem= (1.45.8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/validate-gaps.py
