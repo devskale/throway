@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.46.0`
+**Current version:** `1.47.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.47.0 — 2026-10-03
+
+### SOTA-Agent-Punkte P3/P5/P6 (Issue throway-sota-punkte)
+
+P2 (Idempotenz) war bereits mit 1.44.0 erledigt — Status in PUNKTE.md
+korrigiert. Neu:
+
+- **P3 `/help/errors`:** jedes Fehler-`code` + Retry-Strategie als
+  Topic (nur 429/507 sind „später wieder"; alles andere heißt: Request
+  falsch). `/api` verweist darauf.
+- **P5 Multipart-Bridge:** Parts auf `POST /?dir=1[&name=]` → initial
+  files; auf EXISTIERENDEM named Dir → **add** wie `POST /d/<key>`
+  (vorher still verworfen = Datenverlust-Falle für Retry-Loops). Write
+  gates gelten; History loggt jetzt auch create-Adds pro Datei.
+- **P6 `?json=1`/`?html=1`:** erzwingt die Listing-Repräsentation auf
+  `/d/<key>`, `/d`, history, browse — gegen die UA-Heuristik.
+
+Suite 137/137 (+3 Tests), validate-matrix 28/28, validate-gaps 16/16.
 
 ---
 

@@ -199,3 +199,11 @@ python3 store.py
 ## 📄 License
 
 [MIT](LICENSE) © 2026 devskale
+
+## SOTA-Agent-Schnitt (1.47.0)
+
+* `/help/errors` — maschinenlesbare Fehler-Tabelle + Retry-Strategie
+* `?json=1` / `?html=1` — Listing-Repräsentation erzwungen (Custom-UA-fest)
+* Multipart-Bridge: `POST /?dir=1[&name=]` mit Parts → initial files,
+  auf existierendem Dir → add (retry-safe)
+

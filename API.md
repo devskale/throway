@@ -227,6 +227,16 @@ Reads, listing, history and zip stay open without the token; the
 listing shows `write_protected: true`. Re-creating an existing protected
 dir never re-reveals the token. Dirs without the flag behave as ever.
 
+**Multipart bridge (P5, since 1.47.0):** multipart file parts on the
+`?dir=1[&name=]` create call become the dir's **initial files** — and
+posting parts to an EXISTING named dir **adds** them like `POST /d/<key>`
+(retry-safe: an agent retry loop converges without data loss; write
+gates apply).
+
+**Representation override (P6, since 1.47.0):** all listing endpoints
+(`GET /d/<key>`, `GET /d`, `GET /d/<key>/history`, `GET /browse`) honor
+`?json=1` / `?html=1` to force JSON/HTML regardless of User-Agent.
+
 ## Endpoint-Index (Namen aus `/api`)
 
 Agenten können `/api` nach diesen Schlüsseln fragen; hier der Link zur
@@ -290,7 +300,9 @@ curl -A "curl" "https://skale.dev/throway/help"
 curl -A "curl" "https://skale.dev/throway/help/markdown"
 ```
 Topics: `overview`, `files`, `bundles`, `dirs`, `markdown`, `view`,
-`edit`, `delete`, `limits`, `contract`, `retention`. Browsers get an HTML index / page;
+`edit`, `delete`, `limits`, `contract`, `retention`, `errors`.
+`errors` (P3, since 1.47.0): every error `code` + retry strategy — only
+429/507 mean "later again", everything else means the request is wrong. Browsers get an HTML index / page;
 unknown topics return `404`. Pull only the topics you need.
 
 Markdown (`/help/markdown`): any `.md`/`.markdown` upload renders as a

@@ -343,7 +343,10 @@ curl -X POST "…/?dir=1&name=team7&ttl=24"   # 24 hours
 
 **Create-or-get** means any agent can call the same create and converge on
 the shared dir — idempotent. Create flags are honored **only on first
-creation**; calling create on an existing name silently returns it.
+creation**. Multipart parts on the create call become the dir's initial
+files; posting parts to an EXISTING named dir **adds** them (retry-safe,
+write gates apply) — a create is never a silent data drop (since 1.47.0).
+Listing endpoints honor `?json=1`/`?html=1` against the UA heuristic.
 
 ### Edit history
 

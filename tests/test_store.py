@@ -427,3 +427,52 @@ def test_once_and_share_rejected(srv):
     st, _, raw = srv.post("/?once=1&share=oncekey", data=b"x", headers=AGENT)
     assert st == 400
     assert "mutually exclusive" in raw.decode()
+
+
+def test_help_errors_topic(srv):
+    """P3 (sota): Fehler-Codes + Retry-Strategie als abrufbares Topic."""
+    st, _, raw = srv.get("/help/errors", headers=AGENT)
+    assert st == 200
+    body = raw.decode()
+    for token in ("rate_limited", "pool_full", "Retry-After", "100/min", "do not retry"):
+        assert token in body, token
+    st, _, raw = srv.get("/help", headers=AGENT)
+    assert b'"errors"' in raw
+
+
+def test_json_html_override(srv):
+    """P6 (sota): ?json=1 erzwingt JSON auch mit Browser-UA, ?html=1
+    erzwingt HTML auch mit curl-UA (Custom-UA-Parsing-Falle)."""
+    import json as _j
+    srv.post("/?dir=1&name=ovr&listed=1", data=b"", headers=AGENT)
+    browser = {"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/120.0"}
+    st, _, raw = srv.get("/d/ovr?json=1", headers=browser)
+    assert st == 200
+    j = _j.loads(raw)
+    assert j.get("dir") is True or "files" in j
+    st2, _, raw2 = srv.get("/d/ovr?html=1", headers=AGENT)
+    assert st2 == 200
+    assert b"<html" in raw2.lower() or b"<!doctype" in raw2.lower()
+
+
+def test_dir_create_multipart_adds_to_existing(srv):
+    """P5 (sota): create-or-get mit Multipart-Parts fuegt die Parts hinzu
+    (wie POST /d/<key>) statt sie still zu verwerfen — Retry-Loop konvergiert."""
+    import json as _j
+    mp1, ct1 = multipart([
+        ("a.txt", b"A", "text/plain"), ("b.txt", b"B", "text/plain"),
+        ("c.txt", b"C", "text/plain")])
+    st, _, raw = srv.post("/?dir=1&name=bridge", data=mp1, headers={**AGENT,
+                          "Content-Type": ct1})
+    assert st == 200
+    names = {f["name"] for f in _j.loads(raw)["files"]}
+    assert names == {"a.txt", "b.txt", "c.txt"}
+    mp2, ct2 = multipart([("d.txt", b"D", "text/plain"), ("e.txt", b"E", "text/plain")])
+    st, _, raw = srv.post("/?dir=1&name=bridge", data=mp2, headers={**AGENT,
+                          "Content-Type": ct2})
+    assert st == 200
+    names = {f["name"] for f in _j.loads(raw)["files"]}
+    assert names == {"a.txt", "b.txt", "c.txt", "d.txt", "e.txt"}
+    st, _, raw = srv.get("/d/bridge/history", headers=AGENT)
+    hist = _j.loads(raw)["history"]
+    assert sum(1 for h in hist if h["action"] == "add") == 5
