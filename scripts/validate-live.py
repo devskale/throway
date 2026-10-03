@@ -46,7 +46,8 @@ def check(name, cond, detail=""):
 
 
 def parse_args():
-    base, tokens = None, os.environ.get("THROWAWAY_RETAIN_TOKENS", "")
+    base, tokens = None, (os.environ.get("THROWAWAY_RETAIN_TOKENS")
+                     or os.environ.get("THROWAWAY_RETAIN_TOKEN", ""))
     argv = sys.argv[1:]
     if "--base" in argv:
         base = argv[argv.index("--base") + 1].rstrip("/")

@@ -31,13 +31,19 @@ TOKEN_HINT = ("retain token required: send Authorization: Bearer <token> "
               "or ?token=<token> (query strings can reach server logs)")
 
 
+def query_string(handler):
+    """The raw query string of a request ('' when none). Retro review
+    1.45.4: das Split-Muster stand 4x ueber Modulgrenzen verstreut."""
+    return handler.path.split("?", 1)[1] if "?" in handler.path else ""
+
+
 def token_from(handler):
     """The retain token this request carries, '' when none.
     Bearer header first, then the documented ?token= query param."""
     auth = (handler.headers.get("Authorization") or "").strip()
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    q = handler.path.split("?", 1)[1] if "?" in handler.path else ""
+    q = query_string(handler)
     for kv in q.split("&"):
         k, _, v = kv.partition("=")
         if k == "token" and v:
@@ -67,7 +73,7 @@ def request_retention(handler):
         if valid(token):
             return True, None
         return False, (401, {"error": "invalid retain token"})
-    qs = handler.path.split("?", 1)[1] if "?" in handler.path else ""
+    qs = query_string(handler)
     if "retain=1" in qs or "show=1" in qs:
         if not ENABLED:
             return False, (401, {"error": "retention is not enabled on this server"})

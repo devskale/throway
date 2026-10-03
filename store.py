@@ -88,7 +88,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.45.3"
+VERSION = "1.45.4"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -344,15 +344,23 @@ def _fmt_exp(expires):
 
 
 @_dirlock
+def _retain_meta_dict(m):
+    """Flip a LOADED manifest to indefinite retention in place (Retro
+    review 1.45.4: dieser Block stand 5x). Singles/Bundles haben kein
+    max_age — pop ist dort harmlos."""
+    m["retain"] = True
+    m.pop("expires", None)
+    m.pop("max_age", None)
+    return m
+
+
 def _dir_retain(key):
     """Flip a dir's manifest to indefinite retention. True on success."""
     m = _dir_meta(key)
     if not m:
         return False
     if not m.get("retain"):
-        m["retain"] = True
-        m.pop("expires", None)
-        m.pop("max_age", None)
+        _retain_meta_dict(m)
         _atomic_json(_dir_meta_path(key), m)
     return True
 
@@ -1219,7 +1227,7 @@ class Handler(BaseHTTPRequestHandler):
         if m.get("write_token"):
             given = (self.headers.get("X-Throway-Write") or "").strip()
             if not given:
-                q = self.path.split("?", 1)[1] if "?" in self.path else ""
+                q = retain.query_string(self)
                 for kv in q.split("&"):
                     k, _, v = kv.partition("=")
                     if k == "write" and v:
@@ -1232,11 +1240,6 @@ class Handler(BaseHTTPRequestHandler):
                 return (401, {"error": "invalid write token"})
         if m.get("open"):
             return None      # show-dir: everyone with the URL may write
-        return self._retain_write_denied(m)
-
-    def _retain_write_denied(self, m):
-        """401 tuple when a retained manifest is written without the
-        retain token; None when the write may proceed."""
         return retain.write_denied(self, m)
 
     def _dir_write_guard(self, key):
@@ -1738,9 +1741,7 @@ class Handler(BaseHTTPRequestHandler):
         fp = _id_path(fid)
         bdir = os.path.join(ROOT, fid)
         if os.path.isdir(bdir) and fid != DIR_NS and fid != pics.NS:
-            m = _bundle_meta(bdir, fid) or {}
-            m["retain"] = True
-            m.pop("expires", None)
+            m = _retain_meta_dict(_bundle_meta(bdir, fid) or {})
             _atomic_json(os.path.join(bdir, fid + ".meta"), m)
             return self._send(200, json.dumps({
                 "id": fid, "url": f"{PUBLIC_BASE}/{fid}", "bundle": True,
@@ -1756,8 +1757,7 @@ class Handler(BaseHTTPRequestHandler):
                 m = json.load(_f)
         except Exception:
             return self._err(404, "not found")
-        m["retain"] = True
-        m.pop("expires", None)
+        _retain_meta_dict(m)
         _atomic_json(mp, m)
         return self._send(200, json.dumps({
             "id": fid, "url": f"{PUBLIC_BASE}/{fid}",
@@ -1772,10 +1772,8 @@ class Handler(BaseHTTPRequestHandler):
         if not m:
             return self._err(404, "not found")
         if not (m.get("retain") and m.get("open")):
-            m["retain"] = True
+            _retain_meta_dict(m)
             m["open"] = True
-            m.pop("expires", None)
-            m.pop("max_age", None)
             _atomic_json(_dir_meta_path(key), m)
         return self._dir_response(key, _dir_path(key), _dir_meta(key))
 
@@ -1799,8 +1797,7 @@ class Handler(BaseHTTPRequestHandler):
                 m = json.load(_f)
         except Exception:
             return
-        m["retain"] = True
-        m.pop("expires", None)
+        _retain_meta_dict(m)
         _atomic_json(mp, m)
 
     def _file_tags(self, fid, qp):
@@ -1814,7 +1811,7 @@ class Handler(BaseHTTPRequestHandler):
                 meta = json.load(_f)
         except Exception:
             return self._send(500, json.dumps({"error": "meta unreadable"}), "application/json")
-        denied = self._retain_write_denied(meta)
+        denied = retain.write_denied(self, meta)
         if denied:
             return self._send(denied[0], json.dumps(denied[1]), "application/json")
         add = _parse_tags(qp.get("tag", []))
@@ -2140,8 +2137,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._dir_response(key, dirpath, existing)
         os.makedirs(dirpath, exist_ok=True)
         ttl = _parse_ttl((qp.get("ttl") or [""])[0]) or DIR_DEFAULT_AGE
-        listed = "listed=1" in (self.path.split("?", 1)[1] if "?" in self.path else "")
-        show = "show=1" in (self.path.split("?", 1)[1] if "?" in self.path else "")
+        qs = retain.query_string(self)
+        listed = "listed=1" in qs
+        show = "show=1" in qs
         tags = _parse_tags(qp.get("tag", []))
         write_flag = (qp.get("write") or [""])[0].strip()
         write_token = None
@@ -2235,8 +2233,19 @@ class Handler(BaseHTTPRequestHandler):
         dirpath = _dir_path(key)
         if not os.path.isdir(dirpath):
             return None
+        # Body VOR dem Write-Guard lesen + Guard-Return True (nicht None):
+        # sonst (a) sendet do_POST nach dem Guard-401 noch ein 404
+        # hinterher (Retro review 1.45.4: verifizierte Doppel-Response)
+        # und (b) vergiftet der ungelesene Body den Keep-Alive-Socket —
+        # die Bytes gelten als naechste Anfrage (phantom-400).
+        ctype = self.headers.get("Content-Type", "application/octet-stream")
+        if not ctype.startswith("multipart/form-data"):
+            return self._send(400, json.dumps({"error": "dir add requires multipart"}), "application/json")
+        payload = self._read_body()
+        if payload is None:
+            return self._err(411, "length required")
         if self._dir_write_guard(key):
-            return
+            return True      # 401 bereits gesendet — NICHT None zurueckgeben
         m = _dir_meta(key)
         if not m or m.get("type") != "dir":
             return None
@@ -2244,12 +2253,6 @@ class Handler(BaseHTTPRequestHandler):
         if _meta_expired(m, now):
             shutil.rmtree(dirpath, ignore_errors=True)
             return self._send(404, json.dumps({"error": "expired"}), "application/json")
-        ctype = self.headers.get("Content-Type", "application/octet-stream")
-        if not ctype.startswith("multipart/form-data"):
-            return self._send(400, json.dumps({"error": "dir add requires multipart"}), "application/json")
-        payload = self._read_body()
-        if payload is None:
-            return self._err(411, "length required")
         files = _parse_multipart(payload, ctype)
         named = [(n, d, c) for (n, d, c) in files if n]
         if not named:
@@ -2685,7 +2688,7 @@ class Handler(BaseHTTPRequestHandler):
         fid = parts[0]
         fp = _id_path(fid)
         if os.path.isfile(fp):
-            denied = self._retain_write_denied(self._meta_of(fid))
+            denied = retain.write_denied(self, self._meta_of(fid))
             if denied:
                 return self._send(denied[0], json.dumps(denied[1]), "application/json")
             _remove(fp); self._send(200, "deleted\n")
@@ -2746,7 +2749,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(404, "not found")
         if not self._is_text(fid):
             return self._send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
-        denied = self._retain_write_denied(self._meta_of(fid))
+        denied = retain.write_denied(self, self._meta_of(fid))
         if denied:
             return self._send(denied[0], json.dumps(denied[1]), "application/json")
         data = self._read_body()
@@ -2777,7 +2780,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(404, "not found")
         if not self._is_text(fid):
             return self._send(400, json.dumps({"error": "only text files can be appended to"}), "application/json")
-        denied = self._retain_write_denied(self._meta_of(fid))
+        denied = retain.write_denied(self, self._meta_of(fid))
         if denied:
             return self._send(denied[0], json.dumps(denied[1]), "application/json")
         data = self._read_body()
@@ -3015,7 +3018,7 @@ function copyDesc() {{
                 "browse_files": {"method": "GET", "url": PUBLIC_BASE + "/browse?tag=<t>[&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]", "note": "JSON listing of live single files for agents (HTML page for browsers). Filter by one or more &tag= values (AND), by name/tag substring &q=; sort with &sort= (default created) and &order= (default desc). Each entry: id, url, name, content_type, size, tags, created_at, expires_at."},
                 "tag_file": {"method": "POST", "url": PUBLIC_BASE + "/<id>?tag=<t>[&tag=<t2>][&untag=<t3>]", "note": "update tags on an existing single file without touching its content or expiry. Tags: lowercase [a-z0-9-], 1-24 chars, max 5 per file."},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
-                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open; &show=1 (retain token) creates a SHOW-DIR: indefinite AND publicly writable — everyone with the URL may add/edit/delete files, whole-dir delete stays token-gated", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "open?": "bool (show-dir)", "tags": ["str"]}},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open; &show=1 (retain token) creates a SHOW-DIR: indefinite AND publicly writable — everyone with the URL may add/edit/delete files, whole-dir delete stays token-gated; flags (incl. show=1) honored only on first creation — flip an existing dir via POST /d/<key>?show=1", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "open?": "bool (show-dir)", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl; 401 without the X-Throway-Write token when the dir is write-protected"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
                 "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},

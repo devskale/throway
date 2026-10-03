@@ -1,9 +1,35 @@
 # throway — Releases
 
-**Current version:** `1.45.3`
+**Current version:** `1.45.4`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.4 — 2026-10-03
+
+### Review-Fixes (code-review Skill, 2 Sub-Agents, Spec- + Standards-Achse)
+
+1. **Doppel-Response bei write-gated Dir-Add (verifiziert per Raw-Socket):
+   drei Responses auf eine Anfrage** — 401 (Guard) + 404 (1.45.2-
+   Fall-through feuerte nach, weil `_dir_add` nach gesendetem 401 None
+   lieferte) + 400 (ungelesener Multipart-Body galt als nächste Anfrage).
+   Kein automatisierter Check sah es — Clients lesen die erste Response.
+   Fix: Body wird VOR dem Guard gelesen (Keep-Alive-Socket bleibt sauber),
+   Guard-Return ist True statt None. Neue Raw-Socket-Regressionstests
+   (genau eine Statuszeile + Connection danach benutzbar).
+   Verhaltenänderung: bei invalidem Non-Multipart-Add kommt jetzt der
+   400 multipart-Fehler vor dem Guard-401.
+2. **Flip-Block 5x dedupliziert** (`_retain_meta_dict`), **Middle Man
+   `_retain_write_denied` entfernt** (6 Calls direkt aufs Modul),
+   **Query-String-Parsing gebündelt** (`retain.query_string`).
+3. **validate-live: Env-Fallback** — liest jetzt auch das singular
+   `THROWAWAY_RETAIN_TOKEN` der Produktion (Drift-Befund).
+4. **Doku:** create_dir-Note nennt show=1-First-Creation explizit;
+   CODING_RULES: Cross-Cutting-vs-Namespace-Modul-Klärung.
+
+Tests: Suite 131/131 (+Raw-Socket-Test), validate-live 50/50.
 
 ---
 

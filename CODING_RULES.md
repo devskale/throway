@@ -95,6 +95,12 @@ Done = active + live version correct + feature smoke green + heartbeat started.
   with a small interface: route dispatch, `sweep`, `api_endpoints`,
   `HELP_TOPICS`. `store.py` gets minimal touchpoints; the module owns
   everything else. Monolith edits stay surgical.
+- **Cross-Cutting vs. Namespace-Module** (Retro review 1.45.4): die
+  Modul-Regel gilt voll fuer Namespace-Features (pics: eigene Route,
+  eigener Pool). Querschnitts-Themen (retain) dürfen store.py-Touchpoints
+  behalten, solange die Konzept-Logik (Token-Validierung, Gates, HELP,
+  Limits) im Modul lebt — Flip-Routen und Sweep-Checks sind Dispatcher-
+  Nähe, keine Konzept-Logik.
 - Optional deps (`PIL`, `pillow_heif`) import lazily inside functions —
   the server must start without them.
 - **Kein Create-Pfad ohne Delete-Pfad** (Retro 2026-10-02, hard-validate):

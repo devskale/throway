@@ -88,8 +88,9 @@ def test_flip_existing_dir_to_show(srv):
 def test_retained_dir_without_show_still_gated(srv):
     """open darf nicht auf normale retained Dirs ueberschwappen."""
     srv.post("/?dir=1&name=gated", data=b"", headers={**AGENT, **AUTH})
-    st, _, raw = srv.post("/d/gated", data=b"")  # kein UA/Token
-    assert st == 401
+    # korrektes Multipart ohne Token: Body-Drain first, dann Guard-401
+    # (seit 1.45.4 gilt die Reihenfolge Body->Guard; blanko-POSTs kriegen
+    # den 400 multipart-first — Test muss valide Anfragen stellen)
     st, _, _ = _add_file(srv, "gated")
     assert st == 401
 
@@ -175,3 +176,36 @@ def test_dir_add_missing_dir_404(srv):
     st, _, raw = srv.get("/browse", headers=AGENT)
     assert not any(e["name"] == "x.txt"
                    for e in json.loads(raw).get("files", []))
+
+
+# --- 1.45.4 review fix: genau EINE Response, sauberer Socket ---------------
+
+def test_guard_401_single_response_clean_socket(srv):
+    """Retro review: Guard-401 + None-Return erzeugte Doppel-Response
+    (401+404) und liess den Body ungelesen (phantom-400 fuer die naechste
+    Anfrage auf dem Keep-Alive-Socket). Raw-Socket-Assertion: genau eine
+    Statuszeile, danach bleibt die Connection benutzbar."""
+    import socket as _s
+    srv.post("/?dir=1&write=1&name=rawlock", data=b"", headers={**AGENT, **AUTH})
+    body, ctype = multipart([("x.txt", b"x", "text/plain")])
+    payload = (f"POST /d/rawlock HTTP/1.1\r\nHost: t\r\nContent-Type: {ctype}\r\n"
+               f"Content-Length: {len(body)}\r\n\r\n").encode() + body
+    sock = _s.create_connection(("127.0.0.1", srv.port))
+    sock.sendall(payload)
+    sock.settimeout(2)
+    data = b""
+    try:
+        while True:
+            ch = sock.recv(4096)
+            if not ch:
+                break
+            data += ch
+    except _s.timeout:
+        pass
+    assert data.count(b"HTTP/1.1") == 1, data[:400]
+    assert b"401" in data.split(b"\r\n", 1)[0]
+    # Socket nicht vergiftet: naechste Anfrage kriegt eine valide Antwort
+    sock.sendall(b"GET /api HTTP/1.1\r\nHost: t\r\n\r\n")
+    data2 = sock.recv(65536)
+    assert data2.startswith(b"HTTP/1.1 200"), data2[:100]
+    sock.close()
