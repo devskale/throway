@@ -204,8 +204,41 @@ def test_guard_401_single_response_clean_socket(srv):
         pass
     assert data.count(b"HTTP/1.1") == 1, data[:400]
     assert b"401" in data.split(b"\r\n", 1)[0]
-    # Socket nicht vergiftet: naechste Anfrage kriegt eine valide Antwort
+    # 1.45.5: Error-mit-Body -> Connection: close (kein Phantom-Muell);
+    # der Socket wird GESCHLOSSEN, eine frische Connection arbeitet normal
+    assert b"connection: close" in data.lower()
+    sock.close()
+    s2 = _s.create_connection(("127.0.0.1", srv.port))
+    s2.sendall(b"GET /api HTTP/1.1\r\nHost: t\r\n\r\n")
+    assert s2.recv(65536).startswith(b"HTTP/1.1 200")
+    s2.close()
+
+
+def test_dir_add_success_single_response(srv):
+    """1.45.5 Wurzel-Fund: _send gab nie True/False zurueck — jedes
+    `return self._send(...)` in _dir_add war None, do_POST schob seit
+    1.45.2 hinter JEDER Dir-Add-Antwort (200/400/413) ein 404 nach.
+    Raw-Socket: auch der Erfolgsfall hat exakt eine Statuszeile."""
+    import socket as _s
+    srv.post("/?dir=1&name=okd", data=b"", headers=AGENT)
+    body, ctype = multipart([("n.txt", b"hi", "text/plain")])
+    payload = (f"POST /d/okd HTTP/1.1\r\nHost: t\r\nContent-Type: {ctype}\r\n"
+               f"Content-Length: {len(body)}\r\n\r\n").encode() + body
+    sock = _s.create_connection(("127.0.0.1", srv.port))
+    sock.sendall(payload)
+    sock.settimeout(2)
+    data = b""
+    try:
+        while True:
+            ch = sock.recv(4096)
+            if not ch:
+                break
+            data += ch
+    except _s.timeout:
+        pass
+    assert data.count(b"HTTP/1.1") == 1, data[:400]
+    assert data.startswith(b"HTTP/1.1 200")
+    # Keep-Alive bleibt fuer Erfolgs-Faelle
     sock.sendall(b"GET /api HTTP/1.1\r\nHost: t\r\n\r\n")
-    data2 = sock.recv(65536)
-    assert data2.startswith(b"HTTP/1.1 200"), data2[:100]
+    assert sock.recv(65536).startswith(b"HTTP/1.1 200")
     sock.close()

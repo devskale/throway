@@ -1,9 +1,36 @@
 # throway — Releases
 
-**Current version:** `1.45.4`
+**Current version:** `1.45.5`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.45.5 — 2026-10-03
+
+### Validierung der 1.45.4-Fixes fand die Wurzel + die offene Klasse
+
+Die Raw-Socket-Batterie ("validate deine fixes") widerlegte zwei
+Annahmen:
+
+1. **Wurzel: `_send` gab nie True/False zurück.** Die Zeilen, die ich
+   1.45.4 als Beleg las, gehörten `_rate`. Jedes `return self._send(...)`
+   in `_dir_add` war also None — do_POST schob seit 1.45.2 hinter JEDER
+   Dir-Add-Antwort (200/400/413) ein 404 nach; pre-1.45.2 war der
+   Fall-Through unsichtbar-harmlos (Body konsumiert). Suite und
+   validate-live lasen je nur die erste Response → grün. Fix: `_send`
+   returnt True (False bei Hangup). Erfolgs-Dir-Add raw: exakt 1
+   Statuszeile + Keep-Alive bleibt.
+2. **Klasse offen: Error-Response mit ungelesenem Body vergiftet den
+   Keep-Alive-Socket** (phantom-501 auf der Folgerequest) — bei PUT auf
+   Binary (400), Non-Multipart-Add (400), Tags-401, … Fix: `_send`
+   schließt bei code>=400 mit Content-Length>0 die Connection
+   (`Connection: close`). GET-404 ohne Body behält Keep-Alive.
+
+Batterie: 11/11 (Guard-401, PUT-binary, Non-Multipart, Tags-401,
+GET-404-Kontrolle). Tests: Suite 132/132 (+Erfolgs-Add-Raw-Test,
+Guard-Test auf close-Contract umgestellt).
 
 ---
 

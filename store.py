@@ -88,7 +88,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.45.4"
+VERSION = "1.45.5"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1144,6 +1144,19 @@ class Handler(BaseHTTPRequestHandler):
         # listing, upload result, even an error — learns where /api lives
         if ctype == "application/json" and "Link" not in headers:
             headers["Link"] = f'<{PUBLIC_BASE}/api>; rel="help"'
+        # Fehler-Response auf eine Anfrage MIT Body: Connection schliessen.
+        # Der ungelesene Rest-Body wird sonst nach der Antwort als
+        # "naechste Anfrage" geparsed (phantom-4xx/5xx auf der Folgerequest,
+        # Raw-Socket bewiesen — Retro 1.45.5). Keep-Alive bleibt fuer
+        # fehlerfreie und koerperlose Anfragen erhalten.
+        if code >= 400:
+            try:
+                cl = int((self.headers or {}).get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                cl = 0
+            if cl > 0:
+                self.close_connection = True
+                headers.setdefault("Connection", "close")
         for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
@@ -1153,7 +1166,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 # client hung up mid-response — nothing to do
-                return
+                return False
+        return True
 
     def _rate(self, count=True):
         if not allowed(self._client_ip(), count=count):
