@@ -1,9 +1,30 @@
 # throway — Releases
 
-**Current version:** `1.53.2`
+**Current version:** `1.53.3`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.53.3 — 2026-10-04
+
+### 413-Meldungen aus der Konfiguration statt hartkodiert
+
+„too large (max 5MB)" stand an **sieben Stellen** hartkodiert in store.py
+(5× Früh-/Spätcheck im Upload/Edit-Pfad, 1× Import-Fehlermeldung, 1×
+„bundle too large (pool max 100MB)") — dieselbe Drift-Klasse, die 1.53.0
+für die /api-Notes fixte, in den Response-Bodies übersehen. Fund bei der
+Issue-#1-Verifikation. Steigt `THROWAWAY_MAX_FILE_BYTES` per Env, logten
+die Meldungen falsch. Jetzt: aus `MAX_FILE` bzw. `THROW_POOL_SIZE`
+berechnet. (pics.py war bereits korrekt: `_fmt(PICS_MAX_FILE)`.)
+
+Neu: `tests/test_413_message.py` (3 Tests) — Env-Max 2MB vs Default 5MB,
+beide Wege gedeckt: Frühcheck per Raw-Socket (der Server antwortet 413,
+ohne den Body zu lesen — dokumentiert nebenbei das Nicht-Drain-Verhalten
+des Files-Pfads, das pics seit 1.20 beherrscht) und Post-read via PATCH.
+
+Tests: **164 passed** (161 unverändert + 3 neue) · validate 28/16/50 PASS.
 
 ---
 

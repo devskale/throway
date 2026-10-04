@@ -85,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.53.2"
+VERSION = "1.53.3"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1656,7 +1656,7 @@ class Handler(BaseHTTPRequestHandler):
                 if length not in (None, "0"):
                     length = int(length)
                     if length > MAX_FILE:
-                        return self._err(413, "too large (max 5MB)")
+                        return self._err(413, f"too large (max {MAX_FILE // (1024 * 1024)}MB)")
                     data = self.rfile.read(length)
                     initial = [(name_hint or "file", data, "application/octet-stream")]
             return dirs.create(self._kit(), key, qp, initial, retained=retained)
@@ -1688,7 +1688,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(411, "length required")
         length = int(length)
         if length > MAX_FILE:
-            return self._err(413, "too large (max 5MB)")
+            return self._err(413, f"too large (max {MAX_FILE // (1024 * 1024)}MB)")
         data = self.rfile.read(length)
         if name_hint:
             ctype = mimetypes.guess_type(name_hint)[0] or "application/octet-stream"
@@ -1902,7 +1902,7 @@ class Handler(BaseHTTPRequestHandler):
     def _store(self, data, name_hint, ctype, tags=None, ttl_seconds=None, once=False,
                retained=False):
         if len(data) > MAX_FILE:
-            return self._err(413, "too large (max 5MB)")
+            return self._err(413, f"too large (max {MAX_FILE // (1024 * 1024)}MB)")
         fid = secrets.token_hex(8)
         fp = _id_path(fid)
         with open(fp, "wb") as f:
@@ -1951,10 +1951,10 @@ class Handler(BaseHTTPRequestHandler):
             if not safe:
                 continue
             if len(d) > MAX_FILE:
-                return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+                return self._send(413, json.dumps({"error": f"too large (max {MAX_FILE // (1024 * 1024)}MB): {safe}"}), "application/json")
             total += len(d)
             if total > THROW_POOL_SIZE:
-                return self._send(413, json.dumps({"error": "bundle too large (pool max 100MB)"}), "application/json")
+                return self._send(413, json.dumps({"error": f"bundle too large (pool max {THROW_POOL_SIZE // (1024 * 1024)}MB)"}), "application/json")
             clean.append((safe, d, c))
         if not clean:
             return self._send(400, json.dumps({"error": "no valid file parts"}), "application/json")
@@ -2083,7 +2083,7 @@ class Handler(BaseHTTPRequestHandler):
         if data is None:
             return self._err(411, "length required")
         if len(data) > MAX_FILE:
-            return self._err(413, "too large (max 5MB)")
+            return self._err(413, f"too large (max {MAX_FILE // (1024 * 1024)}MB)")
         with open(fp, "wb") as f:
             f.write(data)
         if retain.valid(retain.token_from(self)):
@@ -2115,7 +2115,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(411, "length required")
         cur = os.path.getsize(fp)
         if cur + len(data) > MAX_FILE:
-            return self._err(413, "too large (max 5MB)")
+            return self._err(413, f"too large (max {MAX_FILE // (1024 * 1024)}MB)")
         with open(fp, "ab") as f:
             f.write(data)
         if retain.valid(retain.token_from(self)):
