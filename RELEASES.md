@@ -1,11 +1,44 @@
 # throway — Releases
 
-**Current version:** `1.48.2`
+**Current version:** `1.49.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.49.0 — 2026-10-04
+
+### Dir-Extraktion: `throway/dirs.py` + Request-Kit (Architektur-Review)
+
+Der komplette Dir-Cluster (667 Zeilen: create/add/get/edit/delete/listing/
+history/browse/share + Flip-Routen + `?share=`) lebt jetzt im eigenen
+Namespace-Modul `throway/dirs.py` (1034 Zeilen mit Interface-Vertrag im
+Docstring) — exakt dem pics-Muster folgend, das CODING_RULES vorschreibt.
+store.py schrumpft 3942 → 3188 Zeilen und behält nur Routing + Engine.
+
+**Request-Kit als Geburts-Interface** (Geburts-Naht der Module): dirs
+bekommt statt des Handlers ein explizites Kit (Senden, Request-Kontext,
+geteilte Helfer, Konfig) — die 1.45.5-Bugklasse „Response-Plumbing ist
+tragend, aber privat" endet an einer dokumentierten Naht. pics migriert
+später nach (bewusst, Q7).
+
+**Engine-Hooks wie bei pics:** `dirs.sweep/ns_total/evict_units` —
+Pool-Accounting und Sweep laufen über die Modul-Schnittstelle, das
+Dir-Meta-Format gehört exklusiv dem Modul.
+
+**Nebenher gefixt:**
+* `show_flip` läuft jetzt unter dem Mutations-Lock (der 1.45.2-Fix,
+  für diese Route nachgerüstet)
+* pics-Galerienamen validieren über `dirs.valid_name` (vorher
+  `store._valid_name` — dieselbe Regel, jetzt eine Heimat)
+* `CONTEXT.md` neu: Domain-Glossar (Dir, Share, Show-dir, Retention,
+  Write token, Pool, Namespace, Querschnitts-Modul, Request-Kit, Agent)
+* `test_retain` Sweep-Check folgt dem Umzug (`store.dirs.sweep` —
+  intern, aber mit korrektem ROOT-Reload; alle 140 Verhaltenstests
+  unverändert grün)
+
+Tests: **140 passed** (unveränderte Suite — HTTP bleibt die Testfläche).
 
 ## 1.48.2 — 2026-10-03
 

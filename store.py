@@ -30,7 +30,7 @@ import html as _html
 from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from throway import pics, retain
+from throway import dirs, pics, retain
 
 
 def _html_escape(s):
@@ -56,19 +56,16 @@ TTL_HOURS = _env_int("THROWAWAY_TTL_HOURS", 4)                          # defaul
 # Dirs — one unified concept under /d/<key>. A dir is addressable by an
 # opaque hex id (unnamed) or a memorable name (named). Sliding lifetime,
 # optional tags/listed, and a lightweight edit history.
-DIR_NS = "d"                          # namespace prefix for all dirs
-DIR_MIN_AGE = _env_int("THROWAWAY_DIR_MIN_AGE", 4 * 3600)             # min sliding lifetime (4h)
-DIR_MAX_AGE = _env_int("THROWAWAY_DIR_MAX_AGE", 14 * 24 * 3600)       # max sliding lifetime (14 days)
-DIR_DEFAULT_AGE = _env_int("THROWAWAY_DIR_DEFAULT_AGE", 7 * 24 * 3600)  # default when &ttl= not given
-DIR_ABS_MAX = _env_int("THROWAWAY_DIR_ABS_MAX", 30 * 24 * 3600)       # absolute ceiling on total lifetime (30d)
-HISTORY_LIMIT = _env_int("THROWAWAY_HISTORY_LIMIT", 50)                 # max history entries kept per dir
+DIR_NS = dirs.NS                       # namespace prefix for all dirs (owned by throway.dirs, 1.49.0)
+# dir lifetimes + history limit are owned by throway/dirs.py (env-tuned
+# there); aliased here for /api and the HELP rendering:
+DIR_MIN_AGE = dirs.MIN_AGE
+DIR_MAX_AGE = dirs.MAX_AGE
+DIR_DEFAULT_AGE = dirs.DEFAULT_AGE
+DIR_ABS_MAX = dirs.ABS_MAX
+HISTORY_LIMIT = dirs.HISTORY_LIMIT
 MAX_TAGS = _env_int("THROWAWAY_MAX_TAGS", 5)
 MAX_TAG_LEN = 24
-RESERVED_NAMES = {
-    "api", "index", "d", "releases", "llms", "llms-full", "llms_full",
-    "write_for_agents", "copy_for_agents", "store", "static", "favicon",
-    "robots", "sitemap", "assets", "health", "browse", "list", "pics",
-}
 
 PUBLIC_BASE = os.environ.get("THROWAWAY_PUBLIC_BASE", "https://skale.dev/throway")
 # URL-Prefix der Ausgabe-Links. Retro 2026-10-01 (P6): im Prod steht nginx
@@ -88,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.48.2"
+VERSION = "1.49.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -125,20 +122,6 @@ def _bump_since_start(files, bytes_):
     _since_start["bytes"] += bytes_
 
 
-def _dir_touch(meta, now):
-    """Slide a dir's expiry forward by its TTL on activity, capped at an
-    absolute ceiling from creation. Returns the new expires timestamp
-    (None for retained dirs — they never expire)."""
-    if meta.get("retain"):
-        meta["updated"] = now
-        return None
-    ttl = meta.get("max_age", DIR_DEFAULT_AGE)
-    created = meta.get("created", now)
-    # sliding: now + ttl, but never beyond created + DIR_ABS_MAX
-    expires = min(now + ttl, created + DIR_ABS_MAX)
-    meta["expires"] = expires
-    meta["updated"] = now
-    return expires
 def _load_stats():
     try:
         with open(STATS_FILE) as f:
@@ -167,19 +150,6 @@ def _atomic_json(path, obj):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f)
     os.replace(tmp, path)
-
-
-_DIR_LOCK = threading.RLock()
-
-
-def _dirlock(fn):
-    """Serialize dir mutations (RLock, reentrant). Retro 2026-10-02
-    hard-validate: read-modify-write races auf Meta/History verloren bei
-    parallelen Writes Dateien (Show-Dirs = parallele Schreiber by design)."""
-    def wrapper(*a, **kw):
-        with _DIR_LOCK:
-            return fn(*a, **kw)
-    return wrapper
 
 
 def _idem_map_path():
@@ -266,22 +236,9 @@ def total_size():
             if f == pics.NS:
                 continue    # pics has its own pool (RFQ TR-1), never counted here
             if f == DIR_NS:
-                total += _dir_ns_total()
+                total += dirs.ns_total()
             else:
                 total += _dir_size(p)
-    return total
-
-
-def _dir_ns_total():
-    """Total bytes across all dirs (ROOT/d/<key>)."""
-    total = 0
-    nd = os.path.join(ROOT, DIR_NS)
-    if not os.path.isdir(nd):
-        return 0
-    for key in os.listdir(nd):
-        p = os.path.join(nd, key)
-        if os.path.isdir(p):
-            total += _dir_size(p)
     return total
 
 
@@ -303,13 +260,7 @@ def _units():
             if f == pics.NS:
                 continue    # pics is never an eviction unit (own pool, RFQ TR-1)
             if f == DIR_NS:
-                nd = p
-                for key in os.listdir(nd):
-                    np_ = os.path.join(nd, key)
-                    if os.path.isdir(np_):
-                        if (_dir_meta(key) or {}).get("retain"):
-                            continue
-                        yield np_, True, os.path.getmtime(np_)
+                yield from dirs.evict_units()
             else:
                 if (_bundle_meta(p, f) or {}).get("retain"):
                     continue
@@ -343,7 +294,6 @@ def _fmt_exp(expires):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))
 
 
-@_dirlock
 def _retain_meta_dict(m):
     """Flip a LOADED manifest to indefinite retention in place (Retro
     review 1.45.4: dieser Block stand 5x). Singles/Bundles haben kein
@@ -352,17 +302,6 @@ def _retain_meta_dict(m):
     m.pop("expires", None)
     m.pop("max_age", None)
     return m
-
-
-def _dir_retain(key):
-    """Flip a dir's manifest to indefinite retention. True on success."""
-    m = _dir_meta(key)
-    if not m:
-        return False
-    if not m.get("retain"):
-        _retain_meta_dict(m)
-        _atomic_json(_dir_meta_path(key), m)
-    return True
 
 
 def evict(target):
@@ -439,7 +378,7 @@ def sweep():
                 _remove(p)
         elif os.path.isdir(p):
             if f == DIR_NS:
-                _sweep_dirs(now)
+                dirs.sweep(now)
                 continue
             if f == pics.NS:
                 pics.sweep(ROOT, now)
@@ -453,24 +392,6 @@ def sweep():
             if expires < now:
                 shutil.rmtree(p, ignore_errors=True)
 
-
-def _sweep_dirs(now):
-    """Delete expired dirs (sliding lifetime from manifest, absolute cap)."""
-    nd = os.path.join(ROOT, DIR_NS)
-    if not os.path.isdir(nd):
-        return
-    for key in os.listdir(nd):
-        p = os.path.join(nd, key)
-        if not os.path.isdir(p):
-            continue
-        m = _dir_meta(key)
-        if m and m.get("retain"):
-            continue    # retained dirs never expire
-        expires = (m or {}).get("expires")
-        if expires is None:
-            expires = os.path.getmtime(p) + DIR_DEFAULT_AGE
-        if expires < now:
-            shutil.rmtree(p, ignore_errors=True)
 
 def _safe_name(name):
     """Reduce a user filename to a safe basename for Content-Disposition.
@@ -635,104 +556,8 @@ def _dedupe_names(names):
     return out
 
 
-def _valid_name(name):
-    """Validate a named-dir name per the ruling. Returns (ok, reason).
-    Rules: len >4 and <=32; charset [a-z0-9-]; >=1 letter; not reserved."""
-    if not name:
-        return False, "name required"
-    if not (5 <= len(name) <= 32):
-        return False, "name must be 5-32 chars"
-    if not re.fullmatch(r"[a-z0-9-]+", name):
-        return False, "name must be lowercase letters, digits, hyphens"
-    if not re.search(r"[a-z]", name):
-        return False, "name must contain a letter"
-    if name in RESERVED_NAMES:
-        return False, "reserved name"
-    return True, None
-
-
 def _valid_tag(t):
     return bool(t) and len(t) <= MAX_TAG_LEN and re.fullmatch(r"[a-z0-9-]+", t)
-
-
-# ---------------------------------------------------------------------------
-# Unified dir storage — one concept, addressable by id or name under /d/.
-# A dir is a directory with a <key>.meta manifest + a <key>.history log.
-# ---------------------------------------------------------------------------
-
-def _dir_path(key):
-    """On-disk path for a dir, keyed by id or name. Ids live at ROOT/<id>
-    (shared namespace with bundles/files is avoided because ids are hex and
-    names go under ROOT/d/<name>); names live under ROOT/d/<name> so they
-    never collide with hex ids."""
-    return os.path.join(ROOT, DIR_NS, os.path.basename(key))
-
-
-def _dir_meta_path(key):
-    return os.path.join(_dir_path(key), key + ".meta")
-
-
-def _dir_meta(key):
-    mp = _dir_meta_path(key)
-    if os.path.isfile(mp):
-        try:
-            with open(mp, "r", encoding="utf-8") as _f:
-                return json.load(_f)
-        except Exception:
-            pass
-    return None
-
-
-def _dir_history_path(key):
-    return os.path.join(_dir_path(key), key + ".history")
-
-
-def _dir_history(key):
-    """Read a dir's history log (list of entries, newest last)."""
-    hp = _dir_history_path(key)
-    if os.path.isfile(hp):
-        try:
-            with open(hp, "r", encoding="utf-8") as _f:
-                return json.load(_f)
-        except Exception:
-            pass
-    return []
-
-
-@_dirlock
-def _dir_append_history(key, entry):
-    """Append a history entry, trimmed to HISTORY_LIMIT newest."""
-    h = _dir_history(key)
-    h.append(entry)
-    if len(h) > HISTORY_LIMIT:
-        h = h[-HISTORY_LIMIT:]
-    _atomic_json(_dir_history_path(key), h)
-
-
-def _is_hex_id(s):
-    """True if the key looks like an opaque hex id (16 lowercase hex chars).
-    A dir key is either a hex id (unnamed) or a valid name."""
-    return bool(re.fullmatch(r"[0-9a-f]{16}", s))
-
-
-def _parse_ttl(s):
-    """Parse a &ttl= value into seconds, clamped to [DIR_MIN_AGE, DIR_MAX_AGE].
-    Accepts plain hours (number), 'h' suffix, or 'd' suffix. Returns None if unparseable."""
-    if not s:
-        return None
-    s = s.strip().lower()
-    m = re.fullmatch(r"(\d+)\s*(h|d)?", s)
-    if not m:
-        return None
-    n = int(m.group(1))
-    unit = m.group(2)
-    if unit == "d":
-        secs = n * 24 * 3600
-    else:
-        secs = n * 3600  # bare number or 'h' = hours
-    if secs <= 0:
-        return None
-    return max(DIR_MIN_AGE, min(secs, DIR_MAX_AGE))
 
 
 def _parse_tags(query_tags):
@@ -831,45 +656,6 @@ STORE A URL AS A DOCUMENT (link doc):
    -> Returns JSON: id, url, bundle:true, files:[{{name,url,size,content_type}}...].
    The bundle URL serves index.html inline (or a zip for agents).
    Each file is reachable at {PUBLIC_BASE}/<id>/<filename>.""",
-    },
-    "dirs": {
-        "title": "Dirs",
-        "summary": "One dir concept under /d/<key>: id or name, sliding lifetime, history",
-        "body": """CREATE a DIR (one unified concept, addressable by id or name):
-   POST {PUBLIC_BASE}/?dir=1            -> unnamed dir, opaque hex id
-   POST {PUBLIC_BASE}/?dir=1&name=<name>[&listed=1][&tag=<tag>][&ttl=<h|d>]
-        -> named dir (create-or-get); flags apply only on first creation
-   Naming: 5-32 chars, [a-z0-9-], must contain a letter, not a reserved word.
-   - &listed=1 -> appears in the public listing GET {PUBLIC_BASE}/d
-   - &tag=<t>  -> up to 5 discoverability tags (lowercase [a-z0-9-])
-   - &ttl=<h|d> -> SLIDING lifetime, clamped to [4h, 14d] (MAX 14 days);
-     default 7 days.
-WRITE PROTECTION (optional): create with &write=1 — the response
-contains write_token exactly once. Afterwards writes (POST /d/<key>,
-PUT/PATCH/DELETE on its files, DELETE the dir, POST /?share=<name>)
-require the token via the X-Throway-Write header or ?write=<token>
-(401 without it); reads, listing, history and zip stay open.
-
-     Each add/edit/append/delete slides expires_at forward by ttl (capped at
-     30 days total from creation). An active dir keeps living; an idle one
-     dies ttl after its last activity.
-   Reach a dir at {PUBLIC_BASE}/d/<key> (key = id or name):
-   POST {PUBLIC_BASE}/d/<key>          -> add files (multipart)
-   GET  {PUBLIC_BASE}/d/<key>          -> JSON (agents) / HTML (browsers)
-   GET  {PUBLIC_BASE}/d/<key>/<file>   -> fetch one file (.md renders as
-                                          HTML for browsers, raw for agents)
-   GET  {PUBLIC_BASE}/d/<key>?zip=1    -> whole dir as zip
-   PUT  {PUBLIC_BASE}/d/<key>/<file>   -> replace text (bumps updated)
-   PATCH {PUBLIC_BASE}/d/<key>/<file>  -> append text (bumps updated)
-   DELETE {PUBLIC_BASE}/d/<key>/<file> -> remove one file
-   DELETE {PUBLIC_BASE}/d/<key>        -> delete the whole dir
-   GET  {PUBLIC_BASE}/d/<key>/history  -> edit history (JSON for agents,
-        HTML for browsers): last {HISTORY_LIMIT} entries, newest first, with
-        date, file, action (add|put|append|delete) and byte deltas.
-   updated_at = last add/edit/delete (slides expires_at forward).
-   LIST dirs: GET {PUBLIC_BASE}/d  -> only dirs created with listed=1.
-   Filters: ?q=<substring over name or tag>, ?created_after/before=<ts>,
-   ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.""",
     },
     "markdown": {
         "title": "Markdown (.md)",
@@ -996,6 +782,7 @@ HELP.update(pics.HELP_TOPICS)
 HELP_ORDER.append("pics")
 HELP.update(retain.HELP_TOPICS)
 HELP_ORDER.append("retention")
+HELP.update(dirs.HELP_TOPICS)
 
 
 def _render_help_body(key):
@@ -1134,9 +921,169 @@ def _agent_hint(*lines):
             f"<pre>{body}</pre></details>")
 
 
+# ---------------------------------------------------------------------------
+# The request kit — the explicit seam between the Handler and the throway/
+# modules (born with dirs, 1.49.0; pics migrates later). A module receives
+# exactly this object, never the Handler itself: sending, request context,
+# shared helpers and config live here, and nothing else crosses the seam.
+# ---------------------------------------------------------------------------
+
+class _RequestKit:
+    def __init__(self, h):
+        self._h = h
+
+    # --- request context ---
+    @property
+    def query(self):
+        """Raw query string of the request ('' when none)."""
+        return self._h.path.split("?", 1)[1] if "?" in self._h.path else ""
+
+    @property
+    def content_type(self):
+        return self._h.headers.get("Content-Type", "application/octet-stream")
+
+    def write_token_given(self):
+        """The dir write token this request carries (X-Throway-Write header
+        or ?write=<token>), '' when none."""
+        given = (self._h.headers.get("X-Throway-Write") or "").strip()
+        if not given:
+            q = self.query
+            for kv in q.split("&"):
+                k, _, v = kv.partition("=")
+                if k == "write" and v:
+                    return unquote(v).strip()
+            return ""
+        return given
+
+    def retain_token(self):
+        """The retain token this request carries ('' when none)."""
+        return retain.token_from(self._h)
+
+    def retain_valid(self):
+        return retain.valid(self.retain_token())
+
+    def retain_write_denied(self, meta):
+        """None when the write may proceed, else (code, error-dict)."""
+        return retain.write_denied(self._h, meta)
+
+    def is_agent(self):
+        return self._h._is_agent()
+
+    def wants_agent_repr(self):
+        return self._h._wants_agent_repr()
+
+    def read_body(self):
+        return self._h._read_body()
+
+    # --- response plumbing ---
+    def send(self, code, body=b"", ctype="text/plain", extra=None):
+        return self._h._send(code, body, ctype, extra)
+
+    def err(self, code, msg, retry_after=None):
+        return self._h._err(code, msg, retry_after=retry_after)
+
+    def serve_file(self, fp, ctype, orig, force_dl, fid, cache=None):
+        return self._h._serve_file(fp, ctype, orig, force_dl, fid, cache=cache)
+
+    def serve_thumb(self, fpath, ctype, px=None):
+        return self._h._serve_thumb(fpath, ctype, px=px)
+
+    def serve_zip(self, dirpath, fid):
+        return self._h._serve_bundle_zip(dirpath, fid)
+
+    def serve_markdown(self, fp, ctype, orig, fid):
+        """True when the request was handled (markdown rendered)."""
+        return self._h._maybe_serve_markdown(fp, ctype, orig, fid)
+
+    # --- shared helpers + config (cross-cutting, owned by store.py) ---
+    def atomic_json(self, path, obj):
+        return _atomic_json(path, obj)
+
+    def mark_retained(self, m):
+        """Flip a loaded manifest to indefinite retention, in place."""
+        return _retain_meta_dict(m)
+
+    def evict_pool(self):
+        """Evict oldest units until the throwaway pool is within budget."""
+        return evict(THROW_POOL_SIZE)
+
+    def bump_stats(self, files, bytes_):
+        s = _load_stats()
+        s["files"] += files
+        s["bytes"] += bytes_
+        _save_stats(s)
+        _bump_since_start(files, bytes_)
+
+    def safe_name(self, name):
+        return _safe_name(name)
+
+    def dedupe_names(self, names):
+        return _dedupe_names(names)
+
+    def parse_tags(self, tags):
+        return _parse_tags(tags)
+
+    def parse_multipart(self, payload, ctype):
+        return _parse_multipart(payload, ctype)
+
+    def meta_expired(self, m, now):
+        return _meta_expired(m, now)
+
+    def fmt_exp(self, expires):
+        return _fmt_exp(expires)
+
+    def fmt_size(self, n):
+        return _fmt_size(n)
+
+    def persistence_block(self, *a, **kw):
+        return _persistence_block(*a, **kw)
+
+    def is_editable(self, ctype):
+        return _is_editable(ctype)
+
+    def agent_hint(self, *lines):
+        return _agent_hint(*lines)
+
+    def html_escape(self, s):
+        return _html_escape(s)
+
+    @property
+    def base_css(self):
+        return _BASE_CSS
+
+    @property
+    def meta_mobile(self):
+        return _META_MOBILE
+
+    @property
+    def public_base(self):
+        return PUBLIC_BASE
+
+    @property
+    def prefix(self):
+        return PREFIX
+
+    @property
+    def max_file(self):
+        return MAX_FILE
+
+    @property
+    def pool_size(self):
+        return THROW_POOL_SIZE
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
+
+    def _kit(self):
+        """The request kit for throway/ modules (dirs) — the one seam
+        they get; see _RequestKit. Reads live handler state, so caching
+        per handler is safe across keep-alive requests."""
+        k = getattr(self, "_kit_obj", None)
+        if k is None:
+            k = self._kit_obj = _RequestKit(self)
+        return k
 
     def _err(self, code, msg, retry_after=None):
         """Structured error (1.41.2 / P1): code + message, plus a
@@ -1269,45 +1216,6 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, mdrender.render(text, title=fname, raw_url=raw_url),
                    "text/html; charset=utf-8")
         return True
-
-    def _dir_write_denied(self, key):
-        """Issue throway-dir-write-token: None when writing is allowed, else
-        an (http_code, json_error) tuple. Dirs without a write_token stay
-        open as ever (backward compatible). Protected dirs require the
-        token via the X-Throway-Write header or ?write=<token>, compared
-        constant-time."""
-        m = _dir_meta(key)
-        if not m:
-            return None
-        if m.get("write_token"):
-            given = (self.headers.get("X-Throway-Write") or "").strip()
-            if not given:
-                q = retain.query_string(self)
-                for kv in q.split("&"):
-                    k, _, v = kv.partition("=")
-                    if k == "write" and v:
-                        given = unquote(v).strip()
-                        break
-            if not given:
-                return (401, {"error": "write token required: send the X-Throway-Write "
-                                       "header or ?write=<token>"})
-            if not hmac.compare_digest(given.encode(), m["write_token"].encode()):
-                return (401, {"error": "invalid write token"})
-        if m.get("open"):
-            return None      # show-dir: everyone with the URL may write
-        return retain.write_denied(self, m)
-
-    def _dir_write_guard(self, key):
-        """Send the 401 when _dir_write_denied fires; True = request handled.
-        A token-authenticated write also retains the dir (write implies
-        retention)."""
-        denied = self._dir_write_denied(key)
-        if denied:
-            self._send(denied[0], json.dumps(denied[1]), "application/json")
-            return True
-        if retain.valid(retain.token_from(self)):
-            _dir_retain(key)
-        return False
 
     def _serve_file(self, fp, ctype, orig, force_dl, fid, cache=None):
         """Serve a single stored file (inline or attachment). Agents also get
@@ -1514,7 +1422,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._help()
         # --- dirs: /d (listing) and /d/<key>[/<file>|/history] ---
         if path == "/" + DIR_NS:
-            return self._dir_listing_browse()
+            return dirs.listing_browse(self._kit())
         # --- tagged file browser: /browse?tag=<t>&q=&sort=&order= ---
         if path == "/browse":
             return self._browse(self.path.split("?", 1)[1] if "?" in self.path else "")
@@ -1525,7 +1433,8 @@ class Handler(BaseHTTPRequestHandler):
                             self.path.split("?", 1)[1] if "?" in self.path else "")
         parts = path.lstrip("/").split("/")
         if parts and parts[0] == DIR_NS and len(parts) >= 2 and parts[1]:
-            return self._dir_get(parts[1], parts[1:], query=self.path.split("?", 1)[1] if "?" in self.path else "")
+            return dirs.get(self._kit(), parts[1], parts[1:],
+                            self.path.split("?", 1)[1] if "?" in self.path else "")
         parts = path.lstrip("/").split("/")
         fid = parts[0]
         if not fid or fid.endswith(".meta") or fid.endswith(".thumb") or fid.endswith(".thumbtmp"):
@@ -1568,10 +1477,10 @@ class Handler(BaseHTTPRequestHandler):
                     # agents get JSON listing; ?zip=1 / ?download=1 get zip
                     if "zip=1" in query or force_dl:
                         return self._serve_bundle_zip(dirpath, fid)
-                    return self._dir_response(fid, dirpath, m)
+                    return dirs.response(self._kit(), fid, dirpath, m)
                 # BUGFIX: was _dir_listing(dirpath, fid) — wrong arity, crashed
                 # for browsers with a 500 on the legacy /<dir-id> path
-                return self._dir_listing(fid, dirpath, m)
+                return dirs.listing(self._kit(), fid, dirpath, m)
             # bundle root
             if force_dl or self._is_agent():
                 return self._serve_bundle_zip(dirpath, fid)
@@ -1693,14 +1602,14 @@ class Handler(BaseHTTPRequestHandler):
         # indefinite AND publicly writable. show=1 on non-dirs is a 400.
         if retained and "show=1" in query and not want_dir:
             if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
-                return self._show_flip_dir(parts[1])
+                return dirs.show_flip(self._kit(), parts[1])
             return self._err(400, "show=1 applies to dirs only: POST /d/<key>?show=1")
 
         # POST /<id>?retain=1 (token) -> flip an existing file/bundle to
         # indefinite retention; POST /d/<key>?retain=1 flips a whole dir.
         if retained and "retain=1" in query:
             if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
-                return self._retain_flip_dir(parts[1])
+                return dirs.retain_flip(self._kit(), parts[1])
             if len(parts) == 1 and parts[0]:
                 if parts[0] in (DIR_NS, pics.NS):
                     # reservierte Namespaces: kein Flip — und kein
@@ -1718,7 +1627,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # POST /d/<key> -> add files to an existing dir (multipart)
         if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
-            r = self._dir_add(parts[1])
+            r = dirs.post_add(self._kit(), parts[1])
             if r is not None:
                 return r
             # Retro hard-validate: None (Dir fehlt/invalid) darf NICHT in
@@ -1752,7 +1661,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._err(413, "too large (max 5MB)")
                     data = self.rfile.read(length)
                     initial = [(name_hint or "file", data, "application/octet-stream")]
-            return self._dir_create(key, qp, initial, retained=retained)
+            return dirs.create(self._kit(), key, qp, initial, retained=retained)
 
         ctype = self.headers.get("Content-Type", "application/octet-stream")
         # multipart/form-data upload (browser-friendly / -F)
@@ -1768,9 +1677,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(named) > 1:
                 return self._store_bundle(named, retained=retained)
             n, d, c = named[0]
-            ttl = _parse_ttl((qp.get("ttl") or [""])[0])
+            ttl = dirs.parse_ttl((qp.get("ttl") or [""])[0])
             if share:
-                return self._share_store(d, _safe_name(n)[:128] or None, c, share, ttl,
+                return dirs.share_store(self._kit(), d, _safe_name(n)[:128] or None, c, share, ttl,
                                          retained=retained)
             return self._store(d, _safe_name(n)[:128] or None, c, tags, ttl_seconds=ttl, once=once,
                                retained=retained)
@@ -1788,9 +1697,9 @@ class Handler(BaseHTTPRequestHandler):
         else:
             if ctype.startswith("multipart") or "boundary" in ctype:
                 ctype = "application/octet-stream"
-        ttl = _parse_ttl((qp.get("ttl") or [""])[0])
+        ttl = dirs.parse_ttl((qp.get("ttl") or [""])[0])
         if share:
-            return self._share_store(data, name_hint or None, ctype, share, ttl,
+            return dirs.share_store(self._kit(), data, name_hint or None, ctype, share, ttl,
                                       retained=retained)
         return self._store(data, name_hint or None, ctype, tags, ttl_seconds=ttl, once=once,
                            retained=retained)
@@ -1823,29 +1732,6 @@ class Handler(BaseHTTPRequestHandler):
             "id": fid, "url": f"{PUBLIC_BASE}/{fid}",
             "retention": "indefinite", "expires_at": None,
             "persistence": _persistence_block("single", None)}), "application/json")
-
-    @_dirlock
-    def _show_flip_dir(self, key):
-        """POST /d/<key>?show=1 (token) — flip a dir to a show-dir:
-        retained (indefinite) AND publicly writable. Idempotent."""
-        m = _dir_meta(key)
-        if not m:
-            return self._err(404, "not found")
-        if not (m.get("retain") and m.get("open")):
-            _retain_meta_dict(m)
-            m["open"] = True
-            _atomic_json(_dir_meta_path(key), m)
-        return self._dir_response(key, _dir_path(key), _dir_meta(key))
-
-    @_dirlock
-    def _retain_flip_dir(self, key):
-        """POST /d/<key>?retain=1 (token) — flip a dir to indefinite."""
-        if not _dir_retain(key):
-            return self._err(404, "not found")
-        return self._send(200, json.dumps({
-            "id": key, "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}", "dir": True,
-            "retention": "indefinite", "expires_at": None,
-            "persistence": _persistence_block("dir", None)}), "application/json")
 
     def _retain_meta(self, fid):
         """Flip a single file's meta to indefinite retention (token write)."""
@@ -2059,56 +1945,6 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(200, body, "application/json", {"X-Expires": str(lifetime)})
 
-    @_dirlock
-    def _share_store(self, data, name_hint, ctype, share, ttl_seconds=None,
-                     retained=False):
-        """POST /?share=<name> — store a single file under a chosen, memorable
-        name (create-or-get, like a named dir) at /d/<name>. Reuses the dir
-        machinery: sliding lifetime (default 7d, ttl= clamped [4h,14d])."""
-        ok, reason = _valid_name(share)
-        if not ok:
-            return self._send(400, json.dumps({"error": f"invalid share name: {reason}"}), "application/json")
-        if len(data) > MAX_FILE:
-            return self._err(413, "too large (max 5MB)")
-        key = share
-        dirpath = _dir_path(key)
-        now = time.time()
-        meta = _dir_meta(key)
-        if _meta_expired(meta, now):
-            shutil.rmtree(dirpath, ignore_errors=True)
-            meta = None
-        if meta is not None:
-            if self._dir_write_guard(key):
-                return
-            # der Guard kann die Dir soeben retained gemacht haben
-            # (write implies retention) — Meta neu laden, sonst schreibt
-            # _dir_write_files das stale Meta zurueck (Retro hard-validate)
-            meta = _dir_meta(key)
-        if meta is None:
-            os.makedirs(dirpath, exist_ok=True)
-            ttl = ttl_seconds or DIR_DEFAULT_AGE
-            meta = {
-                "type": "dir",
-                "created": now,
-                "updated": now,
-                "listed": False,
-                "tags": [],
-                "files": {},
-                "name": key,
-            }
-            if retained:
-                meta["retain"] = True          # token-gated: never expires
-            else:
-                meta["expires"] = now + ttl
-                meta["max_age"] = ttl
-            _atomic_json(_dir_meta_path(key), meta)
-        fname = name_hint or "file"
-        r = self._dir_write_files(key, dirpath, meta, [(fname, data, ctype)], create=True)
-        if r is None:
-            return self._send(413, json.dumps({"error": "store failed (too large?)"}), "application/json")
-        evict(THROW_POOL_SIZE)
-        return self._dir_response(key, dirpath, meta)
-
     def _store_bundle(self, files, retained=False):
         """Store multiple files as a bundle directory; return JSON response."""
         clean = []
@@ -2176,597 +2012,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, body, "application/json", {"X-Expires": str(TTL_HOURS * 3600)})
 
     # ------------------------------------------------------------------
-    # Unified dir module — one concept, addressable by id or name under /d/.
-    # A dir is a directory with a <key>.meta manifest + <key>.history log.
-    # ------------------------------------------------------------------
-
-    @_dirlock
-    def _dir_create(self, key, qp, initial_files=None, retained=False):
-        """Create (or get, if named & exists) a dir. key is a hex id (unnamed)
-        or a name. initial_files is a list of (name, data, ctype) or None."""
-        now = time.time()
-        dirpath = _dir_path(key)
-        # named create-or-get
-        if not _is_hex_id(key):
-            existing = _dir_meta(key)
-            if existing is not None:
-                if _meta_expired(existing, now):
-                    shutil.rmtree(dirpath, ignore_errors=True)
-                    existing = None
-                else:
-                    if initial_files:
-                        # P5 (sota): create-or-get mit Multipart-Parts fuegt
-                        # die Parts hinzu (gleiches Verhalten wie POST
-                        # /d/<key>) statt sie still zu verwerfen — ein
-                        # Agent-Retry-Loop konvergiert so ohne Datenverlust.
-                        if self._dir_write_guard(key):
-                            return True   # 401 bereits gesendet
-                        meta = _dir_meta(key) or existing
-                        dp = _dir_path(key)
-                        # pre-check: einzelne Datei zu gross -> praezise 413
-                        # (CR 1.48.2: _dir_write_files-None vermengte das
-                        # mit "pool full" — _dir_add unterscheidet korrekt)
-                        for n, d, _c in initial_files:
-                            if len(d) > MAX_FILE:
-                                return self._err(413, f"too large (max 5MB): {_safe_name(n)}")
-                        files_map, _, _ = self._dir_write_files(key, dp, meta, initial_files)
-                        if files_map is None:
-                            return self._err(413, "dir too large (pool max 100MB)")
-                        evict(THROW_POOL_SIZE)
-                        return self._dir_response(key, dp, meta)
-                    return self._dir_response(key, dirpath, existing)
-        os.makedirs(dirpath, exist_ok=True)
-        ttl = _parse_ttl((qp.get("ttl") or [""])[0]) or DIR_DEFAULT_AGE
-        qs = retain.query_string(self)
-        listed = "listed=1" in qs
-        show = "show=1" in qs
-        tags = _parse_tags(qp.get("tag", []))
-        write_flag = (qp.get("write") or [""])[0].strip()
-        write_token = None
-        if write_flag:
-            if write_flag == "1":
-                write_token = secrets.token_hex(24)
-            elif re.fullmatch(r"[A-Za-z0-9._-]{8,64}", write_flag):
-                write_token = write_flag
-            else:
-                return self._send(400, json.dumps(
-                    {"error": "invalid write token: use write=1 (server generates) "
-                              "or 8-64 chars [A-Za-z0-9._-]"}), "application/json")
-        meta = {
-            "type": "dir",
-            "created": now,
-            "updated": now,
-            "listed": listed,
-            "tags": tags,
-            "files": {},
-        }
-        if retained and show:
-            meta["retain"] = True          # show-dir: indefinite ...
-            meta["open"] = True            # ... and publicly writable
-        elif retained:
-            meta["retain"] = True          # token-gated: never expires
-        else:
-            meta["expires"] = now + ttl
-            meta["max_age"] = ttl
-        if _is_hex_id(key):
-            meta["id"] = key
-        else:
-            meta["name"] = key
-        if write_token:
-            meta["write_token"] = write_token
-        _atomic_json(_dir_meta_path(key), meta)
-        # write initial files (+ history: P5 verlangt 3 adds bei 3 Parts)
-        if initial_files:
-            self._dir_write_files(key, dirpath, meta, initial_files, create=True)
-        evict(THROW_POOL_SIZE)
-        return self._dir_response(key, dirpath, meta, write_token=write_token)
-
-    @_dirlock
-    def _dir_write_files(self, key, dirpath, meta, files, create=False):
-        """Write new files into a dir, update meta + stats + history.
-        Returns (files_map, added_bytes, added_count)."""
-        clean = []
-        total = 0
-        for n, d, c in files:
-            safe = _safe_name(n)
-            if not safe:
-                continue
-            if len(d) > MAX_FILE:
-                return None
-            total += len(d)
-            if total > THROW_POOL_SIZE:
-                return None
-            clean.append((safe, d, c))
-        if not clean:
-            return None
-        files_map = meta.get("files", {})
-        existing = set(os.listdir(dirpath))
-        meta_name = key + ".meta"
-        existing.discard(meta_name)
-        existing.discard(key + ".history")
-        added = 0
-        added_bytes = 0
-        written = []
-        for n, d, c in clean:
-            safe = _safe_name(n)
-            if not safe:
-                continue
-            name = _dedupe_names([safe] + [x for x in existing if x != safe])[0]
-            with open(os.path.join(dirpath, name), "wb") as f:
-                f.write(d)
-            files_map[name] = mimetypes.guess_type(name)[0] or c or "application/octet-stream"
-            existing.add(name)
-            written.append(name)
-            added += 1
-            added_bytes += len(d)
-        meta["files"] = files_map
-        _dir_touch(meta, time.time())
-        _atomic_json(_dir_meta_path(key), meta)
-        # History am ERFOLGsort (CR 1.48.2): NUR die neu geschriebenen
-        # Namen (deduped) — files_map enthaelt auch die alten Dateien
-        for name in written:
-            _dir_append_history(key, {"ts": time.time(), "action": "add", "file": name})
-        s = _load_stats()
-        s["files"] += added
-        s["bytes"] += added_bytes
-        _save_stats(s)
-        _bump_since_start(added, added_bytes)
-        return (files_map, added_bytes, added)
-
-    @_dirlock
-    def _dir_add(self, key):
-        """POST /d/<key> — add multipart files to an existing dir."""
-        dirpath = _dir_path(key)
-        if not os.path.isdir(dirpath):
-            return None
-        # Body VOR dem Write-Guard lesen + Guard-Return True (nicht None):
-        # sonst (a) sendet do_POST nach dem Guard-401 noch ein 404
-        # hinterher (Retro review 1.45.4: verifizierte Doppel-Response)
-        # und (b) vergiftet der ungelesene Body den Keep-Alive-Socket —
-        # die Bytes gelten als naechste Anfrage (phantom-400).
-        ctype = self.headers.get("Content-Type", "application/octet-stream")
-        if not ctype.startswith("multipart/form-data"):
-            return self._send(400, json.dumps({"error": "dir add requires multipart"}), "application/json")
-        payload = self._read_body()
-        if payload is None:
-            return self._err(411, "length required")
-        if self._dir_write_guard(key):
-            return True      # 401 bereits gesendet — NICHT None zurueckgeben
-        m = _dir_meta(key)
-        if not m or m.get("type") != "dir":
-            return None
-        now = time.time()
-        if _meta_expired(m, now):
-            shutil.rmtree(dirpath, ignore_errors=True)
-            return self._send(404, json.dumps({"error": "expired"}), "application/json")
-        files = _parse_multipart(payload, ctype)
-        named = [(n, d, c) for (n, d, c) in files if n]
-        if not named:
-            return self._send(400, json.dumps({"error": "no file parts"}), "application/json")
-        # size checks
-        cur = _dir_size(dirpath)
-        for n, d, c in named:
-            safe = _safe_name(n)
-            if not safe:
-                continue
-            if len(d) > MAX_FILE:
-                return self._send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
-            cur += len(d)
-            if cur > THROW_POOL_SIZE:
-                return self._send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
-        files_map, _, _ = self._dir_write_files(key, dirpath, m, named)
-        if files_map is None:
-            return self._send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
-        evict(THROW_POOL_SIZE)
-        return self._dir_response(key, dirpath, m)
-
-    def _dir_get(self, key, parts, query):
-        """GET /d/<key>[/<file>] — listing, a file, zip, or history."""
-        dirpath = _dir_path(key)
-        m = _dir_meta(key)
-        now = time.time()
-        if not m or m.get("type") != "dir":
-            return self._err(404, "not found")
-        if _meta_expired(m, now):
-            shutil.rmtree(dirpath, ignore_errors=True)
-            return self._send(404, "expired\n")
-        force_dl = "download=1" in query
-        # /d/<key>/history
-        if len(parts) >= 2 and parts[1] == "history" and len(parts) == 2:
-            return self._dir_history_view(key, dirpath, m)
-        # /d/<key>/<file>
-        if len(parts) >= 2 and parts[1]:
-            fname = os.path.basename(unquote(parts[1]))
-            if not fname or fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp"):
-                return self._err(404, "not found")
-            fpath = os.path.join(dirpath, fname)
-            if not os.path.isfile(fpath):
-                return self._err(404, "not found")
-            ctype = m.get("files", {}).get(fname) or mimetypes.guess_type(fname)[0] or "application/octet-stream"
-            if "thumb=1" in query:
-                return self._serve_thumb(fpath, ctype)
-            if self._maybe_serve_markdown(fpath, ctype, fname, fname):
-                return
-            return self._serve_file(fpath, ctype, fname, force_dl, f"{DIR_NS}/{key}/{fname}")
-        # root: zip on ?zip=1 / ?download=1
-        if "zip=1" in query or force_dl:
-            return self._serve_bundle_zip(dirpath, key)
-        # JSON for agents, HTML for browsers
-        if self._wants_agent_repr():
-            return self._dir_response(key, dirpath, m)
-        # Issue throway-dir-index-landing: browsers get index.html inline
-        # when present (parity with bundles) — ?listing=1 forces the listing.
-        index_f = os.path.join(dirpath, "index.html")
-        if os.path.isfile(index_f) and "listing=1" not in query:
-            return self._serve_dir_index(index_f, dirpath, key)
-        return self._dir_listing(key, dirpath, m)
-
-    def _serve_dir_index(self, index_path, dirpath, key):
-        """Serve a dir's index.html to a browser like a bundle root: inject a
-        <base> tag so relative links resolve against /d/<key>/, plus a small
-        footer link back to the file listing."""
-        with open(index_path, "rb") as f:
-            html = f.read()
-        base = f'<base href="{PREFIX}/{DIR_NS}/{key}/">'
-        head = re.search(rb"<head[^>]*>", html, re.I)
-        if head:
-            html = html[:head.end()] + base.encode() + html[head.end():]
-        else:
-            html = b"<head>" + base.encode() + b"</head>" + html
-        footer = ('<div style="margin:2rem 0 0;padding:.6rem .9rem;border-top:1px solid #e5e7eb;'
-                  'font:.8rem system-ui,sans-serif;color:#6b7280">'
-                  '<a href="?listing=1" style="color:#2563eb">files &amp; history</a>'
-                  ' · throway</div>')
-        if b"</body>" in html:
-            html = html.replace(b"</body>", footer.encode() + b"</body>", 1)
-        else:
-            html += footer.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(html)))
-        self.send_header("Content-Disposition", "inline")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(html)
-
-    def _dir_response(self, key, dirpath, meta, write_token=None):
-        """JSON response for a dir (agents). write_token appears only in
-        the creation response — never re-revealed on create-or-get."""
-        files = []
-        total = 0
-        for f in sorted(os.listdir(dirpath)):
-            if f.endswith(".meta") or f.endswith(".history") or f.endswith(".thumb") or f.endswith(".thumbtmp"):
-                continue
-            fp = os.path.join(dirpath, f)
-            if not os.path.isfile(fp):
-                continue
-            sz = os.path.getsize(fp)
-            total += sz
-            ctype = meta.get("files", {}).get(f, "application/octet-stream")
-            files.append({"name": f, "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}/{quote(f)}", "size": sz,
-                          "content_type": ctype, "editable": _is_editable(ctype)})
-        expires = meta.get("expires")    # None for retained dirs
-        resp = {
-            "id": key,
-            "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}",
-            "dir": True,
-            "editable": False,
-            "persistence": _persistence_block("dir", expires,
-                                              max_age=meta.get("max_age"),
-                                              extendable_by="activity"),
-            "files": files,
-            "size": total,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("created", 0))),
-            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta.get("updated", meta.get("created", 0)))),
-            "expires_at": _fmt_exp(expires),
-            "max_age": meta.get("max_age"),
-        }
-        if meta.get("name"):
-            resp["name"] = meta["name"]
-        if meta.get("listed"):
-            resp["listed"] = True
-        if meta.get("open"):
-            resp["open"] = True
-        if meta.get("write_token"):
-            resp["write_protected"] = True
-        if write_token:
-            resp["write_token"] = write_token
-            resp["write_note"] = ("store this token now — writes need it as the "
-                                  "X-Throway-Write header or ?write=")
-        if meta.get("tags"):
-            resp["tags"] = meta["tags"]
-        hdrs = {"X-Expires": str(expires)} if expires is not None else None
-        return self._send(200, json.dumps(resp), "application/json", hdrs)
-
-    def _dir_listing(self, key, dirpath, meta):
-        """HTML page for a dir viewed in a browser — mobile-friendly, with
-        lazy image thumbnails (tiny WebP via ?thumb=1, loaded on scroll)."""
-        files = meta.get("files", {})
-        rows = []
-        for f in sorted(os.listdir(dirpath)):
-            if (f.endswith(".meta") or f.endswith(".history")
-                    or f.endswith(".thumb") or f.endswith(".thumbtmp")):
-                continue
-            fp = os.path.join(dirpath, f)
-            if os.path.isfile(fp):
-                ct = files.get(f) or mimetypes.guess_type(f)[0] or "application/octet-stream"
-                rows.append((f, os.path.getsize(fp), ct))
-        lis = "\n".join(
-            "<li>"
-            + (f'<img class=thumb src="{_html_escape(quote(f))}?thumb=1" alt="" loading=lazy decoding=async width=44 height=44>'
-               if ct.startswith("image/") else "")
-            + f'<a href="{_html_escape(quote(f))}">{_html_escape(f)}</a>'
-            + f'<span class=sz>{_fmt_size(s)}</span></li>'
-            for f, s, ct in rows)
-        tags = "".join(f'<span class=tag>{_html_escape(t)}</span>' for t in meta.get("tags", []))
-        title = meta.get("name") or key
-        # agent hint: collapsed for humans, fully in source/a11y-tree for agents
-        # that land on the HTML page with a browser UA. Absolute URLs so every
-        # line is copy-paste runnable from anywhere.
-        durl = f"{PUBLIC_BASE}/{DIR_NS}/{key}"
-        hint = _agent_hint(
-            f"curl -A curl {durl}                          # JSON listing: files[] with url, size, editable",
-            f"curl {durl}/<file>                       # fetch a single file",
-            f"curl -OJ '{durl}?zip=1'                      # whole dir as one zip",
-            f"curl -X PUT --data-binary @local {durl}/<file>  # replace a text file (PATCH appends)",
-            f"curl -A curl {durl}/history                  # edit history (JSON)",
-        )
-        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
-             f"{_META_MOBILE}"
-             f"<base href='{PREFIX}/{DIR_NS}/{key}/'>"
-             f"<title>throway dir {title}</title>"
-             f"<style>{_BASE_CSS}"
-             ".tag{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted);margin-right:.3rem}"
-             ".btnrow{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1rem}"
-             "@media(max-width:560px){.btnrow{flex-direction:column}.btnrow a.btn{text-align:center}}"
-             "</style></head><body><main>"
-             f"<h1>Dir {title}</h1><div>{tags}</div><ul>{lis}</ul>"
-             f"{hint}"
-             "<div class=btnrow>"
-             f"<a class=btn href='?zip=1'>download as zip</a>"
-             f"<a class=btn href='history'>history</a>"
-             "</div>"
-             f"<a class=back href='{PREFIX}/'>← throway</a>"
-             "</main></body></html>")
-        self._send(200, h, "text/html")
-
-    @_dirlock
-    def _dir_edit(self, key, parts, append):
-        if self._dir_write_guard(key):
-            return
-        """PUT/PATCH /d/<key>/<file> — replace or append text in a dir."""
-        if len(parts) < 2 or not parts[1]:
-            return self._send(400, json.dumps({"error": "file required"}), "application/json")
-        fname = os.path.basename(unquote(parts[1]))
-        dirpath = _dir_path(key)
-        m = _dir_meta(key)
-        now = time.time()
-        if not m or m.get("type") != "dir":
-            return self._err(404, "not found")
-        if _meta_expired(m, now):
-            shutil.rmtree(dirpath, ignore_errors=True)
-            return self._send(404, "expired\n")
-        fpath = os.path.join(dirpath, fname)
-        if fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp") or not os.path.isfile(fpath):
-            return self._err(404, "not found")
-        ctype = m.get("files", {}).get(fname) or ""
-        if not _is_editable(ctype):
-            return self._send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
-        data = self._read_body()
-        if data is None:
-            return self._err(411, "length required")
-        old_size = os.path.getsize(fpath)
-        if append:
-            if old_size + len(data) > MAX_FILE:
-                return self._err(413, "too large (max 5MB)")
-            with open(fpath, "ab") as f:
-                f.write(data)
-        else:
-            if len(data) > MAX_FILE:
-                return self._err(413, "too large (max 5MB)")
-            with open(fpath, "wb") as f:
-                f.write(data)
-        _dir_touch(m, now)
-        _atomic_json(_dir_meta_path(key), m)
-        # history entry: action, file, delta
-        entry = {"ts": now, "file": fname, "action": "append" if append else "put"}
-        if append:
-            entry["added_bytes"] = len(data)
-        else:
-            entry["old_bytes"] = old_size
-            entry["new_bytes"] = len(data)
-        _dir_append_history(key, entry)
-        evict(THROW_POOL_SIZE)
-        return self._dir_response(key, dirpath, m)
-
-    @_dirlock
-    def _dir_delete(self, parts):
-        if self._dir_write_guard(parts[0] if parts else ""):
-            return
-        """DELETE /d/<key> or /d/<key>/<file>. Whole-dir delete on a
-        retained dir (incl. show-dirs) needs the retain token — file
-        deletes stay open."""
-        key = parts[0]
-        dm = _dir_meta(key)
-        if dm and dm.get("retain") and not retain.valid(retain.token_from(self)) \
-                and not (len(parts) >= 2 and parts[1]):
-            return self._send(401, json.dumps(
-                {"error": "whole-dir delete on a retained dir needs the retain "
-                          "token (file-level deletes stay open)"}), "application/json")
-        dirpath = _dir_path(key)
-        m = _dir_meta(key)
-        if not m or m.get("type") != "dir":
-            return self._err(404, "not found")
-        now = time.time()
-        if len(parts) >= 2 and parts[1]:
-            fname = os.path.basename(unquote(parts[1]))
-            fpath = os.path.join(dirpath, fname)
-            if fname.endswith(".meta") or fname.endswith(".history") or fname.endswith(".thumb") or fname.endswith(".thumbtmp") or not os.path.isfile(fpath):
-                return self._err(404, "not found")
-            os.remove(fpath)
-            m["files"].pop(fname, None)
-            _dir_touch(m, now)
-            _atomic_json(_dir_meta_path(key), m)
-            _dir_append_history(key, {"ts": now, "action": "delete", "file": fname})
-            return self._send(200, "deleted\n")
-        shutil.rmtree(dirpath, ignore_errors=True)
-        return self._send(200, "deleted\n")
-
-    def _dir_history_view(self, key, dirpath, meta):
-        """GET /d/<key>/history — JSON for agents, HTML for browsers."""
-        h = _dir_history(key)
-        # newest first
-        h = list(reversed(h))
-        if self._wants_agent_repr():
-            return self._send(200, json.dumps({"dir": key, "history": h, "total": len(h)}), "application/json")
-        rows = "".join(
-            f'<li><span class=ts>{time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(e.get("ts", 0)))}</span> '
-            f'<span class=act>{_html_escape(e.get("action", ""))}</span> '
-            f'<span class=file>{_html_escape(e.get("file", ""))}</span>'
-            + self._history_detail_html(e)
-            + '</li>'
-            for e in h)
-        title = meta.get("name") or key
-        hurl = f"{PUBLIC_BASE}/{DIR_NS}/{key}/history"
-        ahint = _agent_hint(
-            f"curl -A curl {hurl}        # this history as JSON",
-        )
-        htm = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
-               f"{_META_MOBILE}"
-               f"<title>throway dir history — {title}</title>"
-               f"<style>{_BASE_CSS}"
-               "li{flex-wrap:wrap}"
-               "li .ts{color:var(--muted);font-size:.8rem;margin-right:.6rem}"
-               "li .act{font-weight:600;color:var(--accent);margin-right:.6rem}"
-               "li .file{font-family:ui-monospace,monospace;overflow-wrap:anywhere}"
-               "li .det{color:var(--muted);font-size:.8rem;width:100%}"
-               "</style></head><body><main>"
-               f"<h1>History — {title}</h1>"
-               f"{'<p style=color:var(--muted);font-size:.85rem>No edits yet.</p>' if not h else ''}"
-               f"<ul>{rows}</ul>"
-               f"{ahint}"
-               f"<a class=back href='{PREFIX}/{DIR_NS}/{key}'>← dir</a>"
-               "</main></body></html>")
-        self._send(200, htm, "text/html")
-
-    def _history_detail_html(self, e):
-        """Small detail fragment for a history entry in HTML."""
-        a = e.get("action")
-        if a in ("add",):
-            return f'<div class=det>added {e.get("added_bytes", "?")} bytes</div>'
-        if a == "append":
-            return f'<div class=det>appended {e.get("added_bytes", "?")} bytes</div>'
-        if a == "put":
-            return f'<div class=det>{e.get("old_bytes", "?")} → {e.get("new_bytes", "?")} bytes</div>'
-        if a == "delete":
-            return '<div class=det>file removed</div>'
-        return ""
-
-    def _dir_listing_browse(self):
-        """GET /d — list dirs created with &listed=1 (agents JSON, browsers HTML)."""
-        q = self.path.split("?", 1)[1] if "?" in self.path else ""
-        qp = {}
-        for kv in q.split("&"):
-            if not kv:
-                continue
-            k, _, v = kv.partition("=")
-            qp.setdefault(k, []).append(v)
-        def _ts(k):
-            try:
-                return float((qp.get(k) or [""])[0])
-            except Exception:
-                return None
-        created_after = _ts("created_after"); created_before = _ts("created_before")
-        updated_after = _ts("updated_after"); updated_before = _ts("updated_before")
-        qtext = (qp.get("q") or [""])[0].strip().lower()
-        sort = (qp.get("sort") or ["created"])[0]
-        order = (qp.get("order") or ["desc"])[0]
-        nd = os.path.join(ROOT, DIR_NS)
-        now = time.time()
-        entries = []
-        if os.path.isdir(nd):
-            for key in os.listdir(nd):
-                p = os.path.join(nd, key)
-                if not os.path.isdir(p):
-                    continue
-                m = _dir_meta(key)
-                if not m or not m.get("listed"):
-                    continue
-                if _meta_expired(m, now):
-                    continue
-                created = m.get("created", 0); updated = m.get("updated", created)
-                tags = m.get("tags", [])
-                name = m.get("name") or key
-                if created_after is not None and created <= created_after:
-                    continue
-                if created_before is not None and created >= created_before:
-                    continue
-                if updated_after is not None and updated <= updated_after:
-                    continue
-                if updated_before is not None and updated >= updated_before:
-                    continue
-                if qtext and qtext not in name and not any(qtext in t for t in tags):
-                    continue
-                files = [f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))
-                         and not f.endswith(".meta") and not f.endswith(".history")
-                         and not f.endswith(".thumb") and not f.endswith(".thumbtmp")]
-                size = _dir_size(p)
-                entries.append({
-                    "name": name,
-                    "url": f"{PUBLIC_BASE}/{DIR_NS}/{key}",
-                    "tags": tags,
-                    "files": len(files),
-                    "size": size,
-                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created)),
-                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(updated)),
-                    "expires_at": (None if m.get("retain")
-                                   else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(m.get("expires", 0)))),
-                    "max_age": m.get("max_age"),
-                    "_c": created, "_u": updated,
-                })
-        def _key(e):
-            if sort == "name":
-                return e["name"]
-            if sort == "updated":
-                return e["_u"]
-            return e["_c"]
-        entries.sort(key=_key, reverse=(order != "asc"))
-        for e in entries:
-            e.pop("_c", None); e.pop("_u", None)
-        if self._wants_agent_repr():
-            return self._send(200, json.dumps({"dirs": entries, "total": len(entries)}), "application/json")
-        cards = "".join(
-            f'<li><a href="{_html_escape(e["url"])}">{_html_escape(e["name"])}</a> '
-            f'<span class=meta>{e["files"]} files · {_fmt_size(e["size"])} · updated {e["updated_at"]}</span>'
-            + (f'<span class=tags>{" ".join("#" + _html_escape(t) for t in e["tags"])}</span>' if e["tags"] else "")
-            + '</li>'
-            for e in entries)
-        ahint = _agent_hint(
-            f"curl -A curl {PUBLIC_BASE}/d                         # JSON: all listed dirs (?q= filter, ?sort=created|updated|name)",
-            f"curl -A curl {PUBLIC_BASE}/d/<key>                # one dir as JSON listing",
-            f"curl -X POST '{PUBLIC_BASE}/?dir=1&name=<name>&listed=1'  # create a dir",
-            f"curl {PUBLIC_BASE}/api                            # full machine-readable API",
-        )
-        h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
-             f"{_META_MOBILE}"
-             f"<title>throway — dirs</title>"
-             f"<style>{_BASE_CSS}"
-             "li{flex-wrap:wrap}"
-             "</style></head><body><main>"
-             f"<h1>Dirs</h1>{'<p style=color:var(--muted);font-size:.85rem>No listed dirs yet.</p>' if not entries else ''}"
-             f"<ul>{cards}</ul>"
-             f"{ahint}"
-             f"<a class=back href='{PREFIX}/'>← throway</a>"
-             "</main></body></html>")
-        self._send(200, h, "text/html")
-
     def do_DELETE(self):
         if not self._rate(): return
         path = self.path.split("?", 1)[0].lstrip("/").rstrip("/")
         parts = path.split("/")
         # DELETE /d/<key>[/<file>]
         if parts and parts[0] == DIR_NS and len(parts) >= 2 and parts[1]:
-            return self._dir_delete(parts[1:])
+            return dirs.delete(self._kit(), parts[1], parts[1:])
         fid = parts[0]
         fp = _id_path(fid)
         if os.path.isfile(fp):
@@ -2822,7 +2074,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = p.split("/")
         # PUT /d/<key>/<file> -> edit a file inside a dir
         if parts and parts[0] == DIR_NS and len(parts) >= 3:
-            return self._dir_edit(parts[1], parts[1:], append=False)
+            return dirs.edit(self._kit(), parts[1], parts[1:], append=False)
         fid = parts[0]
         if not fid or fid.endswith(".meta"):
             return self._err(404, "not found")
@@ -2853,7 +2105,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = p.split("/")
         # PATCH /d/<key>/<file> -> append to a file inside a dir
         if parts and parts[0] == DIR_NS and len(parts) >= 3:
-            return self._dir_edit(parts[1], parts[1:], append=True)
+            return dirs.edit(self._kit(), parts[1], parts[1:], append=True)
         fid = parts[0]
         if not fid or fid.endswith(".meta"):
             return self._err(404, "not found")

@@ -40,7 +40,12 @@ def _store_module(root):
     os.environ["THROWAWAY_ROOT"] = str(root)
     sys.path.insert(0, REPO)
     import store
-    return importlib.reload(store)
+    importlib.reload(store)
+    # 1.49.0: throway.dirs reads ROOT at import — reload in place so
+    # store.dirs sweeps the SAME root (reload mutates the module object)
+    import throway.dirs
+    importlib.reload(throway.dirs)
+    return store
 
 
 # --- uploads -------------------------------------------------------------
@@ -246,7 +251,7 @@ def test_retained_dir_survives_sweep(srv):
                    "updated": time.time() - 9e5, "expires": time.time() - 3600,
                    "max_age": 604800, "listed": False, "tags": [], "files": {}}, f)
     store = _store_module(srv.root)
-    store._sweep_dirs(time.time())
+    store.dirs.sweep(time.time())
     assert not os.path.exists(gone)
     assert os.path.isdir(os.path.join(nd, "keepd"))
 

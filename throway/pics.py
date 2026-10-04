@@ -55,6 +55,8 @@ import secrets
 import threading
 import time
 
+from throway import dirs as _dirs
+
 # --- config (own env family, like THROWAWAY_*) ----------------------------
 
 NS = "pics"
@@ -588,7 +590,7 @@ def create_gallery(root, name, listed, ip):
     WITHOUT its token (never leak it to someone who just knows the name)."""
     import store
     now = time.time()
-    if name and _GID.match(name) and store._valid_name(name)[0]:
+    if name and _GID.match(name) and _dirs.valid_name(name)[0]:
         existing = load_gallery(root, name)
         if existing:
             return name, existing, True
