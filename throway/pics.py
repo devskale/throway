@@ -62,6 +62,7 @@ import threading
 import time
 
 from throway import dirs as _dirs
+from throway import storage as _storage
 
 # --- config (own env family, like THROWAWAY_*) ----------------------------
 
@@ -271,8 +272,7 @@ def load_meta(root, pid):
 
 
 def save_meta(root, pid, meta):
-    with open(_meta_path(root, pid), "w") as f:
-        json.dump(meta, f)
+    _storage.atomic_json(_meta_path(root, pid), meta)
 
 
 def pics_size(root):
@@ -496,6 +496,7 @@ def store_pic(root, data, name, ip, gid, dedupe=True, bump=None):
     return pid, meta, False
 
 
+@_storage.locked("pics")
 def moderate(root, pid, action, gid=None):
     """hide | unhide | delete — scoped to one gallery when gid is given."""
     if not _HEX.match(pid or ""):
@@ -518,6 +519,7 @@ def moderate(root, pid, action, gid=None):
     return True
 
 
+@_storage.locked("pics")
 def reorder(root, pid, delta, gid=None):
     """Move one visible image up (-1) / down (+1), then renumber 0..n-1."""
     vis = _sorted_visible(all_pics(root, gid))
@@ -568,10 +570,10 @@ def load_gallery(root, gid):
 
 def save_gallery(root, g):
     os.makedirs(g_dir(root), exist_ok=True)
-    with open(g_meta_path(root, g["id"]), "w") as f:
-        json.dump(g, f)
+    _storage.atomic_json(g_meta_path(root, g["id"]), g)
 
 
+@_storage.locked("pics")
 def remove_gallery(root, gid):
     for p in (g_meta_path(root, gid),
               _likes_path(root, gid), _likes_path(root, gid) + ".part",
@@ -582,6 +584,7 @@ def remove_gallery(root, gid):
             pass
 
 
+@_storage.locked("pics")
 def create_gallery(root, name, listed, ip):
     """Create (or get, for key-shaped names) a gallery with its own admin
     token. Mirrors dirs: a valid dir-style name ([a-z0-9-], 5-32, >=1
@@ -631,10 +634,7 @@ def load_likes(root, gid):
 
 def save_likes(root, gid, lk):
     os.makedirs(g_dir(root), exist_ok=True)
-    tmp = _likes_path(root, gid) + ".part"
-    with open(tmp, "w") as f:
-        json.dump(lk, f)
-    os.replace(tmp, _likes_path(root, gid))
+    _storage.atomic_json(_likes_path(root, gid), lk)
 
 
 def load_comments(root, gid):
@@ -650,10 +650,7 @@ def load_comments(root, gid):
 
 def save_comments(root, gid, cl):
     os.makedirs(g_dir(root), exist_ok=True)
-    tmp = _comments_path(root, gid) + ".part"
-    with open(tmp, "w") as f:
-        json.dump(cl, f)
-    os.replace(tmp, _comments_path(root, gid))
+    _storage.atomic_json(_comments_path(root, gid), cl)
 
 
 def likes_map(root, gid):
@@ -684,6 +681,7 @@ def _toggle_obj_like(entry, fp):
     return entry["n"], liked
 
 
+@_storage.locked("pics")
 def toggle_image_like(root, pid, ip, ua):
     """Like/unlike one image (toggle per visitor fingerprint). Same
     visibility rules as _serve: hidden/expired/gone -> None."""
@@ -709,6 +707,7 @@ def toggle_image_like(root, pid, ip, ua):
     return n, liked
 
 
+@_storage.locked("pics")
 def toggle_comment_like(root, gid, cid, ip, ua):
     g = load_gallery(root, gid)
     if not g or not _HEX.match(cid or ""):
@@ -725,6 +724,7 @@ def toggle_comment_like(root, gid, cid, ip, ua):
 _cmt_last = {}                       # ip -> ts (spam cooldown, RAM only)
 
 
+@_storage.locked("pics")
 def add_comment(root, gid, name, text, ip):
     """Append a guestbook comment. Returns (comment, None) on success or
     (None, (http_code, message)). The cooldown lives in process RAM — a
@@ -754,6 +754,7 @@ def add_comment(root, gid, name, text, ip):
     return c, None
 
 
+@_storage.locked("pics")
 def del_comment(root, gid, cid):
     cl = load_comments(root, gid)
     keep = [c for c in cl["list"] if c.get("id") != cid]
@@ -770,6 +771,7 @@ def public_comment(c):
             "likes": c.get("n", 0)}
 
 
+@_storage.locked("pics")
 def touch_gallery(root, gid, now=None):
     """Slide the gallery lifetime forward on uploads."""
     g = load_gallery(root, gid)

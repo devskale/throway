@@ -59,6 +59,13 @@ besitzen ihre Routen-Domäne, ihre HELP-Topics und ihren Storage.
 über alle Namenspaces legt (retain: Token-Gates). Dispatcher-nahe
 Flip-Routen dürfen in store.py bleiben; die Konzeptlogik lebt im Modul.
 
+**Storage-Mechanik** — Die eine geteilte Mechanik unter allen Namespaces
+(`throway/storage.py`, 1.52.0): `atomic_json` (tmp + os.replace — Leser
+sehen nie Halbdateien) und `locked(ns)` (pro-Namespace-RLock um
+load→mutate→save). Pools, Accounting und Eviction bleiben pro Namespace —
+geteilt ist nur die Mechanik. Lock-Reihenfolge bei Schachtelung:
+pics → files; Sweeps und Bildverarbeitung bleiben bewusst ungelockt.
+
 **Request-Kit** — Die eine Naht zwischen Handler und den Modulen: das
 explizite Objekt (Senden, Request-Kontext, geteilte Helfer, Konfig), das
 Module statt des Handlers erhalten. Geboren mit dirs (1.49.0).

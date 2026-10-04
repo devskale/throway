@@ -30,7 +30,7 @@ import html as _html
 from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from throway import dirs, index, pics, retain
+from throway import dirs, index, pics, retain, storage as _storage
 
 
 def _html_escape(s):
@@ -85,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.51.0"
+VERSION = "1.52.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -122,6 +122,17 @@ def _bump_since_start(files, bytes_):
     _since_start["bytes"] += bytes_
 
 
+@_storage.locked("files")
+def _bump_stats(files, bytes_):
+    """All-time totals (stats.json) + since-start, serialized: parallel
+    uploads used to race the load->increment->save chain and lose counts."""
+    s = _load_stats()
+    s["files"] += files
+    s["bytes"] += bytes_
+    _save_stats(s)
+    _bump_since_start(files, bytes_)
+
+
 def _load_stats():
     try:
         with open(STATS_FILE) as f:
@@ -132,8 +143,7 @@ def _load_stats():
 
 def _save_stats(s):
     try:
-        with open(STATS_FILE, "w") as f:
-            json.dump(s, f)
+        _storage.atomic_json(STATS_FILE, s)
     except Exception:
         pass
 
@@ -143,13 +153,9 @@ def _cumulative():
     return _load_stats()
 
 def _atomic_json(path, obj):
-    """Write JSON atomically (tmp + os.replace) — concurrent readers never
-    see a partial file. Retro 2026-10-02 hard-validate: non-atomic meta
-    writes lost files under parallel dir writes."""
-    tmp = path + ".part"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f)
-    os.replace(tmp, path)
+    """Delegate to the shared mechanics module (1.52.0, candidate 4) —
+    same tmp + os.replace contract, one home instead of three."""
+    return _storage.atomic_json(path, obj)
 
 
 def _idem_map_path():
@@ -187,10 +193,7 @@ def _idem_put(key, resp):
             if not (os.path.isfile(fp) and os.path.isfile(mp)):
                 del m[k]
         m[h] = resp
-        tmp = _idem_map_path() + ".part"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(m, f)
-        os.replace(tmp, _idem_map_path())
+        _atomic_json(_idem_map_path(), m)
     except Exception:
         pass
 
@@ -1022,11 +1025,7 @@ class _RequestKit:
         return evict(THROW_POOL_SIZE)
 
     def bump_stats(self, files, bytes_):
-        s = _load_stats()
-        s["files"] += files
-        s["bytes"] += bytes_
-        _save_stats(s)
-        _bump_since_start(files, bytes_)
+        return _bump_stats(files, bytes_)
 
     def safe_name(self, name):
         return _safe_name(name)
@@ -1730,6 +1729,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._store(data, name_hint or None, ctype, tags, ttl_seconds=ttl, once=once,
                            retained=retained)
 
+    @_storage.locked("files")
     def _retain_flip(self, fid):
         """POST /<id>?retain=1 (token) — flip an existing single file or
         bundle to indefinite retention. Idempotent."""
@@ -1759,6 +1759,7 @@ class Handler(BaseHTTPRequestHandler):
             "retention": "indefinite", "expires_at": None,
             "persistence": _persistence_block("single", None)}), "application/json")
 
+    @_storage.locked("files")
     def _retain_meta(self, fid):
         """Flip a single file's meta to indefinite retention (token write)."""
         mp = _id_path(fid) + ".meta"
@@ -1772,6 +1773,7 @@ class Handler(BaseHTTPRequestHandler):
         _retain_meta_dict(m)
         _atomic_json(mp, m)
 
+    @_storage.locked("files")
     def _file_tags(self, fid, qp):
         """POST /<id>?tag=<t>&untag=<t> — update meta tags on a stored file."""
         fp = _id_path(fid)
@@ -1948,11 +1950,7 @@ class Handler(BaseHTTPRequestHandler):
             meta["tags"] = tags
         _atomic_json(fp + ".meta", meta)
         evict(THROW_POOL_SIZE)
-        s = _load_stats()
-        s["files"] += 1
-        s["bytes"] += len(data)
-        _save_stats(s)
-        _bump_since_start(1, len(data))
+        _bump_stats(1, len(data))
         url = f"{PUBLIC_BASE}/{fid}"
         body = json.dumps({
             "id": fid,
@@ -2009,11 +2007,7 @@ class Handler(BaseHTTPRequestHandler):
             meta["expires"] = time.time() + TTL_HOURS * 3600
         _atomic_json(os.path.join(dirpath, fid + ".meta"), meta)
         evict(THROW_POOL_SIZE)
-        s = _load_stats()
-        s["files"] += len(clean)
-        s["bytes"] += sum(len(d) for _, d, _ in clean)
-        _save_stats(s)
-        _bump_since_start(len(clean), sum(len(d) for _, d, _ in clean))
+        _bump_stats(len(clean), sum(len(d) for _, d, _ in clean))
         expires_at = _fmt_exp(meta.get("expires"))
         body = json.dumps({
             "id": fid,

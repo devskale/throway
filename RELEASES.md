@@ -1,12 +1,50 @@
 # throway — Releases
 
-**Current version:** `1.51.0`
+**Current version:** `1.52.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
+## 1.52.0 — 2026-10-04
+
+### Shared storage mechanics (Architektur-Review, Kandidat 4)
+
+Eine Mechanik statt dreier: `throway/storage.py` — `atomic_json(path, obj)`
+und `locked(ns)` (pro-Namespace-RLock um load→mutate→save). Alle drei
+Namespaces sitzen darauf; Pools, Accounting und Eviction bleiben pro
+Namespace (LRU vs 507). Erster Review-Kandidat mit nachweislicher
+Robustheit statt nur Struktur:
+
+* **pics: drei nicht-atomare Writes gefixt** — `save_gallery` UND `save_meta`
+  (beide plain `open("w")+json.dump` — das 1.45.2-Datenverlust-Muster,
+  `save_meta` beim Fact-Finding neu entdeckt) jetzt via `atomic_json`
+* **pics: neun Mutatoren serialisiert** — likes ×2, comments ×2,
+  `create_gallery` (Create-or-Get-Rennen), `touch_gallery` (Sliding),
+  `moderate`, `reorder`, `remove_gallery` — alles `@locked("pics")`
+* **store: `_idem_put` Inline-Duplikat ersetzt** und `_save_stats` atomar
+  (best-effort bleibt); neuer gelockter `_bump_stats` ersetzt die zwei
+  Inline-Stats-RMW in `_store`/Bundle-Speicherung (Parallels-Uploads
+  verloren Zähler) — Kit `bump_stats` delegiert nur noch
+* **store: Meta-RMW serialisiert** — `_retain_flip`, `_retain_meta`,
+  `_file_tags` jetzt `@locked("files")`
+* **dirs: `_LOCK` delegiert** an `storage.lock_for("dirs")` — 8 Mutations-
+  Sites unberührt, Mechanik hat jetzt ein Home
+* Bewusst ungelockt (dokumentiert): `store_pic` (Bildverarbeitung zu
+  teuer zum Serialisieren; Dedupe-Rennen kostet allenfalls ein Dublett)
+  und die Sweeps (locken pro Löschung via `remove_gallery`)
+* `tests/test_storage.py` (6 Tests): Atomicität (kein `.part`-Rest,
+  In-Place-Overwrite), **Lost-Update-Beweis** (8 Threads × 200 RMW =
+  exakt 1600), RMW-auf-Datei, Lock-Identität pro Namespace, Reentränz
+
+**Beweis-Anmerkung:** Anders als 1.51.0 ist kein Byte-Diff möglich — der
+Fix ändert Verhalten im Rennfall (von falsch auf richtig). Beweis = Suite
+unverändert grün + der deterministische Lost-Update-Test.
+
+Tests: **153 passed** (147 unverändert + 6 neue) · validate 28/16/50 PASS.
+
+---
 ## 1.51.0 — 2026-10-04
 
 ### Homepage-UI als eigenes Modul (Architektur-Review, Kandidat 3)

@@ -52,7 +52,8 @@ import os
 import re
 import secrets
 import shutil
-import threading
+
+from throway import storage as _storage
 import time
 from urllib.parse import quote, unquote
 
@@ -84,7 +85,7 @@ RESERVED_NAMES = {
 
 # --- mutation lock -----------------------------------------------------------
 
-_LOCK = threading.RLock()
+_LOCK = _storage.lock_for("dirs")   # 1.52.0: Mechanik im storage-Modul
 
 
 def _locked(fn):
