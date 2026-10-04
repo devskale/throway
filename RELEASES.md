@@ -1,9 +1,39 @@
 # throway — Releases
 
-**Current version:** `1.50.0`
+**Current version:** `1.51.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.51.0 — 2026-10-04
+
+### Homepage-UI als eigenes Modul (Architektur-Review, Kandidat 3)
+
+Die komplette Upload-UI (Dropzone-JS 510 Z., Homepage-CSS ~120 Regeln,
+HTML-Assembly, DROPZONE-CDN-Consts) lebt jetzt in `throway/index.py` —
+als reines Präsentationsmodul nach mdrender-Präzedenz:
+
+* **`page(stats) -> str`** — deterministisch über einen flachen Stats-Dict
+  (Pool-Belegung, Session-Zähler, Version, ttl, prefix, max_mb,
+  Agent-Beschreibung); kein Handler, kein Kit, keine I/O
+* Der Handler behält einen Mini-Dispatcher (~20 Z.): sweep() + Stats
+  sammeln + senden; UA-Split (Agent → Klartext-Help) bleibt im Routing
+* CSS als benannte Konstante `_INDEX_CSS` — der CSS-Balance-Guard im
+  release-check deckt jetzt 6 Blöcke (5× pics + Homepage, previously
+  wäre die größte CSS-Masse unguarded gewesen)
+* `tests/test_index.py` (7 Tests, mdrender-Stil): Marker, Stats-Rendering,
+  `__MAX_MB__`-Substitution, Agent-Text escaped, JS-Konstante bleibt str,
+  Inline-Scripts bestehen `node --check`, CSS-Klammer-Balance
+* Totes Gerüst entsorgt: `_IndexMixin` (leere Klasse) + der
+  `Handler._index`-Monkey-Patch
+* store.py: 3220 → 2459 Zeilen (nur noch Routing + Engine + Kit)
+
+**Beweis:** Homepage-Antwort vor/nach der Migration byte-identisch
+(normalisiert auf die Versions-Badge, cmp-geprüft).
+
+Tests: **147 passed** (140 unverändert + 7 neue) · validate 28/16/50 PASS.
 
 ---
 

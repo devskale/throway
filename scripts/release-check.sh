@@ -66,9 +66,11 @@ DIRECT=$(grep -nE 'json\.dump\([^)]*open\(' store.py throway/*.py | grep -v '\.p
 # CSS-Klammer-Balance (Retro 2026-10-02): Verwaiste/doppelte } legen die
 # FOLGENDE Regel still weg (in throway 2× passiert). Die CSS-Strings liegen
 # als Python-String-Literale in pics.py (_GALLERY_CSS, _EMBED_CSS, _LB_CSS,
-# _SOCIAL_CSS, _ADMIN_CSS). Jede Regel ist ein eigenes Literal mit { } im
-# selben String — wir zählen { vs } über alle Literale, ignorieren aber
-# Kommentare und Strings (sonst schlagen echte } in content-/url-Werten an).
+# _SOCIAL_CSS, _ADMIN_CSS) und seit 1.51.0 auch in index.py (_INDEX_CSS —
+# Homepage-CSS, größte CSS-Masse im Projekt). Jede Regel ist ein eigenes
+# Literal mit { } im selben String — wir zählen { vs } über alle Literale,
+# ignorieren aber Kommentare und Strings (sonst schlagen echte } in
+# content-/url-Werten an).
 python3 - <<'PY' || { echo "FAIL: CSS-Klammer-Balance"; FAIL=1; }
 import re
 src = open("throway/pics.py", encoding="utf-8").read()
@@ -76,7 +78,10 @@ src = open("throway/pics.py", encoding="utf-8").read()
 blocks = re.findall(r"_(?:GALLERY|EMBED|LB|SOCIAL|ADMIN)_CSS = \((.*?)\n\)", src, re.S)
 if not blocks:
     raise SystemExit("keine CSS-Bloecke gefunden")
-
+iflags = open("throway/index.py", encoding="utf-8").read()
+iblocks = re.findall(r"_INDEX_CSS = \((.*?)\n\)", iflags, re.S)
+if not iblocks:
+    raise SystemExit("kein _INDEX_CSS-Block gefunden (1.51.0)")
 def css_strings(block):
     # Die CSS-Regeln sind die "..."-String-Inhalte im Block. Wichtig: wir
     # extrahieren sie, statt die Strings zu ENTFERNEN — sonst löschen wir
@@ -98,9 +103,12 @@ for name, block in zip(("_GALLERY_CSS", "_EMBED_CSS", "_LB_CSS", "_SOCIAL_CSS", 
     d, mn = balance("".join(css_strings(block)))
     if d != 0 or mn < 0:
         bad.append(f"{name}: End-Tiefe {d}, min {mn}")
+d, mn = balance("".join(css_strings(iblocks[0])))
+if d != 0 or mn < 0:
+    bad.append(f"_INDEX_CSS: End-Tiefe {d}, min {mn}")
 if bad:
     raise SystemExit(" | ".join(bad))
-print("css-balance: OK (5 Bloecke balanciert)")
+print("css-balance: OK (6 Bloecke balanciert)")
 PY
 
 [ "$FAIL" = 0 ] && echo "release-check: OK (version=$V_STORE, docs aktuell)" || exit 1

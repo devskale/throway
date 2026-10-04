@@ -66,3 +66,9 @@ Module statt des Handlers erhalten. Geboren mit dirs (1.49.0).
 **Agent** — Nicht-Browser-Client (curl, Skripte, Bots). Agents bekommen
 JSON und Agent-Hinweise; Browser bekommen HTML. `?json=1`/`?html=1`
 überschreiben die UA-Heuristik.
+
+**Homepage** — Die Upload-UI unter `/` (nur Browser; Agents bekommen den
+Klartext-Help): Files/Text/Link/Gallery-Tabs, Dropzone, Pool- und
+Session-Stats, eingebettete Agent-Info. Lebt als reines Präsentations-
+Modul (`throway/index.py`, `page(stats)`) über einem flachen Stats-Dict;
+Engine-Zustand sammelt der Handler.
