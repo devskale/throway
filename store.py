@@ -30,7 +30,7 @@ import html as _html
 from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from throway import dirs, index, pics, retain, storage as _storage
+from throway import contract, dirs, index, pics, retain, storage as _storage
 
 
 def _html_escape(s):
@@ -85,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.52.0"
+VERSION = "1.53.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -762,21 +762,7 @@ HELP.update({
     "errors": {
         "title": "Error codes + retry strategy",
         "summary": "Every error JSON carries `code`; what to do on 429/507",
-        "body": """ERRORS + RETRY STRATEGY
-Every error response is JSON with an `error` message and a stable `code`:
-
-  400 bad_request        invalid input (name, flags, combinations) -> fix the request, do not retry
-  401 write_denied       write/retain token missing or wrong       -> provide the token (Authorization: Bearer or ?token=), then retry
-  403 forbidden          action not allowed on this object         -> do not retry
-  404 not_found          id/name unknown, expired or deleted       -> do not retry with the same id
-  411 missing_length     no Content-Length on a bodied request     -> send Content-Length, then retry
-  413 too_large          file > {MAX_FILE_MB}MB (pics: {PICS_MAX_FILE_MB}MB) -> do not retry unchanged
-  429 rate_limited       too many requests ({RATE_LIMIT}/min/IP)       -> WAIT: `Retry-After` header (seconds) + `retry_after` field; then retry unchanged
-  507 pool_full          pics pool exhausted                       -> WAIT: `Retry-After` ({PICS_RETRY_AFTER}s); admin must delete or wait for expiry
-  501 unsupported        method/encoding not supported             -> do not retry
-
-Retry rule of thumb: only 429/507 are "later again" — every other code
-means the request itself is wrong; a retry loop must not resend it.""",
+        "body": contract.render_errors_help(contract.limits()),
     },
 })
 HELP_ORDER.append("errors")
@@ -793,20 +779,7 @@ def _render_help_body(key):
     t = HELP.get(key)
     if not t:
         return None
-    vals = dict(
-        PUBLIC_BASE=PUBLIC_BASE,
-        TTL_HOURS=TTL_HOURS,
-        MAX_FILE_MB=MAX_FILE // (1024 * 1024),
-        POOL_MB=THROW_POOL_SIZE // (1024 * 1024),
-        RATE_LIMIT=RATE_LIMIT,
-        HISTORY_LIMIT=HISTORY_LIMIT,
-        PICS_DAYS=pics.PICS_TTL // 86400,
-        PICS_GB=pics.PICS_POOL // 1024**3,
-        PICS_MAX_FILE_MB=pics.PICS_MAX_FILE // 1024**2,
-        PICS_RETRY_AFTER=pics.PICS_RETRY_AFTER,
-        PICS_EDGE=pics.PICS_EDGE,
-        PICS_QUALITY=pics.PICS_QUALITY,
-    )
+    vals = contract.limits()
     return t["body"].format(**vals)
 
 
@@ -2342,6 +2315,7 @@ function copyDesc() {{
 
     def _api(self):
         """Machine-readable contract for agents."""
+        lim = contract.limits()
         spec = {
             "service": "throwaway-store",
             "version": VERSION,
@@ -2352,12 +2326,13 @@ function copyDesc() {{
             "pool_bytes": THROW_POOL_SIZE,
             "rate_limit_per_min": RATE_LIMIT,
             "retention_token": retain.ENABLED,
+            "errors": contract.errors_payload(lim),
             "endpoints": {
                 "upload": {
                     "method": "POST",
                     "url": PUBLIC_BASE + "/?name=<filename>[&ttl=<h|d>][&share=<name>][&once=1]",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
-                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, 14d] (max 14 days); optional &share=<name> stores it under a chosen memorable name (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved) at /d/<name> with sliding lifetime (default 7d, ttl= clamped [4h,14d]); optional &once=1 = burn-after-reading (single files only, not with &share=): the file auto-deletes after the first download; with a retain token (Authorization: Bearer <token> or ?token=, see /help/retention) the upload NEVER expires and is exempt from pool eviction", 
+                    "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, {TTL_MAX_D}d] (max {TTL_MAX_D} days); optional &share=<name> stores it under a chosen memorable name (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved) at /d/<name> with sliding lifetime (default 7d, ttl= clamped [4h,14d]); optional &once=1 = burn-after-reading (single files only, not with &share=): the file auto-deletes after the first download; with a retain token (Authorization: Bearer <token> or ?token=, see /help/retention) the upload NEVER expires and is exempt from pool eviction", 
                     "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str|null", "extendable_by": "none|activity", "max_age": "int|null", "retention?": "indefinite"}, "expires_in": "int|null", "expires_at": "str|null"},
                 },
                 "upload_bundle": {
@@ -2368,11 +2343,11 @@ function copyDesc() {{
                     "response": {"id": "str", "url": "str", "bundle": True, "editable": False, "persistence": {"type": "bundle", "expires_at": "str", "extendable_by": "none", "max_age": None}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str"}], "expires_at": "str"},
                 },
                 "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download; append ?thumb=1 for a small cached WebP preview (raster images only)"},
-                "import_url": {"method": "POST", "url": PUBLIC_BASE + "/?url=<url>[&name=<name>][&link=1][&tag=<t>]", "note": "MAX 5MB. Two modes: (1) default — fetch the remote http(s) document SERVER-SIDE and store it as a normal file (name from Content-Disposition/URL path, overridable via &name=); (2) &link=1 — store the URL itself as a tiny redirect HTML document (browsers get redirected, agents can PUT/PATCH it). Private/loopback hosts are blocked. Optional &tag=<t> (repeatable, up to 5) attaches tags.", "response": "same JSON as upload"},
+                "import_url": {"method": "POST", "url": PUBLIC_BASE + "/?url=<url>[&name=<name>][&link=1][&tag=<t>]", "note": "MAX {MAX_FILE_MB}MB. Two modes: (1) default — fetch the remote http(s) document SERVER-SIDE and store it as a normal file (name from Content-Disposition/URL path, overridable via &name=); (2) &link=1 — store the URL itself as a tiny redirect HTML document (browsers get redirected, agents can PUT/PATCH it). Private/loopback hosts are blocked. Optional &tag=<t> (repeatable, up to 5) attaches tags.", "response": "same JSON as upload"},
                 "browse_files": {"method": "GET", "url": PUBLIC_BASE + "/browse?tag=<t>[&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]", "note": "JSON listing of live single files for agents (HTML page for browsers). Filter by one or more &tag= values (AND), by name/tag substring &q=; sort with &sort= (default created) and &order= (default desc). Each entry: id, url, name, content_type, size, tags, created_at, expires_at."},
                 "tag_file": {"method": "POST", "url": PUBLIC_BASE + "/<id>?tag=<t>[&tag=<t2>][&untag=<t3>]", "note": "update tags on an existing single file without touching its content or expiry. Tags: lowercase [a-z0-9-], 1-24 chars, max 5 per file."},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
-                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX 14 days (clamped [4h,14d]), default 7d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open; &show=1 (retain token) creates a SHOW-DIR: indefinite AND publicly writable — everyone with the URL may add/edit/delete files, whole-dir delete stays token-gated; flags (incl. show=1) honored only on first creation — flip an existing dir via POST /d/<key>?show=1. Multipart file parts on the create call become the dir's initial files; POSTing parts to an EXISTING named dir ADDS them like POST /d/<key> (retry-safe, write gates apply) — P5 bridge. ?json=1 / ?html=1 force the listing representation (P6)", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "open?": "bool (show-dir)", "tags": ["str"]}},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX {TTL_MAX_D} days (clamped [4h,{TTL_MAX_D}d]), default {DIR_DEFAULT_D}d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open; &show=1 (retain token) creates a SHOW-DIR: indefinite AND publicly writable — everyone with the URL may add/edit/delete files, whole-dir delete stays token-gated; flags (incl. show=1) honored only on first creation — flip an existing dir via POST /d/<key>?show=1. Multipart file parts on the create call become the dir's initial files; POSTing parts to an EXISTING named dir ADDS them like POST /d/<key> (retry-safe, write gates apply) — P5 bridge. ?json=1 / ?html=1 force the listing representation (P6)", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "open?": "bool (show-dir)", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl; 401 without the X-Throway-Write token when the dir is write-protected"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
                 "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
@@ -2396,6 +2371,9 @@ function copyDesc() {{
             },
         }
         spec["endpoints"].update(pics.api_endpoints(PUBLIC_BASE))
+        for _ep in spec["endpoints"].values():
+            if isinstance(_ep.get("note"), str):
+                _ep["note"] = contract.substitute(_ep["note"], lim)
         self._send(200, json.dumps(spec, indent=2), "application/json")
 
     def _index(self):

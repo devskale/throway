@@ -49,6 +49,11 @@ while read -r ep; do
   grep -q "$ep" API.md || { echo "FAIL: Endpunkt '$ep' fehlt in API.md (Docs-Drift)"; FAIL=1; }
 done < "$ROOT/endpoints.txt"
 
+# API.md-Frische (1.53.0): die gen:limits-Region wird aus throway/contract.py
+# generiert — Hand-Edits an den Zahlen driften wieder; der Guard macht die
+# Datei zum Build-Artifact der Regionen (Prosa bleibt handgeschrieben).
+python3 scripts/gen-api-md.py --check >/dev/null 2>&1 || { echo "FAIL: API.md veraltet (scripts/gen-api-md.py laufen lassen)"; FAIL=1; }
+
 # Help-Topics-Drift (Retro 1.38.3): API.md nannte 'named_dirs', das nie
 # existierte — jedes HELP-Order-Topic muss in API.md erwähnt sein.
 TOPICS=$(python3 -c "import re;s=open('store.py').read();m=re.search(r'HELP_ORDER = \[([^]]+)\]',s);print(' '.join(re.findall(r'\"(\w+)\"',m.group(1))))")

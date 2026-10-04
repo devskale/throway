@@ -1,12 +1,44 @@
 # throway — Releases
 
-**Current version:** `1.52.0`
+**Current version:** `1.53.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
+## 1.53.0 — 2026-10-04
+
+### Contract als Daten — der Slice (Architektur-Review, Kandidat 5)
+
+`throway/contract.py`: die dünnen Wahrheiten haben jetzt ein Home und
+pro Fläche einen Renderer. Bewusst NUR der Slice (Q1b) — die Voll-Vision
+(HELP-Prosa + /api + API.md aus einer Struktur) wäre eine falsche Naht:
+Tutorial-Register und Maschinen-Register sind zu 80% verschiedener Content.
+
+* **`limits()`** — alle Live-Werte (4h, 14d, 5 MB, Pools, Rate-Limits…)
+  als eine Map; substituiert HELP-Bodies (`_render_help_body`), /api-Notes
+  und generiert die API.md-Limits-Tabelle. Hartkodierte Note-Werte
+  („MAX 5MB", „max 14 days", „default 7d") sind jetzt Platzhalter — die
+  letzte Drift-Klasse im Spec ist zu.
+* **`errors()`** — die 9 stabilen Error-Codes als Daten (code, http,
+  meaning, retry). Renderer: HELP-„errors"-Body (generiert; Spalten jetzt
+  einheitlich — 413/429 waren hand-schief, Worte unveraendert) und ein
+  NEUER additiver `errors`-Block in /api (alte Agents unberührt).
+* **API.md Marker-Ansatz** (Q3b): Prosa bleibt handgeschrieben, die
+  Limits-Tabelle zwischen `<!-- gen:limits -->`-Markern wird von
+  `scripts/gen-api-md.py` aus dem Contract generiert; `--check` + neuer
+  release-check-Guard („API.md frisch") + Test machen Hand-Edits an den
+  Zahlen strukturell rot. Zuvor war API.md von KEINEM Validator gedeckt.
+* `substitute()` ersetzt Platzhalter, laesst Unbekannte und Literal-Braces
+  (`{ts,file,action,bytes}`) unberührt — sicher auf jeden Note-String.
+* Alle 94 Validator-Checks bleiben (Q5) — sie testen Verhalten, nicht nur
+  Drift; nur der neue Frische-Guard kam dazu.
+
+Tests: **161 passed** (153 unverändert + 8 neue in test_contract.py —
+u.a. „jeder HELP-Platzhalter ist in limits()") · validate 28/16/50 PASS.
+
+---
 ## 1.52.0 — 2026-10-04
 
 ### Shared storage mechanics (Architektur-Review, Kandidat 4)

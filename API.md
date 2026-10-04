@@ -10,6 +10,7 @@ are deleted. No auth required.
 > An agent should read that endpoint first to discover current limits.
 
 ## Limits
+<!-- gen:limits -->
 | Limit | Value |
 |---|---|
 | URL lifetime | 4 hours (14400s) default — single files & bundles |
@@ -21,6 +22,7 @@ are deleted. No auth required.
 | Rate limit | 100 req/min per IP |
 | Retention | token-gated (server-side `THROWAWAY_RETAIN_TOKEN`): token uploads **never expire**, exempt from pool eviction; public read, token-gated write (see [Retention](#retention-indefinite-objects-token-gated-since-1440)) |
 | pics gallery | own 20 GB pool (full → 507 reject, never evicts), fixed 90-day lifetime, 30 MB max/image; ≤ 2048 px stored byte-identical (JPEG metadata stripped losslessly), larger downscaled to 2048 px WebP q90 (≤ 1 MB) |
+<!-- /gen:limits -->
 
 ## Pics — event galleries (`/pics`, since 1.20.0)
 
