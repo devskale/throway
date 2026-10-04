@@ -85,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.49.0"
+VERSION = "1.50.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -923,7 +923,7 @@ def _agent_hint(*lines):
 
 # ---------------------------------------------------------------------------
 # The request kit — the explicit seam between the Handler and the throway/
-# modules (born with dirs, 1.49.0; pics migrates later). A module receives
+# modules (born with dirs 1.49.0; pics followed 1.50.0). A module receives
 # exactly this object, never the Handler itself: sending, request context,
 # shared helpers and config live here, and nothing else crosses the seam.
 # ---------------------------------------------------------------------------
@@ -937,6 +937,10 @@ class _RequestKit:
     def query(self):
         """Raw query string of the request ('' when none)."""
         return self._h.path.split("?", 1)[1] if "?" in self._h.path else ""
+
+    def header(self, name, default=None):
+        """A request header value (e.g. Accept), `default` when absent."""
+        return self._h.headers.get(name, default)
 
     @property
     def content_type(self):
@@ -966,6 +970,9 @@ class _RequestKit:
         """None when the write may proceed, else (code, error-dict)."""
         return retain.write_denied(self._h, meta)
 
+    def client_ip(self):
+        return self._h._client_ip()
+
     def is_agent(self):
         return self._h._is_agent()
 
@@ -974,6 +981,13 @@ class _RequestKit:
 
     def read_body(self):
         return self._h._read_body()
+
+    def read_raw(self, n):
+        """Read up to n bytes straight from the request body socket —
+        streaming reads and over-size drains (keep-alive policy stays
+        with the caller). Prefer read_body() for the simple
+        Content-Length case."""
+        return self._h.rfile.read(n)
 
     # --- response plumbing ---
     def send(self, code, body=b"", ctype="text/plain", extra=None):
@@ -1046,6 +1060,18 @@ class _RequestKit:
 
     def html_escape(self, s):
         return _html_escape(s)
+
+    @property
+    def root(self):
+        """The storage root (THROWAWAY_ROOT) — same process as store.py."""
+        return ROOT
+
+    def fetch_remote(self, raw_url, max_bytes=None):
+        """Server-side URL fetch with the SSRF guard (redirects re-checked
+        per hop). Raises kit.FetchError(code, msg) on any problem."""
+        return _fetch_remote(raw_url, max_bytes=max_bytes)
+
+    FetchError = _FetchError    # exception class, for `except kit.FetchError`
 
     @property
     def base_css(self):
@@ -1429,7 +1455,7 @@ class Handler(BaseHTTPRequestHandler):
         # --- pics: event gallery — /pics, /pics/i/<id>, /pics/<secret>/… ---
         pics_parts = path.lstrip("/").split("/")
         if pics_parts and pics_parts[0] == pics.NS:
-            return pics.get(self, pics_parts[1:],
+            return pics.get(self._kit(), pics_parts[1:],
                             self.path.split("?", 1)[1] if "?" in self.path else "")
         parts = path.lstrip("/").split("/")
         if parts and parts[0] == DIR_NS and len(parts) >= 2 and parts[1]:
@@ -1596,7 +1622,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # --- pics: gallery upload (/pics) + admin actions (/pics/<secret>) ---
         if parts and parts[0] == pics.NS:
-            return pics.post(self, parts[1:], qp)
+            return pics.post(self._kit(), parts[1:], qp)
 
         # POST /d/<key>?show=1 (token) -> flip a dir to a SHOW-DIR:
         # indefinite AND publicly writable. show=1 on non-dirs is a 400.

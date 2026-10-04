@@ -16,8 +16,14 @@ Layout (all inside ROOT/pics/ — one namespace, one 20 GB pool, fixed
 
 Interface (the whole surface store.py needs to know):
 
-    get(h, rest, query)        dispatch GET  /pics/…
-    post(h, rest, qp)          dispatch POST /pics/…
+    get(kit, rest, query)      dispatch GET  /pics/…
+    post(kit, rest, qp)        dispatch POST /pics/…
+
+`kit` is the request kit store.py builds per request (see _RequestKit in
+store.py, 1.49.0/1.50.0): sending, request context, shared helpers and
+config — never the Handler itself. `root` for the storage helpers comes
+from kit.root; the engine hooks (sweep, set_thumb_maker, warm_existing)
+keep their explicit root parameter.
     sweep(root, now)           delete expired images + galleries
     api_endpoints()            entries for the /api contract
     HELP_TOPICS                entries for /help
@@ -445,7 +451,7 @@ def warm_existing(root):
             _warm_kick(root, pid)
 
 
-def store_pic(root, data, name, ip, gid, dedupe=True):
+def store_pic(root, data, name, ip, gid, dedupe=True, bump=None):
     """Process and store one upload into gallery gid. Returns (pid, meta,
     duplicate). With dedupe, an identical image (sha256 of the stored
     bytes) already in THIS gallery is returned instead of stored twice —
@@ -482,12 +488,8 @@ def store_pic(root, data, name, ip, gid, dedupe=True):
     save_meta(root, pid, meta)
     touch_gallery(root, gid, now)              # sliding gallery lifetime
     try:                                        # count into the shared stats
-        import store
-        s = store._load_stats()
-        s["files"] += 1
-        s["bytes"] += len(out)
-        store._save_stats(s)
-        store._bump_since_start(1, len(out))
+        if bump:                                # kit.bump_stats (request paths)
+            bump(1, len(out))
     except Exception:
         pass                                    # stats are cosmetic — never fail an upload
     _warm_kick(root, pid)                       # 1.40.0: Thumbs vorwärmen
@@ -588,7 +590,6 @@ def create_gallery(root, name, listed, ip):
     fresh hex id. Returns (gid, meta, existed). The token is only
     meaningful for the creator: an existing named gallery is returned
     WITHOUT its token (never leak it to someone who just knows the name)."""
-    import store
     now = time.time()
     if name and _GID.match(name) and _dirs.valid_name(name)[0]:
         existing = load_gallery(root, name)
@@ -845,8 +846,8 @@ def _iso(ts):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def public_meta(store, pid, m, likes=0):
-    base = store.PUBLIC_BASE
+def public_meta(kit, pid, m, likes=0):
+    base = kit.public_base
     iso = _iso(m["expires"])
     return {
         "id": pid,
@@ -866,10 +867,10 @@ def public_meta(store, pid, m, likes=0):
     }
 
 
-def gallery_public_meta(store, gid, g, count):
+def gallery_public_meta(kit, gid, g, count):
     return {
         "id": gid,
-        "url": f"{store.PUBLIC_BASE}/pics/g/{gid}",
+        "url": f"{kit.public_base}/pics/g/{gid}",
         "name": g.get("name") or gid,
         "listed": bool(g.get("listed")),
         "images": count,
@@ -984,25 +985,25 @@ _UP_JS = (
 )
 
 
-def _page(store, title, body, extra_css=""):
+def _page(kit, title, body, extra_css=""):
     return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
-            + store._META_MOBILE
-            + f"<title>{store._html_escape(title)}</title>"
-            + f"<style>{store._BASE_CSS}{extra_css}</style></head><body><main>"
+            + kit.meta_mobile
+            + f"<title>{kit.html_escape(title)}</title>"
+            + f"<style>{kit.base_css}{extra_css}</style></head><body><main>"
             + body + "</main></body></html>")
 
 
-def index_html(store, gals, created=None):
+def index_html(kit, gals, created=None):
     """Gallery index: create form + listed galleries."""
-    e = store._html_escape
+    e = kit.html_escape
     rows = "".join(
-        f"<div class=gl><a href='{store.PREFIX}/pics/g/{gid}'>{e(g.get('name') or gid)}</a>"
+        f"<div class=gl><a href='{kit.prefix}/pics/g/{gid}'>{e(g.get('name') or gid)}</a>"
         f"<span class=meta>{n} Bilder</span></div>"
         for gid, g, n in gals)
     created_html = ""
     if created:
         gid, g = created
-        pub = f"{store.PUBLIC_BASE}/pics/g/{gid}"
+        pub = f"{kit.public_base}/pics/g/{gid}"
         adm = f"{pub}/{g['token']}"
         created_html = (
             "<div class=secret><b>Galerie erstellt!</b><br>"
@@ -1013,20 +1014,20 @@ def index_html(store, gals, created=None):
             "verbergen, l\xf6schen, neu sortieren. Er wird nirgends angezeigt — "
             "weg ist weg.</span></div>")
     days = max(1, PICS_TTL // 86400)
-    return _page(store, "pics — galerien",
+    return _page(kit, "pics — galerien",
                  "<h1>pics</h1>"
                  + f"<p class=meta>Eigene Bildgalerie anlegen — Bilder laufen nach {days} Tagen ab, "
                  + f"max {_fmt(PICS_MAX_FILE)} pro Bild. Du bekommst einen Admin-Link f\xfcr "
                  + "verbergen / l\xf6schen / sortieren.</p>"
-                 + "<form class=cnew method=post action='" + store.PREFIX + "/pics?create=1'>"
+                 + "<form class=cnew method=post action='" + kit.prefix + "/pics?create=1'>"
                  + "<input type=text name=name placeholder='Name der Galerie (z.B. Hochzeit M\u00fcnchen)'>"
                  + "<label><input type=checkbox name=listed value=1> \xf6ffentlich gelistet</label>"
                  + "<button>Galerie anlegen</button></form>"
                  + created_html
                  + f"<h2>Galerien</h2>{rows or '<p class=meta>Noch keine \xf6ffentlichen Galerien.</p>'}"
-                 + store._agent_hint(
-                     f"curl -X POST '{store.PUBLIC_BASE}/pics?create=1&name=party'  # new gallery (JSON incl. admin token)",
-                     f"curl -A curl {store.PUBLIC_BASE}/pics                        # this index as JSON",
+                 + kit.agent_hint(
+                     f"curl -X POST '{kit.public_base}/pics?create=1&name=party'  # new gallery (JSON incl. admin token)",
+                     f"curl -A curl {kit.public_base}/pics                        # this index as JSON",
                  ),
                  _GALLERY_CSS)
 
@@ -1489,7 +1490,7 @@ _SOCIAL_JS = (
 )
 
 
-def _star_bar(store, sort_likes):
+def _star_bar(kit, sort_likes):
     """Motivation hint + live 'Als Set teilen' button (hidden until >=1 star)."""
     hint = ("&#9733; Die beliebtesten Bilder stehen oben &#8212; starre deine "
             "Favoriten und teile sie als Set." if sort_likes else
@@ -1502,23 +1503,23 @@ def _star_bar(store, sort_likes):
             "</button></div>")
 
 
-def _social_js(store, gid, sort_likes=False, stars=None):
-    return (_SOCIAL_JS.replace("__P__", store.PREFIX)
+def _social_js(kit, gid, sort_likes=False, stars=None):
+    return (_SOCIAL_JS.replace("__P__", kit.prefix)
             .replace("__GID__", gid)
             .replace("__SORT__", "true" if sort_likes else "false")
             .replace("__STARS__", json.dumps(stars or [])))
 
 
-def _thumb_cell(store, pid, m, likes=0, star=False):
+def _thumb_cell(kit, pid, m, likes=0, star=False):
     """One grid cell: thumb + like button + star button (delegated clicks,
     no-JS = link). 1.39.1 a11y: the anchor gets a real accessible name (the
     thumb img is decorative, alt=''), otherwise screen readers announce a
     nameless link."""
     n = f"<span class=n data-n={likes}>{likes or ''}</span>"
-    name = store._html_escape(m.get("name") or pid)
+    name = kit.html_escape(m.get("name") or pid)
     # 1.39.2: srcset/sizes — der Browser waehlt die passende Kandidatin
     # (HiDPI telefoniert sonst das 96px-Default und verpixelt es hoch).
-    src = f"{store.PREFIX}/pics/i/{pid}"
+    src = f"{kit.prefix}/pics/i/{pid}"
     # 96w (=THUMB_PX) explizit als Kandidat: sonst greift der Browser fuer
     # kleine Anzeigegroessen auf src zurueck (Default) und liefert 96px
     # auch dort, wo 160w noetig waere.
@@ -1552,10 +1553,10 @@ def _cmt_date(ts):
         return ""
 
 
-def _comments_html(store, gid, cmts):
+def _comments_html(kit, gid, cmts):
     """Guestbook section: form + newest-first list. Solid white card so it
     reads on any host page (embeds live on dark sites)."""
-    e = store._html_escape
+    e = kit.html_escape
     rows = []
     for c in reversed(cmts):
         n = c.get("n", 0)
@@ -1573,7 +1574,7 @@ def _comments_html(store, gid, cmts):
         "<section id=comments class=ccmts aria-label=Kommentare>"
         "<h2 class=ch2>Kommentare <span class=cnum data-n=" + str(len(cmts)) +
         ">" + str(len(cmts)) + "</span></h2>"
-        "<form id=cform class=cform method=post action='" + store.PREFIX +
+        "<form id=cform class=cform method=post action='" + kit.prefix +
         "/pics/g/" + gid + "?comment=1'>"
         "<input type=text name=name maxlength=" + str(PICS_NAME_MAX_LEN) +
         " placeholder='Dein Name (optional)' autocomplete=name>"
@@ -1589,9 +1590,9 @@ def _comments_html(store, gid, cmts):
         "</section>")
 
 
-def _admin_comments_html(store, root, gid, secret, page):
+def _admin_comments_html(kit, root, gid, secret, page):
     """Moderation list on the admin page: delete button per comment."""
-    e = store._html_escape
+    e = kit.html_escape
     cmts = load_comments(root, gid)["list"]
     if not cmts:
         return "<h2>Kommentare (0)</h2><p class=meta>noch keine</p>"
@@ -1599,7 +1600,7 @@ def _admin_comments_html(store, root, gid, secret, page):
         "<div class=cmt><div class=ch><b>" + e(c.get("name", "Gast")) + "</b>"
         "<span class=ts>" + e(_cmt_date(c.get("ts"))) + "</span>"
         "<span class=meta>" + str(c.get("n", 0)) + " &#9829;</span>"
-        "<form class=ops method=post action='" + store.PREFIX + "/pics/g/" +
+        "<form class=ops method=post action='" + kit.prefix + "/pics/g/" +
         gid + "/" + secret + "'>"
         "<input type=hidden name=id value=" + c["id"] + ">"
         "<input type=hidden name=action value=cdel>"
@@ -1611,7 +1612,7 @@ def _admin_comments_html(store, root, gid, secret, page):
             "<div class=clist>" + rows + "</div>")
 
 
-def embed_html(store, gid, g, items, page, pages, total,
+def embed_html(kit, gid, g, items, page, pages, total,
                likes=None, comments=None, sort_likes=False, stars=None):
     """Minimal, chrome-less gallery view for <iframe> embedding: grid with
     like buttons, guestbook comments, the lightbox and a scroll sentinel —
@@ -1628,7 +1629,7 @@ def embed_html(store, gid, g, items, page, pages, total,
     stars = stars or []
     star_set = set(stars)
     sq = "&sort=likes" if sort_likes else ""
-    cells = "".join(_thumb_cell(store, pid, m, likes.get(pid, 0),
+    cells = "".join(_thumb_cell(kit, pid, m, likes.get(pid, 0),
                                  star=(pid in star_set))
                     for pid, m in items)
     pgn = []
@@ -1637,7 +1638,7 @@ def embed_html(store, gid, g, items, page, pages, total,
     pgn.append(f"<span>{page} / {pages}</span>")
     if page < pages:
         pgn.append(f"<a href='?embed=1{sq}&p={page+1}'>&#8250;</a>")
-    lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid), pid,
+    lb_imgs = [(f"{kit.prefix}/pics/i/{pid}", m.get("name", pid), pid,
                 likes.get(pid, 0)) for pid, m in items]
     # 1.38.4: items as JSON payload — the infinite-scroll fetch of the next
     # page carries its own #lbdata; more() hands it to window.__tyLbAdd.
@@ -1688,26 +1689,26 @@ def embed_html(store, gid, g, items, page, pages, total,
         "})();</script>"
     )
     return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
-            + store._META_MOBILE
-            + f"<title>{store._html_escape(g.get('name') or gid)}</title>"
+            + kit.meta_mobile
+            + f"<title>{kit.html_escape(g.get('name') or gid)}</title>"
             + f"<style>{_EMBED_CSS}</style></head><body><main>"
-            + _star_bar(store, sort_likes)
+            + _star_bar(kit, sort_likes)
             + f"<div class=grid>{cells}</div>"
             + f"<div class=pgn>{''.join(pgn)}</div>"
             + lbdata
             + _LB_HTML
             + _lb_script(lb_imgs)
-            + _comments_html(store, gid, comments or [])
-            + _social_js(store, gid, sort_likes, stars)
+            + _comments_html(kit, gid, comments or [])
+            + _social_js(kit, gid, sort_likes, stars)
             + inf
             + "</main></body></html>")
 
-def _embed_snippet(store, gid, title):
+def _embed_snippet(kit, gid, title):
     """Copy-paste embed for a gallery: auto-height + (1.38.2) the host tells
     the iframe its visible viewport, so the lightbox inside the auto-height
     iframe can size itself to the screen instead of the frame."""
     return (
-        f'<iframe id="ty-{gid}" src="{store.PUBLIC_BASE}/pics/g/{gid}?embed=1&sort=likes" '
+        f'<iframe id="ty-{gid}" src="{kit.public_base}/pics/g/{gid}?embed=1&sort=likes" '
         f'style="width:100%;height:640px;border:0;border-radius:8px" '
         f'loading="lazy" title="{title}"></iframe>'
         f'<script>(function(){{'
@@ -1724,18 +1725,18 @@ def _embed_snippet(store, gid, title):
         f'setTimeout(vp,250);}})();</script>')
 
 
-def gallery_html(store, gid, g, items, page, pages, total,
+def gallery_html(kit, gid, g, items, page, pages, total,
                  likes=None, comments=None, sort_likes=False, stars=None):
     """One public gallery: grid (with like buttons), uploader, guestbook
     comments, pagination. sort=likes ranks by likes — liked images
     FLIP-climb in the browser."""
-    e = store._html_escape
+    e = kit.html_escape
     likes = likes or {}
     stars = stars or []
     star_set = set(stars)
     sp = "&sort=likes" if sort_likes else ""
     title = g.get("name") or gid
-    cells = "".join(_thumb_cell(store, pid, m, likes.get(pid, 0),
+    cells = "".join(_thumb_cell(kit, pid, m, likes.get(pid, 0),
                                  star=(pid in star_set))
                     for pid, m in items)
     pgn = []
@@ -1745,8 +1746,8 @@ def gallery_html(store, gid, g, items, page, pages, total,
     if page < pages:
         pgn.append(f"<a class=btn href='?p={page+1}{sp}'>&#228;lter &#8250;</a>")
     days = max(1, PICS_TTL // 86400)
-    js = _UP_JS.replace("__P__", store.PREFIX).replace("__GID__", gid)
-    lb_imgs = [(f"{store.PREFIX}/pics/i/{pid}", m.get("name", pid), pid,
+    js = _UP_JS.replace("__P__", kit.prefix).replace("__GID__", gid)
+    lb_imgs = [(f"{kit.prefix}/pics/i/{pid}", m.get("name", pid), pid,
                 likes.get(pid, 0)) for pid, m in items]
     _DROP_ICON = ("<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' "
                   "stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'>"
@@ -1757,11 +1758,11 @@ def gallery_html(store, gid, g, items, page, pages, total,
                  "stehen oben" if sort_likes else
                  "kuratierte Reihenfolge &#8212; <a href='?sort=likes'>nach "
                  "Likes sortieren</a>")
-    return _page(store, f"pics — {title}",
+    return _page(kit, f"pics — {title}",
                  f"<h1>{e(title)}</h1>"
                  + f"<p class=meta>{total} Bilder &#183; {sort_note} &#183; l&auml;uft nach {days} Tagen ab"
                  + f" &#183; max {_fmt(PICS_MAX_FILE)} pro Bild &#183; "
-                 + f"<a href='{store.PREFIX}/pics'>alle Galerien</a></p>"
+                 + f"<a href='{kit.prefix}/pics'>alle Galerien</a></p>"
                  + "<label class=drop id=upDrop for=f>"
                  + "<input id=f type=file accept='image/*' multiple class=srinput>"
                  + _DROP_ICON
@@ -1770,23 +1771,23 @@ def gallery_html(store, gid, g, items, page, pages, total,
                  + _fmt(PICS_MAX_FILE) + " pro Bild — Bild-Links (auch aus Google-Photos-Tabs) hierher ziehen oder als Text einf\u00fcgen (Strg+V)</div>"
                  + "<div class=meta id=upstat></div>"
                  + "</label>"
-                 + _star_bar(store, sort_likes)
+                 + _star_bar(kit, sort_likes)
                  + f"<div class=grid>{cells}</div>"
                  + f"<div class=pgn>{''.join(pgn)}</div>"
-                 + _comments_html(store, gid, comments or [])
+                 + _comments_html(kit, gid, comments or [])
                  + "<details class=embedbox><summary>diese Galerie einbetten (embed)</summary>"
                  + "<p class=meta>Auto-Höhe + Nachladen beim Scrollen — einfach beide Zeilen übernehmen:</p>"
                  + "<input readonly onclick='this.select()' value='"
-                 + e(_embed_snippet(store, gid, g.get("name") or gid))
+                 + e(_embed_snippet(kit, gid, g.get("name") or gid))
                  + "'></details>"
-                 + store._agent_hint(
-                     f"curl {store.PUBLIC_BASE}/pics/g/{gid}?name=photo.jpg --data-binary @photo.jpg  # upload",
-                     f"curl -A curl {store.PUBLIC_BASE}/pics/g/{gid}                        # listing as JSON",
+                 + kit.agent_hint(
+                     f"curl {kit.public_base}/pics/g/{gid}?name=photo.jpg --data-binary @photo.jpg  # upload",
+                     f"curl -A curl {kit.public_base}/pics/g/{gid}                        # listing as JSON",
                  )
                  + f"<script>{js}</script>"
                  + _LB_HTML
                  + _lb_script(lb_imgs)
-                 + _social_js(store, gid, sort_likes, stars),
+                 + _social_js(kit, gid, sort_likes, stars),
                  _GALLERY_CSS + _LB_CSS + _SOCIAL_CSS)
 
 
@@ -1808,32 +1809,32 @@ _ADMIN_CSS = (
 )
 
 
-def _admin_card(store, gid, secret, pid, page, ops):
+def _admin_card(kit, gid, secret, pid, page, ops):
     btns = "".join(
         f"<button name=action value={a}>{lab}</button>" for a, lab in ops)
     return (
-        f"<div class=card><a href='{store.PREFIX}/pics/g/{gid}/{secret}/i/{pid}'>"
+        f"<div class=card><a href='{kit.prefix}/pics/g/{gid}/{secret}/i/{pid}'>"
         f"<img loading=lazy decoding=async alt='' "
-        f"src='{store.PREFIX}/pics/g/{gid}/{secret}/i/{pid}?thumb=1'></a>"
-        f"<form class=ops method=post action='{store.PREFIX}/pics/g/{gid}/{secret}'>"
+        f"src='{kit.prefix}/pics/g/{gid}/{secret}/i/{pid}?thumb=1'></a>"
+        f"<form class=ops method=post action='{kit.prefix}/pics/g/{gid}/{secret}'>"
         f"<input type=hidden name=id value='{pid}'>"
         f"<input type=hidden name=p value='{page}'>{btns}</form></div>"
     )
 
 
-def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
+def admin_html(kit, gid, g, secret, vis, hid, page, pages, used):
     """Admin page of ONE gallery: pool bar, ops grid, hidden section."""
-    e = store._html_escape
+    e = kit.html_escape
     title = g.get("name") or gid
     pct = min(100.0, used * 100.0 / PICS_POOL)
-    cards = "".join(_admin_card(store, gid, secret, pid, page,
+    cards = "".join(_admin_card(kit, gid, secret, pid, page,
                                 [("up", "&#8593;"), ("down", "&#8595;"),
                                  ("hide", "verbergen"), ("delete", "l&#246;schen")])
                     for pid, m in vis)
-    hcards = "".join(_admin_card(store, gid, secret, pid, page,
+    hcards = "".join(_admin_card(kit, gid, secret, pid, page,
                                  [("unhide", "einblenden"), ("delete", "l&#246;schen")])
                      for pid, m in hid)
-    lb_imgs = [(f"{store.PREFIX}/pics/g/{gid}/{secret}/i/{pid}", m.get("name", pid),
+    lb_imgs = [(f"{kit.prefix}/pics/g/{gid}/{secret}/i/{pid}", m.get("name", pid),
                 pid, bool(m.get("hidden")))
                for pid, m in list(vis) + list(hid)]
     pgn = []
@@ -1842,7 +1843,7 @@ def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
     pgn.append(f"<span class=meta>Seite {page} / {pages}</span>")
     if page < pages:
         pgn.append(f"<a class=btn href='?p={page+1}'>&#8250;</a>")
-    return _page(store, "pics — admin",
+    return _page(kit, "pics — admin",
                  f"<h1>{e(title)} &#183; admin</h1>"
                  + f"<p class=meta>{_fmt(used)} von {_fmt(PICS_POOL)} belegt (pool geteilt zwischen allen Galerien)</p>"
                  + f"<div class=bar><i style='width:{pct:.1f}%'></i></div>"
@@ -1851,73 +1852,71 @@ def admin_html(store, gid, g, secret, vis, hid, page, pages, used):
                  + f"<div class=pgn>{''.join(pgn)}</div>"
                  + f"<h2 class=hidden-sec>Verborgen ({len(hid)})</h2>"
                  + f"<div class='grid hidden-sec'>{hcards}</div>"
-                 + _admin_comments_html(store, store.ROOT, gid, secret, page)
-                 + f"<a class=back href='{store.PREFIX}/pics/g/{gid}'>&#8592; zur Galerie</a>"
+                 + _admin_comments_html(kit, kit.root, gid, secret, page)
+                 + f"<a class=back href='{kit.prefix}/pics/g/{gid}'>&#8592; zur Galerie</a>"
                  + _LB_HTML
                  + _lb_script(lb_imgs,
-                              admin_post=f"{store.PREFIX}/pics/g/{gid}/{secret}"),
+                              admin_post=f"{kit.prefix}/pics/g/{gid}/{secret}"),
                  _ADMIN_CSS + _LB_CSS + _SOCIAL_CSS)
 
 
 # --- HTTP adapters (thin glue over the domain) ------------------------------
 
-def get(h, rest, query):
+def get(kit, rest, query):
     """Dispatch GET /pics/… — rest is the path parts after /pics."""
     from urllib.parse import unquote
-    import store
-    root = store.ROOT
+    root = kit.root
     if not rest or rest == [""] or rest == ["create"]:
-        return _get_index(h, store, root, query)
+        return _get_index(kit, root, query)
     if rest[0] == "i" and len(rest) == 2 and rest[1]:
-        return _serve(h, store, root, unquote(rest[1]), admin=False, query=query)
+        return _serve(kit, root, unquote(rest[1]), admin=False, query=query)
     if rest[0] == "g":
         if len(rest) == 2 and rest[1]:
-            return _get_gallery(h, store, root, unquote(rest[1]), query)
+            return _get_gallery(kit, root, unquote(rest[1]), query)
         if len(rest) >= 3:
             gid, secret = unquote(rest[1]), unquote(rest[2])
             if not gallery_admin_ok(root, gid, secret):
-                return h._send(404, "not found\n")
+                return kit.send(404, "not found\n")
             tail = rest[3:]
             if not tail:
-                return _get_admin(h, store, root, gid, secret, query)
+                return _get_admin(kit, root, gid, secret, query)
             if tail == ["json"]:
-                return _admin_json(h, store, root, gid)
+                return _admin_json(kit, root, gid)
             if len(tail) == 2 and tail[0] == "i" and tail[1]:
-                return _serve(h, store, root, unquote(tail[1]), admin=True,
+                return _serve(kit, root, unquote(tail[1]), admin=True,
                               query=query, gid=gid)
-    return h._send(404, "not found\n")
+    return kit.send(404, "not found\n")
 
 
-def post(h, rest, qp):
+def post(kit, rest, qp):
     """Dispatch POST /pics/… — create / upload / admin actions."""
     from urllib.parse import unquote
-    import store
-    root = store.ROOT
+    root = kit.root
     if rest and rest[0] == "i" and len(rest) == 2 and rest[1] and "like" in (qp or {}):
-        return _like_image(h, store, root, unquote(rest[1]))
+        return _like_image(kit, root, unquote(rest[1]))
     if not rest or rest == [""]:
         if "create=1" in (qp or {}) or "create" in (qp or {}):
-            return _create(h, store, root, qp)
-        return h._send(400, json.dumps(
+            return _create(kit, root, qp)
+        return kit.send(400, json.dumps(
             {"error": "nothing to do — use ?create=1 to create a gallery, "
                       "or POST /pics/g/<gid> to upload"}), "application/json")
     if rest == ["create"]:
-        return _create(h, store, root, qp)
+        return _create(kit, root, qp)
     if rest[0] == "g":
         if len(rest) == 2 and rest[1]:
             if "clike" in (qp or {}):
-                return _comment_like(h, store, root, unquote(rest[1]), qp)
+                return _comment_like(kit, root, unquote(rest[1]), qp)
             if "comment" in (qp or {}):
-                return _comment_create(h, store, root, unquote(rest[1]))
+                return _comment_create(kit, root, unquote(rest[1]))
             if "url" in (qp or {}):
-                return _url_import(h, store, root, unquote(rest[1]), qp)
-            return _upload(h, store, root, unquote(rest[1]), qp)
+                return _url_import(kit, root, unquote(rest[1]), qp)
+            return _upload(kit, root, unquote(rest[1]), qp)
         if len(rest) == 3:
             gid, secret = unquote(rest[1]), unquote(rest[2])
             if not gallery_admin_ok(root, gid, secret):
-                return h._send(404, "not found\n")
-            return _admin_action(h, store, root, gid, secret)
-    return h._send(404, "not found\n")
+                return kit.send(404, "not found\n")
+            return _admin_action(kit, root, gid, secret)
+    return kit.send(404, "not found\n")
 
 
 def _page_of(query, default=1):
@@ -1932,27 +1931,26 @@ def _form_value(body_qp, key, default=""):
     return (body_qp.get(key) or [default])[0]
 
 
-def _read_form(h):
+def _read_form(kit):
     """Parse an urlencoded form body (admin actions, create fallback)."""
     from urllib.parse import parse_qs
-    length = h.headers.get("Content-Length")
-    body = h.rfile.read(int(length)) if length else b""
-    return parse_qs(body.decode("utf-8", "replace"))
+    body = kit.read_body()
+    return parse_qs((body or b"").decode("utf-8", "replace"))
 
 
 # --- GET views ---------------------------------------------------------------
 
-def _get_index(h, store, root, query):
+def _get_index(kit, root, query):
     gals = all_galleries(root, listed_only=True)
-    if h._is_agent() and "html=1" not in query:
+    if kit.is_agent() and "html=1" not in query:
         out = []
         for gid, g in gals[:PICS_JSON_CAP]:
             n = len([1 for _, m in all_pics(root, gid) if not m.get("hidden")])
-            out.append(gallery_public_meta(store, gid, g, n))
-        return h._send(200, json.dumps({
+            out.append(gallery_public_meta(kit, gid, g, n))
+        return kit.send(200, json.dumps({
             "galleries": out,
             "create": {"method": "POST",
-                       "url": f"{store.PUBLIC_BASE}/pics?create=1",
+                       "url": f"{kit.public_base}/pics?create=1",
                        "note": "optional &name=<display name> &listed=1; "
                                "response includes the one-time admin token"},
         }, indent=2), "application/json")
@@ -1960,10 +1958,10 @@ def _get_index(h, store, root, query):
     for gid, g in gals[:200]:
         n = len([1 for _, m in all_pics(root, gid) if not m.get("hidden")])
         gals_html.append((gid, g, n))
-    h._send(200, index_html(store, gals_html), "text/html")
+    kit.send(200, index_html(kit, gals_html), "text/html")
 
 
-def _create(h, store, root, qp):
+def _create(kit, root, qp):
     """POST /pics?create=1 — new gallery. Parameters come from the query
     string (agents, curl) or an urlencoded form body (browser form);
     query wins, body fills in the rest."""
@@ -1971,51 +1969,51 @@ def _create(h, store, root, qp):
     from urllib.parse import unquote
     name = unquote((qp.get("name") or [""])[0]).strip()
     listed = bool((qp.get("listed") or [""])[0])
-    if not name and "name" not in qp and h.headers.get("Content-Type", "").startswith(
+    if not name and "name" not in qp and kit.header("Content-Type", "").startswith(
             "application/x-www-form-urlencoded"):
-        form = _read_form(h)
+        form = _read_form(kit)
         name = _form_value(form, "name").strip()
         listed = listed or bool(_form_value(form, "listed"))
-    key = (store._safe_name(name) or "")[:80] or None
-    gid, g, existed = create_gallery(root, key, listed, h._client_ip())
-    pub = f"{store.PUBLIC_BASE}/pics/g/{gid}"
-    wants_json = (h._is_agent()
-                  or "application/json" in (h.headers.get("Accept") or ""))
+    key = (kit.safe_name(name) or "")[:80] or None
+    gid, g, existed = create_gallery(root, key, listed, kit.client_ip())
+    pub = f"{kit.public_base}/pics/g/{gid}"
+    wants_json = (kit.is_agent()
+                  or "application/json" in (kit.header("Accept") or ""))
     if existed:
         # create-or-get on an existing named gallery: public info only —
         # the admin token stays with whoever created it
         if wants_json:
-            return h._send(200, json.dumps({
+            return kit.send(200, json.dumps({
                 "id": gid, "url": pub, "name": g.get("name") or gid,
                 "existed": True,
                 "note": "gallery already exists — the admin token was shown "
                         "only at creation and is not re-issued",
             }, indent=2), "application/json")
-        return h._send(200, _page(store, "pics — galerie existiert",
+        return kit.send(200, _page(kit, "pics — galerie existiert",
             "<h1>Galerie existiert schon</h1>"
-            + f"<p><a class=btn href='{store.PREFIX}/pics/g/{gid}'>Zur Galerie</a></p>"
+            + f"<p><a class=btn href='{kit.prefix}/pics/g/{gid}'>Zur Galerie</a></p>"
             + "<p class=meta>Der Admin-Link wurde nur beim Anlegen gezeigt.",
             _GALLERY_CSS), "text/html")
     adm = f"{pub}/{g['token']}"
     if wants_json:
-        return h._send(200, json.dumps({
+        return kit.send(200, json.dumps({
             "id": gid, "url": pub, "admin_url": adm, "token": g["token"],
             "name": g["name"], "listed": g["listed"],
             "expires_at": _iso(g["expires"]),
             "note": "the admin token is shown exactly once — store it now",
         }, indent=2), "application/json")
     # browser: one-time page that shows the admin link
-    h._send(200, index_html(store, [], created=(gid, g)), "text/html")
+    kit.send(200, index_html(kit, [], created=(gid, g)), "text/html")
 
 
-def _get_gallery(h, store, root, gid, query):
+def _get_gallery(kit, root, gid, query):
     g = load_gallery(root, gid)
     if not g:
-        return h._send(404, "not found\n")
+        return kit.send(404, "not found\n")
     if "likes=1" in query:                      # cheap counters for polling
         lk = load_likes(root, gid)
         cl = load_comments(root, gid)
-        return h._send(200, json.dumps({
+        return kit.send(200, json.dumps({
             "likes": {p: e.get("n", 0) for p, e in lk["imgs"].items()
                       if e.get("n")},
             "cl": {c["id"]: c.get("n", 0) for c in cl["list"] if c.get("n")},
@@ -2027,34 +2025,34 @@ def _get_gallery(h, store, root, gid, query):
     items = _sorted_visible(all_pics(root, gid), likes=lm if sort_likes else None,
                             stars=stars)
     cmts = load_comments(root, gid)["list"]
-    if h._is_agent() and "html=1" not in query:
-        return h._send(200, json.dumps({
-            "gallery": gallery_public_meta(store, gid, g, len(items)),
+    if kit.is_agent() and "html=1" not in query:
+        return kit.send(200, json.dumps({
+            "gallery": gallery_public_meta(kit, gid, g, len(items)),
             "selected": stars,
-            "images": [public_meta(store, pid, m, lm.get(pid, 0))
+            "images": [public_meta(kit, pid, m, lm.get(pid, 0))
                        for pid, m in items[:PICS_JSON_CAP]],
             "comments": [public_comment(c) for c in reversed(cmts)],
             "social": {
                 "like_image": {
                     "method": "POST",
-                    "url": f"{store.PUBLIC_BASE}/pics/i/<id>?like=1",
+                    "url": f"{kit.public_base}/pics/i/<id>?like=1",
                     "note": "toggle per visitor (pseudonymous fingerprint); "
                             "response {id, likes, liked}"},
                 "likes_poll": {
                     "method": "GET",
-                    "url": f"{store.PUBLIC_BASE}/pics/g/<gid>?likes=1",
+                    "url": f"{kit.public_base}/pics/g/<gid>?likes=1",
                     "note": "cheap counts for live ranking: "
                             "{likes: {id: n}, cl: {cid: n}, comments: m}"},
                 "comment": {
                     "method": "POST",
-                    "url": f"{store.PUBLIC_BASE}/pics/g/<gid>?comment=1",
+                    "url": f"{kit.public_base}/pics/g/<gid>?comment=1",
                     "body": f"urlencoded form (or JSON): name (<={PICS_NAME_MAX_LEN} chars, "
                             f"optional), text (<={PICS_COMMENT_MAX_LEN} chars); "
                             f"cooldown {PICS_COMMENT_COOLDOWN}s per visitor, "
                             f"max {PICS_MAX_COMMENTS} per gallery"},
                 "comment_like": {
                     "method": "POST",
-                    "url": f"{store.PUBLIC_BASE}/pics/g/<gid>?clike=<cid>",
+                    "url": f"{kit.public_base}/pics/g/<gid>?clike=<cid>",
                     "note": "toggle — same fingerprint model as image likes"},
                 "sort": "&sort=likes orders images by likes (ties keep the "
                         "curated order); browsers FLIP-climb live on sort pages",
@@ -2063,52 +2061,52 @@ def _get_gallery(h, store, root, gid, query):
             "limits": {"max_file_bytes": PICS_MAX_FILE, "ttl_seconds": PICS_TTL,
                        "edge_px": PICS_EDGE},
             "upload": {"method": "POST",
-                       "url": f"{store.PUBLIC_BASE}/pics/g/{gid}?name=<filename>"},
+                       "url": f"{kit.public_base}/pics/g/{gid}?name=<filename>"},
         }, indent=2), "application/json")
     if "embed=1" in query:
         total = len(items)
         pages = max(1, (total + EMBED_PAGE - 1) // EMBED_PAGE)
         page = min(_page_of(query), pages)
         chunk = items[(page - 1) * EMBED_PAGE: page * EMBED_PAGE]
-        return h._send(200, embed_html(store, gid, g, chunk, page, pages, total,
+        return kit.send(200, embed_html(kit, gid, g, chunk, page, pages, total,
                                        likes=lm, comments=cmts,
                                        sort_likes=sort_likes, stars=stars), "text/html")
     total = len(items)
     pages = max(1, (total + PICS_PAGE - 1) // PICS_PAGE)
     page = min(_page_of(query), pages)
     chunk = items[(page - 1) * PICS_PAGE: page * PICS_PAGE]
-    h._send(200, gallery_html(store, gid, g, chunk, page, pages, total,
+    kit.send(200, gallery_html(kit, gid, g, chunk, page, pages, total,
                               likes=lm, comments=cmts,
                               sort_likes=sort_likes, stars=stars), "text/html")
 
 
-def _get_admin(h, store, root, gid, secret, query):
+def _get_admin(kit, root, gid, secret, query):
     items = all_pics(root, gid)
     vis = _sorted_visible(items)
     hid = sorted([t for t in items if t[1].get("hidden")],
                  key=lambda t: -t[1].get("created", 0))[:500]
     g = load_gallery(root, gid)
-    if h._is_agent():
-        return _admin_json(h, store, root, gid)
+    if kit.is_agent():
+        return _admin_json(kit, root, gid)
     pages = max(1, (len(vis) + PICS_ADMIN_PAGE - 1) // PICS_ADMIN_PAGE)
     page = min(_page_of(query), pages)
     chunk = vis[(page - 1) * PICS_ADMIN_PAGE: page * PICS_ADMIN_PAGE]
-    h._send(200, admin_html(store, gid, g, secret, chunk, hid, page, pages,
+    kit.send(200, admin_html(kit, gid, g, secret, chunk, hid, page, pages,
                             pics_size(root)), "text/html")
 
 
-def _admin_json(h, store, root, gid):
+def _admin_json(kit, root, gid):
     items = all_pics(root, gid)
     vis = _sorted_visible(items)
     hid = [t for t in items if t[1].get("hidden")]
     g = load_gallery(root, gid)
     lm = likes_map(root, gid)
-    h._send(200, json.dumps({
-        "gallery": gallery_public_meta(store, gid, g, len(vis)) if g else None,
+    kit.send(200, json.dumps({
+        "gallery": gallery_public_meta(kit, gid, g, len(vis)) if g else None,
         "admin": True,
-        "visible": [public_meta(store, pid, m, lm.get(pid, 0))
+        "visible": [public_meta(kit, pid, m, lm.get(pid, 0))
                     for pid, m in vis[:PICS_JSON_CAP]],
-        "hidden": [public_meta(store, pid, m, lm.get(pid, 0))
+        "hidden": [public_meta(kit, pid, m, lm.get(pid, 0))
                    for pid, m in hid[:PICS_JSON_CAP]],
         "comments": [public_comment(c)
                      for c in reversed(load_comments(root, gid)["list"])],
@@ -2116,22 +2114,22 @@ def _admin_json(h, store, root, gid):
     }, indent=2), "application/json")
 
 
-def _serve(h, store, root, pid, admin, query, gid=None):
+def _serve(kit, root, pid, admin, query, gid=None):
     """Serve one image (or its thumb). Hidden -> 404 unless admin."""
     if not _HEX.match(pid or ""):
-        return h._send(404, "not found\n")
+        return kit.send(404, "not found\n")
     sweep(root)
     fp = _path(root, pid)
     m = load_meta(root, pid)
     if not os.path.isfile(fp) or not m:
-        return h._send(404, "not found\n")
+        return kit.send(404, "not found\n")
     if m.get("expires", 0) < time.time():
         remove_pic(root, pid)
-        return h._send(404, "not found\n")
+        return kit.send(404, "not found\n")
     if m.get("hidden") and not admin:
-        return h._send(404, "not found\n")
+        return kit.send(404, "not found\n")
     if admin and gid is not None and m.get("gid") != gid:
-        return h._send(404, "not found\n")     # admin of another gallery
+        return kit.send(404, "not found\n")     # admin of another gallery
     ctype = m.get("ctype") or "image/webp"
     # 1.39.2: ?thumb[=N] — N = gewuenschte longest edge (srcset-Kandidaten),
     # ?thumb=1 bleibt der Default (THUMB_PX). Whitelist, kein beliebiges px.
@@ -2140,9 +2138,9 @@ def _serve(h, store, root, pid, admin, query, gid=None):
         _px = int(_mv.group(1)) if (_mv and _mv.group(1)) else None
         if _px is not None and _px not in THUMB_WIDTHS:
             _px = None
-        return h._serve_thumb(fp, ctype, _px)
+        return kit.serve_thumb(fp, ctype, _px)
     # image ids are immutable until expiry -> browsers may cache a day
-    h._serve_file(fp, ctype, m.get("name"), "download=1" in query, pid,
+    kit.serve_file(fp, ctype, m.get("name"), "download=1" in query, pid,
                   cache=None if "download=1" in query else "public, max-age=86400")
 
 
@@ -2195,7 +2193,7 @@ def _lh3_hq(url):
     return url + "=w2048-h2048-k-no"
 
 
-def _url_import(h, store, root, gid, qp):
+def _url_import(kit, root, gid, qp):
     """POST /pics/g/<gid>?url=<url> — fetch a remote image server-side into
     the gallery (stage 1 of the google-photos-import plan). Same SSRF rules
     as the throway url import (public hosts only, redirect-checked), images
@@ -2204,16 +2202,16 @@ def _url_import(h, store, root, gid, qp):
     from urllib.parse import unquote
     raw = unquote((qp.get("url") or [""])[0]).strip()
     if not raw:
-        return h._send(400, json.dumps({"error": "url required"}), "application/json")
+        return kit.send(400, json.dumps({"error": "url required"}), "application/json")
     g = load_gallery(root, gid)
     if not g:
-        return h._send(404, json.dumps({"error": "gallery not found"}), "application/json")
+        return kit.send(404, json.dumps({"error": "gallery not found"}), "application/json")
     try:
-        data, name, ctype = store._fetch_remote(raw, max_bytes=PICS_MAX_FILE)
-    except store._FetchError as ex:
+        data, name, ctype = kit.fetch_remote(raw, max_bytes=PICS_MAX_FILE)
+    except kit.FetchError as ex:
         code = getattr(ex, "code", None) or ex.args[0] if ex.args else 502
         msg = getattr(ex, "msg", None) or (ex.args[0] if ex.args else "fetch failed")
-        return h._send(code if isinstance(code, int) else 502,
+        return kit.send(code if isinstance(code, int) else 502,
                        json.dumps({"error": f"fetch failed: {msg}"}),
                        "application/json")
     if not (ctype or "").startswith("image/"):
@@ -2222,118 +2220,118 @@ def _url_import(h, store, root, gid, qp):
         if (ctype or "").startswith("text/html"):
             urls = _scrape_lh3(data.decode("utf-8", "replace"))
             if not urls:
-                return h._send(400, json.dumps(
+                return kit.send(400, json.dumps(
                     {"error": "page contains no importable images (only direct "
                               "image URLs or Google Photos share links work)"}),
                     "application/json")
             imported, errors, dup_count = [], [], 0
             for u in urls:
                 try:
-                    idata, iname, ict = store._fetch_remote(_lh3_hq(u),
+                    idata, iname, ict = kit.fetch_remote(_lh3_hq(u),
                                                             max_bytes=PICS_MAX_FILE)
                     if not (ict or "").startswith("image/"):
                         errors.append(f"{u[-24:]}: not an image")
                         continue
-                    pid, m, dup = store_pic(root, idata, iname or "image", h._client_ip(), gid)
+                    pid, m, dup = store_pic(root, idata, iname or "image", kit.client_ip(), gid, bump=kit.bump_stats)
                     if dup:
                         dup_count += 1
                     else:
-                        imported.append(public_meta(store, pid, m))
-                except store._FetchError as ex:
+                        imported.append(public_meta(kit, pid, m))
+                except kit.FetchError as ex:
                     errors.append(f"{u[-24:]}: {getattr(ex, 'msg', 'fetch failed')}")
                 except PicError as ex:
                     errors.append(f"{u[-24:]}: {ex.msg}")
-            return h._send(200, json.dumps({
-                "gallery": store.PUBLIC_BASE + "/pics/g/" + gid,
+            return kit.send(200, json.dumps({
+                "gallery": kit.public_base + "/pics/g/" + gid,
                 "imported": len(imported), "duplicates": dup_count,
                 "failed": len(errors),
                 "images": imported[:20], "errors": errors[:10],
             }, indent=2), "application/json")
-        return h._send(400, json.dumps(
+        return kit.send(400, json.dumps(
             {"error": f"not an image (content-type {ctype or 'unknown'})"}), "application/json")
     try:
-        pid, m, dup = store_pic(root, data, name or "image", h._client_ip(), gid)
+        pid, m, dup = store_pic(root, data, name or "image", kit.client_ip(), gid, bump=kit.bump_stats)
     except PicError as ex:
         # 1.41.2/P1: code + ggf. Retry-After (507 Pool voll -> wartet nicht
         # von selbst, aber der Admin kann freigeben; Hinweis an den Agenten)
-        return h._err(ex.code, ex.msg, retry_after=PICS_RETRY_AFTER if ex.code == 507 else None)
-    resp = dict(public_meta(store, pid, m))
+        return kit.err(ex.code, ex.msg, retry_after=PICS_RETRY_AFTER if ex.code == 507 else None)
+    resp = dict(public_meta(kit, pid, m))
     if dup:
         resp["duplicate"] = True
-    h._send(200, json.dumps(resp, indent=2), "application/json")
+    kit.send(200, json.dumps(resp, indent=2), "application/json")
 
 
-def _upload(h, store, root, gid, qp):
+def _upload(kit, root, gid, qp):
     """Public upload into one gallery: raw body (agents, JS queue) or
     multipart (browser form / batch)."""
     from urllib.parse import unquote
-    ip = h._client_ip()
+    ip = kit.client_ip()
     g = load_gallery(root, gid)
     if not g:
-        return h._send(404, json.dumps({"error": "gallery not found"}),
+        return kit.send(404, json.dumps({"error": "gallery not found"}),
                        "application/json")
     name = unquote((qp.get("name") or [""])[0] or "").strip() or "image"
-    ctype = h.headers.get("Content-Type", "")
+    ctype = kit.header("Content-Type", "")
     if ctype.startswith("multipart/form-data"):
-        length = h.headers.get("Content-Length")
+        length = kit.header("Content-Length")
         if length is None:
-            return h._send(411, json.dumps({"error": "length required"}), "application/json")
+            return kit.send(411, json.dumps({"error": "length required"}), "application/json")
         if int(length) > 200 * 1024 * 1024:
-            return h._send(413, json.dumps({"error": "batch too large"}), "application/json")
-        payload = h._read_body()
+            return kit.send(413, json.dumps({"error": "batch too large"}), "application/json")
+        payload = kit.read_body()
         if payload is None:
-            return h._send(400, json.dumps({"error": "bad body"}), "application/json")
-        files = [t for t in store._parse_multipart(payload, ctype) if t[0]]
+            return kit.send(400, json.dumps({"error": "bad body"}), "application/json")
+        files = [t for t in kit.parse_multipart(payload, ctype) if t[0]]
         if not files:
-            return h._send(400, json.dumps({"error": "no file part"}), "application/json")
+            return kit.send(400, json.dumps({"error": "no file part"}), "application/json")
         added, errors, dups = [], [], []
         for n, d, _c in files:
             try:
-                pid, m, dup = store_pic(root, d, store._safe_name(n)[:128], ip, gid)
+                pid, m, dup = store_pic(root, d, kit.safe_name(n)[:128], ip, gid, bump=kit.bump_stats)
                 if dup:
-                    dups.append(public_meta(store, pid, m))
+                    dups.append(public_meta(kit, pid, m))
                 else:
-                    added.append(public_meta(store, pid, m))
+                    added.append(public_meta(kit, pid, m))
             except PicError as ex:
-                errors.append(f"{store._safe_name(n)[:64]}: {ex.msg}")
-        if h._is_agent():
+                errors.append(f"{kit.safe_name(n)[:64]}: {ex.msg}")
+        if kit.is_agent():
             code = 200 if not errors else (507 if all(
                 "pool" in e for e in errors) and not added else 207)
-            return h._send(code, json.dumps(
+            return kit.send(code, json.dumps(
                 {"added": added, "duplicates": len(dups), "errors": errors},
                 indent=2), "application/json")
-        return h._send(303, b"", extra={"Location": f"{store.PREFIX}/pics/g/{gid}"})
+        return kit.send(303, b"", extra={"Location": f"{kit.prefix}/pics/g/{gid}"})
     # raw body: one image per request (JS queue + agents)
-    length = h.headers.get("Content-Length")
+    length = kit.header("Content-Length")
     if length is None:
-        return h._send(411, json.dumps({"error": "length required"}), "application/json")
+        return kit.send(411, json.dumps({"error": "length required"}), "application/json")
     length = int(length)
     if length > PICS_MAX_FILE:
         # drain the body so keep-alive stays usable for browsers
         left = length
         while left > 0:
-            chunk = h.rfile.read(min(1024 * 1024, left))
+            chunk = kit.read_raw(min(1024 * 1024, left))
             if not chunk:
                 break
             left -= len(chunk)
-        return h._send(413, json.dumps(
+        return kit.send(413, json.dumps(
             {"error": f"too large (max {_fmt(PICS_MAX_FILE)})"}), "application/json")
-    data = h.rfile.read(length)
+    data = kit.read_raw(length)
     try:
-        pid, m, dup = store_pic(root, data, store._safe_name(name)[:128], ip, gid)
+        pid, m, dup = store_pic(root, data, kit.safe_name(name)[:128], ip, gid, bump=kit.bump_stats)
     except PicError as ex:
         # 1.41.2/P1: code + ggf. Retry-After (507 Pool voll -> wartet nicht
         # von selbst, aber der Admin kann freigeben; Hinweis an den Agenten)
-        return h._err(ex.code, ex.msg, retry_after=PICS_RETRY_AFTER if ex.code == 507 else None)
-    resp = dict(public_meta(store, pid, m))
+        return kit.err(ex.code, ex.msg, retry_after=PICS_RETRY_AFTER if ex.code == 507 else None)
+    resp = dict(public_meta(kit, pid, m))
     if dup:
         resp["duplicate"] = True
-    h._send(200, json.dumps(resp, indent=2), "application/json")
+    kit.send(200, json.dumps(resp, indent=2), "application/json")
 
 
-def _admin_action(h, store, root, gid, secret):
+def _admin_action(kit, root, gid, secret):
     """POST /pics/g/<gid>/<secret> with urlencoded form: id, action, p."""
-    form = _read_form(h)
+    form = _read_form(kit)
     pid = _form_value(form, "id")
     action = _form_value(form, "action")
     page = _form_value(form, "p", "1")
@@ -2344,61 +2342,61 @@ def _admin_action(h, store, root, gid, secret):
     elif action in ("hide", "unhide", "delete"):
         moderate(root, pid, action, gid=gid)
     else:
-        return h._send(400, "unknown action\n")
-    h._send(303, b"", extra={
-        "Location": f"{store.PREFIX}/pics/g/{gid}/{secret}?p={page}"})
+        return kit.send(400, "unknown action\n")
+    kit.send(303, b"", extra={
+        "Location": f"{kit.prefix}/pics/g/{gid}/{secret}?p={page}"})
 
 
-def _like_image(h, store, root, pid):
+def _like_image(kit, root, pid):
     """POST /pics/i/<pid>?like=1 — toggle, JSON {id, likes, liked}."""
-    res = toggle_image_like(root, pid, h._client_ip(),
-                            h.headers.get("User-Agent", ""))
+    res = toggle_image_like(root, pid, kit.client_ip(),
+                            kit.header("User-Agent", ""))
     if res is None:
-        return h._send(404, json.dumps({"error": "image not found"}),
+        return kit.send(404, json.dumps({"error": "image not found"}),
                        "application/json")
     n, liked = res
-    h._send(200, json.dumps({"id": pid, "likes": n, "liked": liked}),
+    kit.send(200, json.dumps({"id": pid, "likes": n, "liked": liked}),
             "application/json")
 
 
-def _comment_like(h, store, root, gid, qp):
+def _comment_like(kit, root, gid, qp):
     """POST /pics/g/<gid>?clike=<cid> — toggle, JSON {id, likes, liked}."""
     from urllib.parse import unquote
     cid = unquote((qp.get("clike") or [""])[0]).strip()
-    res = toggle_comment_like(root, gid, cid, h._client_ip(),
-                              h.headers.get("User-Agent", ""))
+    res = toggle_comment_like(root, gid, cid, kit.client_ip(),
+                              kit.header("User-Agent", ""))
     if res is None:
-        return h._send(404, json.dumps({"error": "comment not found"}),
+        return kit.send(404, json.dumps({"error": "comment not found"}),
                        "application/json")
     n, liked = res
-    h._send(200, json.dumps({"id": cid, "likes": n, "liked": liked}),
+    kit.send(200, json.dumps({"id": cid, "likes": n, "liked": liked}),
             "application/json")
 
 
-def _comment_create(h, store, root, gid):
+def _comment_create(kit, root, gid):
     """POST /pics/g/<gid>?comment=1 — urlencoded form (browser) or JSON."""
-    ctype = h.headers.get("Content-Type", "")
+    ctype = kit.header("Content-Type", "")
     if ctype.startswith("application/json"):
         try:
-            length = int(h.headers.get("Content-Length") or 0)
+            length = int(kit.header("Content-Length") or 0)
             doc = json.loads(
-                h.rfile.read(length).decode("utf-8", "replace") or "{}")
+                kit.read_raw(length).decode("utf-8", "replace") or "{}")
         except Exception:
             doc = {}
         name, text = str(doc.get("name", "")), str(doc.get("text", ""))
     else:
-        form = _read_form(h)
+        form = _read_form(kit)
         name, text = _form_value(form, "name"), _form_value(form, "text")
-    c, err = add_comment(root, gid, name, text, h._client_ip())
+    c, err = add_comment(root, gid, name, text, kit.client_ip())
     if err:
-        return h._send(err[0], json.dumps({"error": err[1]}),
+        return kit.send(err[0], json.dumps({"error": err[1]}),
                        "application/json")
-    if (h._is_agent()
-            or "application/json" in (h.headers.get("Accept") or "")):
-        return h._send(200, json.dumps(public_comment(c), indent=2),
+    if (kit.is_agent()
+            or "application/json" in (kit.header("Accept") or "")):
+        return kit.send(200, json.dumps(public_comment(c), indent=2),
                        "application/json")
-    h._send(303, b"",
-            extra={"Location": f"{store.PREFIX}/pics/g/{gid}#comments"})
+    kit.send(303, b"",
+            extra={"Location": f"{kit.prefix}/pics/g/{gid}#comments"})
 
 
 # --- self-service surfaces (merged into store's /api and /help) -------------

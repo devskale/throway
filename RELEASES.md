@@ -1,9 +1,34 @@
 # throway — Releases
 
-**Current version:** `1.49.0`
+**Current version:** `1.50.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.50.0 — 2026-10-04
+
+### pics zieht aufs Request-Kit nach (Q7b aus dem 1.49.0-Grilling)
+
+Die Naht ist jetzt komplett: **beide Namespace-Module (dirs, pics)
+sitzen auf demselben Kit** — pics bekam bisher den Handler (`h`) UND
+lazy-importierte das store-Modul. Beide Leaks enden hier:
+
+* `pics.get/post` bekommen das Kit statt `h`; das `(h, store, root)`-
+  Threading (16 Dispatch-/Helper-Funktionen + 14 Rendering-Funktionen
+  mit `store`-Parameter) kollabiert zu `(kit, root)` bzw. `(kit, …)`
+* 49× `h._send`, 7× `h._client_ip`, 6× `h._is_agent` u. a. → Kit-Methoden
+* Kit erweitert um `client_ip`, `root`, `header(name, default)`,
+  `read_raw(n)` (Streaming/Drain), `fetch_remote` + `FetchError`
+* `store_pic`: Stats-Bump als optionaler `bump`-Parameter — der lazy
+  `import store` verschwindet; nebenher fixt das die stille Side-Effect-
+  Falle, dass der Direktaufruf-Test (test_pics.py:1068) bisher ins
+  **Repo**-stats.json schrieb
+
+Verhalten identisch; Verhaltens-Suite unverändert grün.
+
+Tests: **140 passed** · validate 28/16/50 PASS.
 
 ---
 
