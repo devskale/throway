@@ -1,9 +1,35 @@
 # throway — Releases
 
-**Current version:** `1.53.1`
+**Current version:** `1.53.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.53.2 — 2026-10-04
+
+### Doc-Wahrheit: Whole-Dir-Delete auf offenen Dirs ist offen
+
+AGENTS.md behauptete „Whole-dir **delete always** needs the dir's token —
+even on open dirs". Der Code (`dirs.py delete`) gatest nur `write=1`-Dirs
+(`_write_guard`) und retained Dirs (Retain-Token) — offene Dirs sind per
+`DELETE /d/<key>` frei löschbar, `rmtree` ohne jedes Token. Bewiesen durch
+Session 01a0fc8a (Token-loser DELETE auf Produktion → 200) beim Aufräumen
+ihres `throway-version-drift`-Dirs.
+
+Kein Verhaltenschange — die Doku auf die Code-Wahrheit gebracht:
+
+- **AGENTS.md**: Satz korrigiert — Token-Pflicht gilt für write-geschützte
+  und retained Dirs; offene Dirs sind offen löschbar („use &write=1 to
+  protect"). Die AGENTS.md-Kopie liegt auch im Deploy-Root als
+  Agent-Kontext — ein Agent, der der alten Aussage glaubte, verließ sich
+  auf einen Schutz, der nicht existierte.
+- **/help/dirs** (dirs.py-Topic): Warnzeile an der DELETE-Zeile —
+  „open dirs: anyone with the URL can do this — protect with &write=1;
+  retained dirs need the retain token".
+
+Tests: 161 passed unverändert · validate 28/16/50 PASS.
 
 ---
 

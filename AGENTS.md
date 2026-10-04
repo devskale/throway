@@ -91,8 +91,9 @@ Full table: `GET /help/errors`.
   1.47.0, write gates apply).
 - **Optional write protection** (`&write=1`): token shown exactly once;
   writes then need `X-Throway-Write` header or `?write=`; reads stay
-  open. Whole-dir **delete always** needs the dir's token (or retain
-  token) — even on open dirs.
+  open. Whole-dir **delete** needs the dir's token on write-protected
+  dirs, the retain token on retained dirs — on an **open dir it is
+  open**: anyone with the URL can wipe it (use `&write=1` to protect).
 - **`?json=1` / `?html=1`** force the listing representation on
   `/d/<key>`, `/d`, history, browse — against the UA heuristic (since
   1.47.0).

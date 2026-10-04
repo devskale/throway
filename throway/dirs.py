@@ -1024,6 +1024,8 @@ require the token via the X-Throway-Write header or ?write=<token>
    PATCH {PUBLIC_BASE}/d/<key>/<file>  -> append text (bumps updated)
    DELETE {PUBLIC_BASE}/d/<key>/<file> -> remove one file
    DELETE {PUBLIC_BASE}/d/<key>        -> delete the whole dir
+        (open dirs: anyone with the URL can do this — protect with
+         &write=1; retained dirs need the retain token)
    GET  {PUBLIC_BASE}/d/<key>/history  -> edit history (JSON for agents,
         HTML for browsers): last {HISTORY_LIMIT} entries, newest first, with
         date, file, action (add|put|append|delete) and byte deltas.
