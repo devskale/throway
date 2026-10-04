@@ -62,11 +62,34 @@ for t in $TOPICS; do
 done
 rm -rf "$ROOT"
 
-# Atomic-Write-Guard (Retro 2026-10-02, hard-validate): Persistenz-
-# Schreiben nur via _atomic_json (tmp + os.replace) — die Data-Loss-Race
-# von 1.45.2 war genau die Form json.dump(x, open(y, "w")).
-DIRECT=$(grep -nE 'json\.dump\([^)]*open\(' store.py throway/*.py | grep -v '\.part' || true)
-[ -z "$DIRECT" ] || { echo "FAIL: nicht-atomare json.dump-Schreiben (→ _atomic_json):"; echo "$DIRECT"; FAIL=1; }
+# Atomic-Write-Guard (Retro 2026-10-02, hard-validate; 1.53.1 verschärft):
+# Persistenz-Schreiben nur via storage.atomic_json (tmp + os.replace) — die
+# Data-Loss-Race von 1.45.2. Die alte Regex (json.dump(.. open(..)) sah die
+# with-Block-Form NICHT — genau so blieben pics save_meta/save_gallery
+# monatelang nicht-atomar unentdeckt (1.52.0-Fund). Seit 1.52.0 gehen ALLE
+# JSON-Writes durch throway/storage.py → die enge Regel: json.dump (nicht
+# json.dumps — das ist nur Serialisierung) existiert nur noch dort.
+DUMPS=$(grep -nE 'json\.dump\(' store.py throway/*.py | grep -v 'throway/storage.py' || true)
+[ -z "$DUMPS" ] || { echo "FAIL: json.dump ausserhalb von throway/storage.py (→ storage.atomic_json):"; echo "$DUMPS"; FAIL=1; }
+
+# Prosa-Glitch-Guard (1.53.1): CJK/Hangul in deutscher Agent-Prosa ist die
+# LLM-Glitch-Klasse (passiert: „读者“ statt „Leser“ in CONTEXT.md, 1.52.0 —
+# vom Korrekturlesen gefangen, von keinem Check). Deterministisch fangbar.
+# BSD-grep hat kein -P, deshalb Python.
+python3 - <<'PY' || { echo "FAIL: CJK/Hangul in Agent-Prosa"; FAIL=1; }
+import re
+bad = []
+for fn in ("CONTEXT.md", "RELEASES.md", "AGENTS.md", "API.md"):
+    try:
+        t = open(fn, encoding="utf-8").read()
+    except OSError:
+        continue
+    for m in re.finditer(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", t):
+        bad.append(f"{fn}: {t.count(m.group(0))}x {m.group(0)!r}")
+        break
+if bad:
+    raise SystemExit(" | ".join(bad))
+PY
 
 # CSS-Klammer-Balance (Retro 2026-10-02): Verwaiste/doppelte } legen die
 # FOLGENDE Regel still weg (in throway 2× passiert). Die CSS-Strings liegen

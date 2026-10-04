@@ -9,12 +9,21 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pytest
+
+# In-process-Importe von store.py (test_contract, _store_module-Reloads,
+# gen-Skripte): ohne THROWAWAY_ROOT macht store.py beim Import makedirs
+# auf dem Produktiv-Default-Pfad — auf Dev-Maschinen OSError (read-only
+# /srv; passiert im 1.53.0-Fidelity-Loop). Session-Default auf ein
+# Tempdir; Subprocess-Tests setzen ihr ROOT explizit und überschreiben.
+os.environ.setdefault("THROWAWAY_ROOT",
+                      tempfile.mkdtemp(prefix="throway-inproc-"))
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Never follow redirects in tests — we assert on the raw status."""

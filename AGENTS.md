@@ -20,6 +20,9 @@ Auth:      none (public). Optional retain token for indefinite objects.
 > Deploy-Ritual (rsync-Falle), Test-Disziplin (`${PIPESTATUS[0]}`!),
 > Security-Invarianten, Edit-Disziplin.
 
+> **CONTEXT.md lesen vor Modul-Arbeit** — Architektur-Begriffe + Modulkarte:
+> wo gehört was hin (Namespaces, Request-Kit, storage-Mechanik, Homepage).
+
 > **Bumppush-Pflicht:** Jede Änderung = eigenes Release (Bugfix → Patch,
 > Feature → Minor, Breaking → Major; unsicher → fragen): `VERSION` hoch,
 > Release-Note in `RELEASES.md`, Commit `x.y.z: …`, push, Deploy-Ritual

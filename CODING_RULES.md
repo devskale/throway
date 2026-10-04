@@ -168,6 +168,27 @@ Non-negotiable; each guards a real hole found this session:
   `pics.py` auf `{`/`}`-Balance (Kommentare + Strings ignoriert). Läuft bei
   jedem Release; der manuelle Balance-Check ist damit überflüssig.
 
+## Beweis-Pflicht je Änderungsklasse (Retro 1.53.1)
+
+Jede Änderungsklasse hat ihren Beweis — der Reviewer fordert ihn ein,
+bevor er grün sagt. Beweis-Protokolle aus den Releases 1.49.0–1.53.0:
+
+- **Verhaltensidentisches Refactoring** (Umzug ohne Semantik-Änderung):
+  normalisierter **Byte-Diff** der Antwort vor/nach (`cmp`). Zahlen, die
+  schwanken dürfen (Version, Zeitstempel), normalisieren — der Rest muss
+  byte-identisch sein. Bezahlt: 1.51.0 fing der Diff 20 verlorene
+  Attribut-Quotes, die die Suite (140 Tests) nicht sah.
+- **Renn-Fix**: deterministischer **Konkurrenz-Test** — N Threads × M
+  RMW auf geteiltem Zustand muss exakt N·M ergeben (kein „meistens“).
+  1.52.0: `test_storage.py::test_locked_no_lost_updates`.
+- **Extraktion/Umzug über Nahten**: Suite **unverändert** grün + neue
+  Modul-Tests für die geborene Schnittstelle. Muss ein Alttest geändert
+  werden, ist das ein Naht-Alarm — Stop und Einordnung, kein Anpassen.
+- **Contract-/Renderer-Flächen** (HELP, /api, API.md): **Fidelitäts-Beweis**
+  — der Renderer reproduziert den bisherigen Output (diff/round-trip),
+  bevor die Handfassung entfernt wird. 1.53.0: API.md-Regen lieferte
+  byte-exakt zurück (git-diff = nur die Marker-Zeilen).
+
 ## Process
 
 - **Fail early**: prove the smallest step first (one API call before a

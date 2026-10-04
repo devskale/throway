@@ -1,9 +1,39 @@
 # throway — Releases
 
-**Current version:** `1.53.0`
+**Current version:** `1.53.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.53.1 — 2026-10-04
+
+### Retro-Guards: die Session-Lehren der Review-Woche als Checks
+
+Kein Verhaltenschange — fünf Fundgebungen aus den Releases 1.49.0–1.53.0,
+jede verifiziert, jede jetzt mechanisch bewacht oder aufgeschrieben:
+
+- **Atomic-Write-Guard verschärft**: die alte Regex sah die with-Block-Form
+  (`with open(..) as f: json.dump(..)`) nicht — genau so blieben pics
+  `save_meta`/`save_gallery` monatelang nicht-atomar unentdeckt (1.52.0-
+  Fund). Seit 1.52.0 gehen ALLE JSON-Writes durch `throway/storage.py`,
+  also die enge Regel: `json.dump` existiert nur noch dort. Negativ getestet
+  (die with-Block-Form failt jetzt rot).
+- **conftest-Session-Root**: In-process-Importe von store.py crashen ohne
+  `THROWAWAY_ROOT` auf Dev-Maschinen (OSError read-only /srv, passiert im
+  1.53.0-Fidelity-Loop) — conftest setzt jetzt einen Tempdir-Default;
+  Subprocess-Tests überschreiben explizit.
+- **CONTEXT.md-Pointer in AGENTS.md**: die Architektur-Karte (Namespace/Kit/
+  storage/Homepage-Begriffe) war über kein Steering-Dokument erreichbar.
+- **CJK-Glitch-Guard**: LLM-Glitch-Klasse in deutscher Agent-Prosa
+  („ Leser“ statt „Leser“, 1.52.0 von Hand gefangen) — release-check fängt
+  CJK/Hangul in CONTEXT/RELEASES/AGENTS/API jetzt deterministisch. Negativ
+  getestet.
+- **Beweis-Pflicht je Änderungsklasse** in CODING_RULES.md (Review-Standard):
+  verhaltensidentisch → Byte-Diff · Renn-Fix → Konkurrenz-Test N×M exakt ·
+  Extraktion → Suite unverändert (+ Naht-Alarm) · Renderer → Fidelitäts-
+  Beweis. Die Protokolle aus 1.49–1.53, einmal aufgeschrieben.
 
 ---
 
