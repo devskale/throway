@@ -1887,8 +1887,7 @@ def get(kit, rest, query):
             if len(tail) == 2 and tail[0] == "i" and tail[1]:
                 return _serve(kit, root, unquote(tail[1]), admin=True,
                               query=query, gid=gid)
-    return kit.send(404, "not found\n")
-
+    return kit.err(404, "not found")
 
 def post(kit, rest, qp):
     """Dispatch POST /pics/… — create / upload / admin actions."""
@@ -1900,7 +1899,7 @@ def post(kit, rest, qp):
         if "create=1" in (qp or {}) or "create" in (qp or {}):
             return _create(kit, root, qp)
         return kit.send(400, json.dumps(
-            {"error": "nothing to do — use ?create=1 to create a gallery, "
+            {"code": "bad_request", "error": "nothing to do — use ?create=1 to create a gallery, "
                       "or POST /pics/g/<gid> to upload"}), "application/json")
     if rest == ["create"]:
         return _create(kit, root, qp)
@@ -2011,7 +2010,7 @@ def _create(kit, root, qp):
 def _get_gallery(kit, root, gid, query):
     g = load_gallery(root, gid)
     if not g:
-        return kit.send(404, "not found\n")
+        return kit.err(404, "gallery not found")
     if "likes=1" in query:                      # cheap counters for polling
         lk = load_likes(root, gid)
         cl = load_comments(root, gid)
@@ -2204,28 +2203,24 @@ def _url_import(kit, root, gid, qp):
     from urllib.parse import unquote
     raw = unquote((qp.get("url") or [""])[0]).strip()
     if not raw:
-        return kit.send(400, json.dumps({"error": "url required"}), "application/json")
+        return kit.err(400, "url required")
     g = load_gallery(root, gid)
     if not g:
-        return kit.send(404, json.dumps({"error": "gallery not found"}), "application/json")
+        return kit.err(404, "gallery not found")
     try:
         data, name, ctype = kit.fetch_remote(raw, max_bytes=PICS_MAX_FILE)
     except kit.FetchError as ex:
         code = getattr(ex, "code", None) or ex.args[0] if ex.args else 502
         msg = getattr(ex, "msg", None) or (ex.args[0] if ex.args else "fetch failed")
-        return kit.send(code if isinstance(code, int) else 502,
-                       json.dumps({"error": f"fetch failed: {msg}"}),
-                       "application/json")
+        return kit.err(code if isinstance(code, int) else 502, f"fetch failed: {msg}")
     if not (ctype or "").startswith("image/"):
         # a PAGE, not an image: Google Photos share links land here — scrape
         # the embedded lh3 image URLs and import the whole album
         if (ctype or "").startswith("text/html"):
             urls = _scrape_lh3(data.decode("utf-8", "replace"))
             if not urls:
-                return kit.send(400, json.dumps(
-                    {"error": "page contains no importable images (only direct "
-                              "image URLs or Google Photos share links work)"}),
-                    "application/json")
+                return kit.err(400, "page contains no importable images (only direct "
+                              "image URLs or Google Photos share links work)")
             imported, errors, dup_count = [], [], 0
             for u in urls:
                 try:
@@ -2249,8 +2244,7 @@ def _url_import(kit, root, gid, qp):
                 "failed": len(errors),
                 "images": imported[:20], "errors": errors[:10],
             }, indent=2), "application/json")
-        return kit.send(400, json.dumps(
-            {"error": f"not an image (content-type {ctype or 'unknown'})"}), "application/json")
+        return kit.err(400, f"not an image (content-type {ctype or 'unknown'})")
     try:
         pid, m, dup = store_pic(root, data, name or "image", kit.client_ip(), gid, bump=kit.bump_stats)
     except PicError as ex:
@@ -2270,22 +2264,21 @@ def _upload(kit, root, gid, qp):
     ip = kit.client_ip()
     g = load_gallery(root, gid)
     if not g:
-        return kit.send(404, json.dumps({"error": "gallery not found"}),
-                       "application/json")
+        return kit.err(404, "gallery not found")
     name = unquote((qp.get("name") or [""])[0] or "").strip() or "image"
     ctype = kit.header("Content-Type", "")
     if ctype.startswith("multipart/form-data"):
         length = kit.header("Content-Length")
         if length is None:
-            return kit.send(411, json.dumps({"error": "length required"}), "application/json")
+            return kit.err(411, "length required")
         if int(length) > 200 * 1024 * 1024:
-            return kit.send(413, json.dumps({"error": "batch too large"}), "application/json")
+            return kit.err(413, "batch too large")
         payload = kit.read_body()
         if payload is None:
-            return kit.send(400, json.dumps({"error": "bad body"}), "application/json")
+            return kit.err(400, "bad body")
         files = [t for t in kit.parse_multipart(payload, ctype) if t[0]]
         if not files:
-            return kit.send(400, json.dumps({"error": "no file part"}), "application/json")
+            return kit.err(400, "no file part")
         added, errors, dups = [], [], []
         for n, d, _c in files:
             try:
@@ -2306,7 +2299,7 @@ def _upload(kit, root, gid, qp):
     # raw body: one image per request (JS queue + agents)
     length = kit.header("Content-Length")
     if length is None:
-        return kit.send(411, json.dumps({"error": "length required"}), "application/json")
+        return kit.err(411, "length required")
     length = int(length)
     if length > PICS_MAX_FILE:
         # drain the body so keep-alive stays usable for browsers
@@ -2316,8 +2309,7 @@ def _upload(kit, root, gid, qp):
             if not chunk:
                 break
             left -= len(chunk)
-        return kit.send(413, json.dumps(
-            {"error": f"too large (max {_fmt(PICS_MAX_FILE)})"}), "application/json")
+        return kit.err(413, f"too large (max {_fmt(PICS_MAX_FILE)})")
     data = kit.read_raw(length)
     try:
         pid, m, dup = store_pic(root, data, kit.safe_name(name)[:128], ip, gid, bump=kit.bump_stats)
@@ -2354,8 +2346,7 @@ def _like_image(kit, root, pid):
     res = toggle_image_like(root, pid, kit.client_ip(),
                             kit.header("User-Agent", ""))
     if res is None:
-        return kit.send(404, json.dumps({"error": "image not found"}),
-                       "application/json")
+        return kit.err(404, "image not found")
     n, liked = res
     kit.send(200, json.dumps({"id": pid, "likes": n, "liked": liked}),
             "application/json")
@@ -2368,8 +2359,7 @@ def _comment_like(kit, root, gid, qp):
     res = toggle_comment_like(root, gid, cid, kit.client_ip(),
                               kit.header("User-Agent", ""))
     if res is None:
-        return kit.send(404, json.dumps({"error": "comment not found"}),
-                       "application/json")
+        return kit.err(404, "comment not found")
     n, liked = res
     kit.send(200, json.dumps({"id": cid, "likes": n, "liked": liked}),
             "application/json")

@@ -75,13 +75,13 @@ def test_whole_dir_delete_token_only(srv):
 
 
 def test_flip_existing_dir_to_show(srv):
-    srv.post("/?dir=1&name=norm", data=b"", headers=AGENT)  # normal, expiring
-    st, _, raw = srv.post("/d/norm?show=1", data=b"", headers={**AGENT, **AUTH})
+    srv.post("/?dir=1&name=normx", data=b"", headers=AGENT)  # normal, expiring
+    st, _, raw = srv.post("/d/normx?show=1", data=b"", headers={**AGENT, **AUTH})
     assert st == 200
     d = json.loads(raw)
     assert d["open"] is True and d["expires_at"] is None
     # now publicly writable
-    st, _, _ = _add_file(srv, "norm")
+    st, _, _ = _add_file(srv, "normx")
     assert st == 200
 
 
@@ -220,9 +220,9 @@ def test_dir_add_success_single_response(srv):
     1.45.2 hinter JEDER Dir-Add-Antwort (200/400/413) ein 404 nach.
     Raw-Socket: auch der Erfolgsfall hat exakt eine Statuszeile."""
     import socket as _s
-    srv.post("/?dir=1&name=okd", data=b"", headers=AGENT)
+    srv.post("/?dir=1&name=okdir", data=b"", headers=AGENT)
     body, ctype = multipart([("n.txt", b"hi", "text/plain")])
-    payload = (f"POST /d/okd HTTP/1.1\r\nHost: t\r\nContent-Type: {ctype}\r\n"
+    payload = (f"POST /d/okdir HTTP/1.1\r\nHost: t\r\nContent-Type: {ctype}\r\n"
                f"Content-Length: {len(body)}\r\n\r\n").encode() + body
     sock = _s.create_connection(("127.0.0.1", srv.port))
     sock.sendall(payload)
@@ -250,9 +250,9 @@ def test_chunked_error_closes_connection(srv):
     Doppel-Response raw bewiesen). Close-Bedingung greift seit 1.45.6 auch
     bei Transfer-Encoding: chunked."""
     import socket as _s
-    srv.post("/?dir=1&name=ckd", data=b"", headers=AGENT)
+    srv.post("/?dir=1&name=ckdir", data=b"", headers=AGENT)
     chunk = b"4\r\nWiki\r\n0\r\n\r\n"
-    payload = (b"POST /d/ckd HTTP/1.1\r\nHost: t\r\nContent-Type: text/plain\r\n"
+    payload = (b"POST /d/ckdir HTTP/1.1\r\nHost: t\r\nContent-Type: text/plain\r\n"
                b"Transfer-Encoding: chunked\r\n\r\n" + chunk)
     sock = _s.create_connection(("127.0.0.1", srv.port))
     sock.sendall(payload)

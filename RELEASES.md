@@ -1,11 +1,39 @@
 # throway — Releases
 
-**Current version:** `1.53.3`
+**Current version:** `1.53.4`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.53.4 — 2026-10-05
+
+### Error-Code-Disziplin: jede Fehler-JSON trägt `code`
+
+Live-Validierung der progressive discoverability (adversarialer Pass)
+fand drei Verletzungen des eigenen Vertrags („Every error response is
+JSON with an `error` message and a stable `code`" — /help/errors):
+
+1. **~35 rohe Fehler-Sends ohne `code`-Feld** in dirs.py, pics.py,
+   retain.py und store.py (Tupel-Übergaben, rohe `kit.send` statt
+   `kit.err`). Live bewiesen: `400 invalid share name`, `401 retain
+   token required` — beides ohne `code`. Alle auf `kit.err()`/`_err()`
+   umgestellt bzw. um das `code`-Feld ergänzt.
+2. **PUT/PATCH auf ein existierendes Bundle → 404 statt 403**: das
+   Bundle existiert (GET → 200), nur der Edit ist nicht erlaubt. Ein
+   Agent hätte auf eine falsche ID geschlossen. Jetzt 403 `forbidden`,
+   „bundles are immutable snapshots".
+3. **Stille Akzeptanz invalider Inputs**: `?dir=1&name=ab` (2 statt
+   dokumentierte 5–32 Zeichen) erstellte anstandslos einen Dir;
+   `?ttl=xyz` wurde still ignoriert. Jetzt 400 `bad_request` mit
+   `code` — die dokumentierten Validierungsregeln gelten wirklich.
+
+Dazu: pics-404s (gallery not found, unbekannte Pfade) sind jetzt JSON
+mit `code` statt text/plain. Test-Fix: fünf Test-Dir-Namen waren selbst
+zu kurz (norm, okd, ckd, ovr, ovrx) und bauten auf dem stillen
+Durchwinken auf — jetzt ≥5 Zeichen. 11 neue Tests
+(tests/test_error_codes.py), Suite 175 grün.
 
 ## 1.53.3 — 2026-10-04
 

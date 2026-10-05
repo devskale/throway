@@ -85,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.53.3"
+VERSION = "1.53.4"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -562,6 +562,20 @@ def _dedupe_names(names):
 def _valid_tag(t):
     return bool(t) and len(t) <= MAX_TAG_LEN and re.fullmatch(r"[a-z0-9-]+", t)
 
+
+def _ttl_or_400(handler, qp):
+    """&ttl= strikt (Retro 1.53.4): unparsebare Werte sind 400
+    bad_request statt stiller Default. None = Parameter nicht
+    gegeben (Default gilt). False = 400 bereits gesendet."""
+    raw = (qp.get("ttl") or [""])[0]
+    if not raw:
+        return None
+    secs = dirs.parse_ttl(raw)
+    if secs is None:
+        handler._err(400, "invalid ttl: " + repr(raw)
+                    + " — use hours (12, 12h) or days (7d)")
+        return False
+    return secs
 
 def _parse_tags(query_tags):
     """Normalize + dedupe a list of raw tag values; cap at MAX_TAGS."""
@@ -1640,9 +1654,15 @@ class Handler(BaseHTTPRequestHandler):
         # POST /?dir=1[&name=<name>][&listed=1][&tag=..][&ttl=..] -> create a dir
         if want_dir:
             if name_hint:
+                ok, reason = dirs.valid_name(name_hint)
+                if not ok:
+                    return self._err(400, f"invalid dir name: {reason}")
                 key = name_hint
             else:
                 key = secrets.token_hex(8)
+            ttl = _ttl_or_400(self, qp)
+            if ttl is False:
+                return
             ctype = self.headers.get("Content-Type", "application/octet-stream")
             initial = None
             if ctype.startswith("multipart/form-data"):
@@ -1675,7 +1695,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(named) > 1:
                 return self._store_bundle(named, retained=retained)
             n, d, c = named[0]
-            ttl = dirs.parse_ttl((qp.get("ttl") or [""])[0])
+            ttl = _ttl_or_400(self, qp)
+            if ttl is False:
+                return
             if share:
                 return dirs.share_store(self._kit(), d, _safe_name(n)[:128] or None, c, share, ttl,
                                          retained=retained)
@@ -1695,7 +1717,9 @@ class Handler(BaseHTTPRequestHandler):
         else:
             if ctype.startswith("multipart") or "boundary" in ctype:
                 ctype = "application/octet-stream"
-        ttl = dirs.parse_ttl((qp.get("ttl") or [""])[0])
+        ttl = _ttl_or_400(self, qp)
+        if ttl is False:
+            return
         if share:
             return dirs.share_store(self._kit(), data, name_hint or None, ctype, share, ttl,
                                       retained=retained)
@@ -1757,10 +1781,10 @@ class Handler(BaseHTTPRequestHandler):
             with open(mp, "r", encoding="utf-8") as _f:
                 meta = json.load(_f)
         except Exception:
-            return self._send(500, json.dumps({"error": "meta unreadable"}), "application/json")
+            return self._err(500, "meta unreadable")
         denied = retain.write_denied(self, meta)
         if denied:
-            return self._send(denied[0], json.dumps(denied[1]), "application/json")
+            return self._err(denied[0], denied[1]["error"])
         add = _parse_tags(qp.get("tag", []))
         remove = _parse_tags(qp.get("untag", []))
         cur = list(meta.get("tags", []))
@@ -2017,7 +2041,7 @@ class Handler(BaseHTTPRequestHandler):
         if os.path.isfile(fp):
             denied = retain.write_denied(self, self._meta_of(fid))
             if denied:
-                return self._send(denied[0], json.dumps(denied[1]), "application/json")
+                return self._err(denied[0], denied[1]["error"])
             _remove(fp); self._send(200, "deleted\n")
         elif os.path.isdir(fp) and fid not in (DIR_NS, pics.NS):
             # bundle dir: DELETE /<id> removes the whole bundle (documented
@@ -2025,7 +2049,7 @@ class Handler(BaseHTTPRequestHandler):
             # 2026-10-02 hard-validate: kein Create ohne Delete-Pfad)
             denied = retain.write_denied(self, _bundle_meta(fp, fid))
             if denied:
-                return self._send(denied[0], json.dumps(denied[1]), "application/json")
+                return self._err(denied[0], denied[1]["error"])
             shutil.rmtree(fp, ignore_errors=True)
             self._send(200, "deleted\n")
         else:
@@ -2072,13 +2096,18 @@ class Handler(BaseHTTPRequestHandler):
         if not fid or fid.endswith(".meta"):
             return self._err(404, "not found")
         fp = _id_path(fid)
+        if os.path.isdir(fp) and fid not in (DIR_NS, pics.NS):
+            # Bundle: existiert, ist aber nicht editierbar — 403, nicht
+            # 404 (Retro 1.53.4: ein Agent darf nicht auf eine falsche
+            # ID schließen, wenn der Edit gemeint war)
+            return self._err(403, "bundles are immutable snapshots (editable: false)")
         if not os.path.isfile(fp):
             return self._err(404, "not found")
         if not self._is_text(fid):
-            return self._send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
+            return self._err(400, "only text files can be edited")
         denied = retain.write_denied(self, self._meta_of(fid))
         if denied:
-            return self._send(denied[0], json.dumps(denied[1]), "application/json")
+            return self._err(denied[0], denied[1]["error"])
         data = self._read_body()
         if data is None:
             return self._err(411, "length required")
@@ -2103,13 +2132,15 @@ class Handler(BaseHTTPRequestHandler):
         if not fid or fid.endswith(".meta"):
             return self._err(404, "not found")
         fp = _id_path(fid)
+        if os.path.isdir(fp) and fid not in (DIR_NS, pics.NS):
+            return self._err(403, "bundles are immutable snapshots (editable: false)")
         if not os.path.isfile(fp):
             return self._err(404, "not found")
         if not self._is_text(fid):
-            return self._send(400, json.dumps({"error": "only text files can be appended to"}), "application/json")
+            return self._err(400, "only text files can be appended to")
         denied = retain.write_denied(self, self._meta_of(fid))
         if denied:
-            return self._send(denied[0], json.dumps(denied[1]), "application/json")
+            return self._err(denied[0], denied[1]["error"])
         data = self._read_body()
         if data is None:
             return self._err(411, "length required")
@@ -2361,8 +2392,8 @@ function copyDesc() {{
                 "delete": {"method": "DELETE", "url": PUBLIC_BASE + "/<id>"},
                 "show_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1&show=1[&name=<slug>]", "note": "create a SHOW-DIR (retain token): indefinite lifetime AND public write — everyone with the URL can add/edit/delete files (no token), whole-dir delete needs the token, history records everything. Flip an existing dir with POST /d/<key>?show=1 (token, idempotent). See /help/retention.", "response": {"id": "str", "url": "str", "dir": True, "open": True, "persistence": {"type": "dir", "expires_at": None, "extendable_by": "none", "max_age": None, "retention": "indefinite"}}},
                 "retain": {"method": "POST", "url": PUBLIC_BASE + "/<id>?retain=1", "note": "flip an EXISTING file, bundle (/<id>) or dir (/d/<key>?retain=1) to indefinite retention: never expires, exempt from pool eviction, public read, but writes/deletes need the retain token. Requires the token (Authorization: Bearer <token> or ?token=). Idempotent. Token-authenticated uploads and PUT/PATCH writes retain implicitly. See /help/retention.", "response": {"id": "str", "url": "str", "retention": "indefinite", "expires_at": None, "persistence": {"type": "single|dir|bundle", "expires_at": None, "extendable_by": "none", "max_age": None, "retention": "indefinite"}}},
-                "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content"},
-                "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)"},
+                "edit_text": {"method": "PUT", "url": PUBLIC_BASE + "/<id>", "body": "new text content (text files only)", "note": "replaces the whole text content; bundles are immutable (403 forbidden)"},
+                "append_text": {"method": "PATCH", "url": PUBLIC_BASE + "/<id>", "body": "text to append (text files only)", "note": "bundles are immutable (403 forbidden)"},
                 "contract": {"method": "GET", "url": PUBLIC_BASE + "/api"},
                 "write_for_agents": {"method": "GET", "url": PUBLIC_BASE + "/write_for_agents", "note": "human-readable description of this service for agents"},
                 "copy_for_agents": {"method": "GET", "url": PUBLIC_BASE + "/copy_for_agents", "note": "HTML page with a copy-pasteable agent description"},

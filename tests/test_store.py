@@ -444,13 +444,13 @@ def test_json_html_override(srv):
     """P6 (sota): ?json=1 erzwingt JSON auch mit Browser-UA, ?html=1
     erzwingt HTML auch mit curl-UA (Custom-UA-Parsing-Falle)."""
     import json as _j
-    srv.post("/?dir=1&name=ovr&listed=1", data=b"", headers=AGENT)
+    srv.post("/?dir=1&name=ovride&listed=1", data=b"", headers=AGENT)
     browser = {"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/120.0"}
-    st, _, raw = srv.get("/d/ovr?json=1", headers=browser)
+    st, _, raw = srv.get("/d/ovride?json=1", headers=browser)
     assert st == 200
     j = _j.loads(raw)
     assert j.get("dir") is True or "files" in j
-    st2, _, raw2 = srv.get("/d/ovr?html=1", headers=AGENT)
+    st2, _, raw2 = srv.get("/d/ovride?html=1", headers=AGENT)
     assert st2 == 200
     assert b"<html" in raw2.lower() or b"<!doctype" in raw2.lower()
 
@@ -481,14 +481,14 @@ def test_dir_create_multipart_adds_to_existing(srv):
 def test_repr_override_exact_params_only(srv):
     """CR 1.48.2: P6-Override matcht nur EXAKTE Params — ?notjson=1
     durfte JSON nie erzwungen haben (Substring-Falle, Spec-Achse)."""
-    srv.post("/?dir=1&name=ovrx&listed=1", data=b"", headers=AGENT)
+    srv.post("/?dir=1&name=ovrx2&listed=1", data=b"", headers=AGENT)
     browser = {"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/120.0"}
     # notjson=1 ist KEIN json=1 -> Browser kriegt HTML
-    st, _, raw = srv.get("/d/ovrx?notjson=1", headers=browser)
+    st, _, raw = srv.get("/d/ovrx2?notjson=1", headers=browser)
     assert st == 200
     assert b"<html" in raw.lower() or b"<!doctype" in raw.lower()
     # foohtml=1 ist KEIN html=1 -> curl kriegt JSON
-    st, _, raw = srv.get("/d/ovrx?foohtml=1", headers=AGENT)
+    st, _, raw = srv.get("/d/ovrx2?foohtml=1", headers=AGENT)
     assert st == 200
     assert raw.startswith(b"{")
 

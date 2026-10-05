@@ -72,12 +72,12 @@ def request_retention(handler):
     if token:
         if valid(token):
             return True, None
-        return False, (401, {"error": "invalid retain token"})
+        return False, (401, {"code": "write_denied", "error": "invalid retain token"})
     qs = query_string(handler)
     if "retain=1" in qs or "show=1" in qs:
         if not ENABLED:
-            return False, (401, {"error": "retention is not enabled on this server"})
-        return False, (401, {"error": TOKEN_HINT})
+            return False, (401, {"code": "write_denied", "error": "retention is not enabled on this server"})
+        return False, (401, {"code": "write_denied", "error": TOKEN_HINT})
     return False, None
 
 
@@ -88,7 +88,7 @@ def write_denied(handler, meta):
         return None
     if valid(token_from(handler)):
         return None
-    return (401, {"error": "object is retained (indefinite); writes and "
+    return (401, {"code": "write_denied", "error": "object is retained (indefinite); writes and "
                            "deletes need the retain token (Authorization: "
                            "Bearer or ?token=)"})
 

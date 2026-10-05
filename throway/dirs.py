@@ -246,10 +246,10 @@ def _write_denied(kit, key):
     if m.get("write_token"):
         given = kit.write_token_given()
         if not given:
-            return (401, {"error": "write token required: send the X-Throway-Write "
+            return (401, {"code": "write_denied", "error": "write token required: send the X-Throway-Write "
                                    "header or ?write=<token>"})
         if not hmac.compare_digest(given.encode(), m["write_token"].encode()):
-            return (401, {"error": "invalid write token"})
+            return (401, {"code": "write_denied", "error": "invalid write token"})
     if m.get("open"):
         return None      # show-dir: everyone with the URL may write
     return kit.retain_write_denied(m)
@@ -370,9 +370,8 @@ def create(kit, key, qp, initial_files=None, retained=False):
         elif re.fullmatch(r"[A-Za-z0-9._-]{8,64}", write_flag):
             write_token = write_flag
         else:
-            return kit.send(400, json.dumps(
-                {"error": "invalid write token: use write=1 (server generates) "
-                          "or 8-64 chars [A-Za-z0-9._-]"}), "application/json")
+            return kit.err(400, "invalid write token: use write=1 (server generates) "
+                          "or 8-64 chars [A-Za-z0-9._-]")
     meta = {
         "type": "dir",
         "created": now,
@@ -418,7 +417,7 @@ def post_add(kit, key):
     # die Bytes gelten als naechste Anfrage (phantom-400).
     ctype = kit.content_type
     if not ctype.startswith("multipart/form-data"):
-        return kit.send(400, json.dumps({"error": "dir add requires multipart"}), "application/json")
+        return kit.err(400, "dir add requires multipart")
     payload = kit.read_body()
     if payload is None:
         return kit.err(411, "length required")
@@ -430,11 +429,11 @@ def post_add(kit, key):
     now = time.time()
     if kit.meta_expired(m, now):
         shutil.rmtree(dirpath, ignore_errors=True)
-        return kit.send(404, json.dumps({"error": "expired"}), "application/json")
+        return kit.err(404, "expired")
     files = kit.parse_multipart(payload, ctype)
     named = [(n, d, c) for (n, d, c) in files if n]
     if not named:
-        return kit.send(400, json.dumps({"error": "no file parts"}), "application/json")
+        return kit.err(400, "no file parts")
     # size checks
     cur = _size(dirpath)
     for n, d, c in named:
@@ -442,13 +441,13 @@ def post_add(kit, key):
         if not safe:
             continue
         if len(d) > kit.max_file:
-            return kit.send(413, json.dumps({"error": f"too large (max 5MB): {safe}"}), "application/json")
+            return kit.err(413, f"too large (max 5MB): {safe}")
         cur += len(d)
         if cur > kit.pool_size:
-            return kit.send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
+            return kit.err(413, "dir too large (pool max 100MB)")
     files_map, _, _ = _write_files(kit, key, dirpath, m, named)
     if files_map is None:
-        return kit.send(413, json.dumps({"error": "dir too large (pool max 100MB)"}), "application/json")
+        return kit.err(413, "dir too large (pool max 100MB)")
     kit.evict_pool()
     return response(kit, key, dirpath, m)
 
@@ -461,7 +460,7 @@ def share_store(kit, data, name_hint, ctype, share, ttl_seconds=None,
     machinery: sliding lifetime (default 7d, ttl= clamped [4h,14d])."""
     ok, reason = valid_name(share)
     if not ok:
-        return kit.send(400, json.dumps({"error": f"invalid share name: {reason}"}), "application/json")
+        return kit.err(400, f"invalid share name: {reason}")
     if len(data) > kit.max_file:
         return kit.err(413, "too large (max 5MB)")
     key = share
@@ -499,7 +498,7 @@ def share_store(kit, data, name_hint, ctype, share, ttl_seconds=None,
     fname = name_hint or "file"
     r = _write_files(kit, key, dirpath, meta, [(fname, data, ctype)], create=True)
     if r is None:
-        return kit.send(413, json.dumps({"error": "store failed (too large?)"}), "application/json")
+        return kit.err(413, "store failed (too large?)")
     kit.evict_pool()
     return response(kit, key, dirpath, meta)
 
@@ -682,7 +681,7 @@ def edit(kit, key, parts, append):
         return
     """PUT/PATCH /d/<key>/<file> — replace or append text in a dir."""
     if len(parts) < 2 or not parts[1]:
-        return kit.send(400, json.dumps({"error": "file required"}), "application/json")
+        return kit.err(400, "file required")
     fname = os.path.basename(unquote(parts[1]))
     dirpath = _path(key)
     m = _meta(key)
@@ -697,7 +696,7 @@ def edit(kit, key, parts, append):
         return kit.err(404, "not found")
     ctype = m.get("files", {}).get(fname) or ""
     if not kit.is_editable(ctype):
-        return kit.send(400, json.dumps({"error": "only text files can be edited"}), "application/json")
+        return kit.err(400, "only text files can be edited")
     data = kit.read_body()
     if data is None:
         return kit.err(411, "length required")
@@ -737,7 +736,7 @@ def delete(kit, key, parts):
     if dm and dm.get("retain") and not retain.valid(kit.retain_token()) \
             and not (len(parts) >= 2 and parts[1]):
         return kit.send(401, json.dumps(
-            {"error": "whole-dir delete on a retained dir needs the retain "
+            {"code": "write_denied", "error": "whole-dir delete on a retained dir needs the retain "
                       "token (file-level deletes stay open)"}), "application/json")
     dirpath = _path(key)
     m = _meta(key)
