@@ -137,6 +137,12 @@ def test_pics_url_required_has_code(srv):
     assert _body(body)["code"] == "bad_request"
 
 
+def test_unknown_help_topic_has_code(srv):
+    st, _, body = srv.get("/help/nosuchtopic", headers=AGENT)
+    assert st == 404
+    assert _body(body)["code"] == "not_found"
+
+
 def test_gallery_not_found_has_code(srv):
     st, _, body = srv.get("/pics/no-such-gallery-xyz", headers=AGENT)
     assert st == 404

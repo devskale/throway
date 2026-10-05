@@ -2245,7 +2245,7 @@ WHERE TO GET MORE
         get a simple HTML page. 404 for unknown topics."""
         t = HELP.get(key)
         if not t:
-            return self._send(404, json.dumps({"error": "unknown help topic"}), "application/json")
+            return self._err(404, "unknown help topic")
         body = _render_help_body(key)
         if self._is_agent():
             return self._send(200, body, "text/plain; charset=utf-8")

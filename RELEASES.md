@@ -29,11 +29,12 @@ JSON with an `error` message and a stable `code`" — /help/errors):
    `?ttl=xyz` wurde still ignoriert. Jetzt 400 `bad_request` mit
    `code` — die dokumentierten Validierungsregeln gelten wirklich.
 
-Dazu: pics-404s (gallery not found, unbekannte Pfade) sind jetzt JSON
-mit `code` statt text/plain. Test-Fix: fünf Test-Dir-Namen waren selbst
+Dazu: pics-404s (gallery not found, unbekannte Pfade) und der
+unknown-help-topic-404 sind jetzt JSON mit `code` statt text/plain
+bzw. naked error. Test-Fix: fünf Test-Dir-Namen waren selbst
 zu kurz (norm, okd, ckd, ovr, ovrx) und bauten auf dem stillen
-Durchwinken auf — jetzt ≥5 Zeichen. 11 neue Tests
-(tests/test_error_codes.py), Suite 175 grün.
+Durchwinken auf — jetzt ≥5 Zeichen. 12 neue Tests
+(tests/test_error_codes.py), Suite 176 grün.
 
 ## 1.53.3 — 2026-10-04
 
