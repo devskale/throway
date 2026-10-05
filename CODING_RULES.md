@@ -151,7 +151,11 @@ Non-negotiable; each guards a real hole found this session:
 
 - Edits in store.py / pics.py (rich in —, ä, ⌘, ⌘): use the python-script
   route (`assert old in src` + `replace` + `py_compile`) BY DEFAULT; the
-  edit tool only for pure-ASCII anchors. Rule-of-record: this rule was
+  edit tool only for pure-ASCII anchors.
+- **Multi-Site-Renames in Tests auch über `patch.py`** (Retro 2026-10-05):
+  `str.replace` über Testdateien kollidiert still, wenn ein Anker Präfix
+  eines anderen ist (`name=ovr` traf `name=ovrx` → `/d/ovridex`).
+  `apply()` assertet Anker-Eindeutigkeit und fängt genau das. Rule-of-record: this rule was
   written after violating its weaker form five times — anchor failures
   cost more round-trips than scripts ever will.
 - Edit calls are atomic — one bad anchor applies nothing. Verify with a

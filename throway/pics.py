@@ -2381,8 +2381,7 @@ def _comment_create(kit, root, gid):
         name, text = _form_value(form, "name"), _form_value(form, "text")
     c, err = add_comment(root, gid, name, text, kit.client_ip())
     if err:
-        return kit.send(err[0], json.dumps({"error": err[1]}),
-                       "application/json")
+        return kit.err(err[0], err[1])
     if (kit.is_agent()
             or "application/json" in (kit.header("Accept") or "")):
         return kit.send(200, json.dumps(public_comment(c), indent=2),

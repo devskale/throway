@@ -147,3 +147,25 @@ def test_gallery_not_found_has_code(srv):
     st, _, body = srv.get("/pics/no-such-gallery-xyz", headers=AGENT)
     assert st == 404
     assert _body(body)["code"] == "not_found"
+
+
+# --- 4. Guardrail: die Bugklasse ist mechanisch — kein roher Error-Send ----
+
+def test_no_raw_error_sends_anywhere():
+    """1.53.4-Retro P1: jede Fehler-JSON entsteht in _err()/kit.err()
+    (trägt `code`). Rohe json.dumps({"error": ...})-Sends sind die
+    Bugklasse, die live 36+7 Stellen ohne code produzierte — der Scan
+    fängt sie beim Commit, nicht erst im adversarialen Live-Pass.
+    Ausnahmen: der _err-Körper selbst (er BAUT das code-Feld)."""
+    import glob
+    import os
+    import sys
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    files = [os.path.join(repo, "store.py")] + \
+        sorted(glob.glob(os.path.join(repo, "throway", "*.py")))
+    assert len(files) > 1, "Quellbaum nicht gefunden"
+    for path in files:
+        src = open(path, encoding="utf-8").read()
+        assert 'json.dumps({"error"' not in src, (
+            f"{path}: roher Error-Send gefunden — _err()/kit.err() "
+            "nutzen (trägt code), siehe 1.53.4")

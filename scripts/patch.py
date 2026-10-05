@@ -55,8 +55,19 @@ def _near_misses(src, old, limit=3):
 def apply(path, edits, quiet=False):
     """edits: Liste von (old, new, label). Jeder Anker muss exakt 1x
     vorkommen. Kompiliert das Ergebnis im SPEICHER, bevor geschrieben
-    wird; bricht ab, bevor irgendetwas kaputtgeht."""
+    wird; bricht ab, bevor irgendetwas kaputtgeht.
+
+    Idempotent (Retro 1.53.5): ist `new` bereits im Source (Edit in einem
+    frueheren, abgebrochenen Lauf angewandt), wird das Edit uebersprungen —
+    ein Re-Run nach einem Mid-Lauf-Abbruch setzt fort statt an
+    "Anker kommt 0x vor" zu scheitern."""
     src = open(path, encoding="utf-8").read()
+    todo = [(o, n, l) for (o, n, l) in edits if n not in src]
+    if not todo:
+        if not quiet:
+            print(f"{path}: nichts zu tun (bereits gepatcht)")
+        return
+    edits = todo
     for old, new, label in edits:
         n = src.count(old)
         if n != 1:

@@ -85,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.53.4"
+VERSION = "1.53.5"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1690,7 +1690,7 @@ class Handler(BaseHTTPRequestHandler):
             files = _parse_multipart(payload, ctype)
             named = [(n, d, c) for (n, d, c) in files if n]
             if not named:
-                return self._send(400, json.dumps({"error": "no file part in multipart body"}), "application/json")
+                return self._err(400, "no file part in multipart body")
             # multiple files -> bundle
             if len(named) > 1:
                 return self._store_bundle(named, retained=retained)
@@ -1813,7 +1813,7 @@ class Handler(BaseHTTPRequestHandler):
         if override:
             override = _safe_name(unquote(override))[:128] or None
         if not raw.startswith(("http://", "https://")):
-            return self._send(400, json.dumps({"error": "url must start with http:// or https://"}), "application/json")
+            return self._err(400, "url must start with http:// or https://")
         if "link" in qp:
             base = (override or
                     _safe_name(os.path.basename(unquote(urlparse(raw).path))) or
@@ -1824,7 +1824,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data, fname, ctype = _fetch_remote(raw)
         except _FetchError as e:
-            return self._send(e.code, json.dumps({"error": e.msg}), "application/json")
+            return self._err(e.code, e.msg)
         return self._store(data, override or fname, ctype, tags, retained=retained)
 
     def _browse(self, query):
@@ -1975,13 +1975,13 @@ class Handler(BaseHTTPRequestHandler):
             if not safe:
                 continue
             if len(d) > MAX_FILE:
-                return self._send(413, json.dumps({"error": f"too large (max {MAX_FILE // (1024 * 1024)}MB): {safe}"}), "application/json")
+                return self._err(413, f"too large (max {MAX_FILE // (1024 * 1024)}MB): {safe}")
             total += len(d)
             if total > THROW_POOL_SIZE:
-                return self._send(413, json.dumps({"error": f"bundle too large (pool max {THROW_POOL_SIZE // (1024 * 1024)}MB)"}), "application/json")
+                return self._err(413, f"bundle too large (pool max {THROW_POOL_SIZE // (1024 * 1024)}MB)")
             clean.append((safe, d, c))
         if not clean:
-            return self._send(400, json.dumps({"error": "no valid file parts"}), "application/json")
+            return self._err(400, "no valid file parts")
         names = _dedupe_names([n for n, _, _ in clean])
         fid = secrets.token_hex(8)
         dirpath = os.path.join(ROOT, fid)

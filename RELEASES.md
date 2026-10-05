@@ -1,11 +1,35 @@
 # throway — Releases
 
-**Current version:** `1.53.4`
+**Current version:** `1.53.5`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.53.5 — 2026-10-05
+
+### Retro 1.53.4: Guardrail gegen rohe Error-Sends + Rest-Konvertierung
+
+Der 1.53.4-Fix inventarisierte mit `kit.send(...)` — und ließ 7
+`self._send(...)`-Varianten in store.py + 1 err-Tupel in pics.py liegen
+(live bewiesen ohne `code`: no-file-part, url-must-start-with,
+blocked-host, no-valid-parts, comment-errors). Jetzt konvertiert — und
+die Bugklasse mechanisch gesperrt:
+
+- **`test_no_raw_error_sends_anywhere`** (tests/test_error_codes.py):
+  scannt store.py + throway/*.py auf `json.dumps({"error"` außerhalb
+  von `_err`/`kit.err` — rohe Sends fallen beim Commit, nicht erst im
+  adversarialen Live-Pass. Der Test hätte alle 36 Original-Stellen
+  UND die 7 Reste gefangen.
+- **`patch.py apply()` ist idempotent**: ist `new` bereits im Source
+  (Mid-Lauf-Abbruch), wird das Edit übersprungen statt mit „Anker
+  kommt 0x vor" zu scheitern — Re-Runs setzen fort.
+- CODING_RULES.md: Multi-Site-Renames in Tests ebenfalls über
+  `patch.py` (`str.replace` kollidiert still bei Präfix-Ankern —
+  `name=ovr` traf `name=ovrx`).
+
+Suite 177 grün (13 in test_error_codes).
 
 ## 1.53.4 — 2026-10-05
 
