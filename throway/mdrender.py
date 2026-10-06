@@ -11,7 +11,10 @@ headings, paragraphs, bullet/ordered lists (nested), GFM tables, fenced
 code blocks, block quotes, horizontal rules, links + bare autolinks,
 bold/italic, inline code.
 
-Interface: render(text, title=None, raw_url=None) -> full HTML page.
+Interface: render(text, title=None, raw_url=None, og=None) -> full HTML
+page. og=None keeps the raw-doc page; an og dict (url=canonical, optional
+title/image overrides) embeds social-card meta (og:*/twitter:*, built by
+throway.og) so shared doc links preview on X/Slack/Discord.
 """
 
 import html as _html
@@ -214,18 +217,29 @@ def _blocks(lines):
     return "".join(out), first_h1
 
 
-def render(text, title=None, raw_url=None):
+def render(text, title=None, raw_url=None, og=None):
     """Render markdown text as a full, self-contained HTML page.
     title: filename (page <title> fallback if no `# ` heading exists).
-    raw_url: if given, a small footer links to the raw source."""
+    raw_url: if given, a small footer links to the raw source.
+    og: dict (url=canonical URL, optional title/image override) — when
+    set, social-card meta is embedded in <head> (throway.og builds it;
+    description = md_brief of the text)."""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     body, first_h1 = _blocks(lines)
     page_title = _html.escape(first_h1 or title or "markdown")
+    card = ""
+    if og is not None:
+        from throway import og as _og
+        card = _og.meta(title=(og.get("title") or (first_h1 or title
+                                                   or "markdown")),
+                        description=_og.md_brief(text),
+                        url=og.get("url"),
+                        image=og.get("image"))
     raw = ""
     if raw_url:
         raw = ('<p class=raw>raw: <a href="%s">markdown</a></p>'
                % _html.escape(raw_url, quote=True))
     return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>%s</title><style>%s</style></head><body><main>"
-            "%s%s</main></body></html>" % (page_title, _CSS, body, raw))
+            "%s<title>%s</title><style>%s</style></head><body><main>"
+            "%s%s</main></body></html>" % (card, page_title, _CSS, body, raw))

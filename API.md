@@ -207,6 +207,16 @@ curl -X POST -H "Authorization: Bearer $TOKEN" "$BASE/d/<key>?show=1"
 - **DIR roots** with an `index.html` serve it inline to browsers (like
   bundle URLs), with a small footer link to the file listing.
   `?listing=1` forces the classic listing; agents keep getting JSON.
+- **Social preview cards (since 1.54.0):** rendered `.md` pages, dir
+  pages and bundle index pages embed `og:`/`twitter:` meta (title,
+  description, brand image) so links shared on X/Twitter, Slack,
+  Discord & Co. show a preview card. Raw `.html` files get the meta
+  injected **only for card crawlers** (Twitterbot, facebookexternalhit,
+  Slackbot, Discordbot, WhatsApp, Telegram, LinkedIn) — the page's own
+  `<title>`/`<meta description>` become the card text, and pages that
+  carry their own `og:` tags stay untouched. Browsers and agents always
+  get byte-identical responses; the crawler variant sends
+  `Vary: User-Agent`.
 
 ## Dirs — write protection (optional, since 1.29.0)
 

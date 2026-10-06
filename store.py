@@ -30,7 +30,7 @@ import html as _html
 from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from throway import contract, dirs, index, pics, retain, storage as _storage
+from throway import contract, dirs, index, og, pics, retain, storage as _storage
 
 
 def _html_escape(s):
@@ -85,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.53.5"
+VERSION = "1.54.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -680,6 +680,9 @@ STORE A URL AS A DOCUMENT (link doc):
         "body": """MARKDOWN (.md / .markdown):
    Any .md upload renders as a self-contained HTML page in a browser.
    Agents (curl UA) and ?raw=1 always get the raw text/markdown — same URL.
+   Rendered pages embed social-card meta (og:title = first heading or
+   filename, og:description = first paragraph) so links shared on
+   X/Slack/Discord show a preview card.
 
    ONE-OFF DOC:
    POST {PUBLIC_BASE}/?name=notes.md   (body = markdown bytes)
@@ -716,7 +719,13 @@ STORE A URL AS A DOCUMENT (link doc):
    For a bundle, GET {PUBLIC_BASE}/<id> serves index.html inline (browser)
    or the whole bundle as a zip (agents). GET {PUBLIC_BASE}/<id>/<file>
    serves one file.
-   Append ?download=1 to force a download of any file or the bundle zip.""",
+   Append ?download=1 to force a download of any file or the bundle zip.
+
+   SOCIAL PREVIEW CARDS (1.54.0): shared links carry og:/twitter: meta.
+   Rendered .md pages, dir pages and bundle index pages embed it for
+   every browser; raw .html files get it injected only for card crawlers
+   (Twitterbot, facebookexternalhit, Slackbot, Discordbot, ...) — a page
+   with its own og: tags keeps them. Browsers/agents: unchanged bytes.""",
     },
     "edit": {
         "title": "Edit / append text",
@@ -1225,7 +1234,10 @@ class Handler(BaseHTTPRequestHandler):
         from throway import mdrender
         fname = (orig or fid or "markdown").rsplit("/", 1)[-1]
         raw_url = self.path.split("?", 1)[0] + "?raw=1"
-        self._send(200, mdrender.render(text, title=fname, raw_url=raw_url),
+        og_ctx = {"url": og.canonical(PUBLIC_BASE, PREFIX,
+                                      self.path.split("?", 1)[0])}
+        self._send(200, mdrender.render(text, title=fname, raw_url=raw_url,
+                                        og=og_ctx),
                    "text/html; charset=utf-8")
         return True
 
@@ -1235,6 +1247,11 @@ class Handler(BaseHTTPRequestHandler):
         size = os.path.getsize(fp)
         is_inline = any(ctype.startswith(p) for p in INLINE_TYPES)
         hint = {'Link': f'<{PUBLIC_BASE}/api>; rel="help"'} if self._is_agent() else None
+        # Social-card crawlers (Twitterbot & co.) get the page bytes PLUS
+        # og:/twitter: meta injected — real browsers/agents stay untouched.
+        if (not force_dl and is_inline and ctype == "text/html"
+                and og.is_crawler(self.headers.get("User-Agent", ""))):
+            return self._serve_html_card(fp, orig, fid)
         if force_dl or not is_inline:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
@@ -1264,6 +1281,31 @@ class Handler(BaseHTTPRequestHandler):
             if self.command != "HEAD":
                 while c := f.read(65536):
                     self.wfile.write(c)
+
+    def _serve_html_card(self, fp, orig, fid):
+        """Crawler variant of an inline text/html serve (1.54.0): the file's
+        own bytes with og:/twitter: meta injected into <head> — unless the
+        page carries its own card tags (the uploader's og: wins). Title and
+        description come from the page's own <title>/<meta description>
+        when present. Browsers and agents never take this path."""
+        with open(fp, "rb") as f:
+            html = f.read()
+        if not og.has_card(html):
+            fname = _safe_name(orig) or fid
+            title = og.page_title(html, fallback=fname)
+            desc = og.page_description(html) or (
+                "HTML page hosted on throway — opens live in the browser.")
+            url = og.canonical(PUBLIC_BASE, PREFIX, self.path.split("?", 1)[0])
+            html = og.inject(html, og.meta(title=title, description=desc,
+                                           url=url))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.send_header("Content-Disposition", "inline")
+        self.send_header("Vary", "User-Agent")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(html)
 
     def _serve_thumb(self, fpath, ctype, px=None):
         """Serve ?thumb[=N]: a small cached WebP preview for images.
@@ -1315,10 +1357,20 @@ class Handler(BaseHTTPRequestHandler):
         else:
             # no <head>: prepend a minimal one with the base tag
             html = b"<head>" + base.encode() + b"</head>" + html
+        crawler = og.is_crawler(self.headers.get("User-Agent", ""))
+        if crawler and not og.has_card(html):
+            url = og.canonical(PUBLIC_BASE, PREFIX, self.path.split("?", 1)[0])
+            html = og.inject(html, og.meta(
+                title=og.page_title(html, fallback="bundle " + fid),
+                description=("HTML bundle hosted on throway — "
+                             "opens live in the browser."),
+                url=url))
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(html)))
         self.send_header("Content-Disposition", "inline")
+        # agents get the zip, browsers the page, crawlers injected meta
+        self.send_header("Vary", "User-Agent")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(html)

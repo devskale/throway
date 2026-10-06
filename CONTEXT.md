@@ -74,6 +74,14 @@ Module statt des Handlers erhalten. Geboren mit dirs (1.49.0).
 JSON und Agent-Hinweise; Browser bekommen HTML. `?json=1`/`?html=1`
 überschreiben die UA-Heuristik.
 
+**Card** — Die Social-Preview-Repräsentation (`og:`/`twitter:`-Meta)
+für Card-Crawler (Twitterbot, facebookexternalhit, Slackbot, Discordbot,
+…). Server-gerenderte Seiten (Docs, Dir-Listings, Bundle-Index) tragen
+sie für alle; auf rohen HTML-Uploads wird sie nur Crawlern injiziert —
+eigene `og:`-Tags des Uploads gewinnen, Browser/Agents bekommen die
+Bytes byte-identisch (`Vary: User-Agent` auf der Crawler-Variante).
+Lebt in `throway/og.py` (1.54.0).
+
 **Homepage** — Die Upload-UI unter `/` (nur Browser; Agents bekommen den
 Klartext-Help): Files/Text/Link/Gallery-Tabs, Dropzone, Pool- und
 Session-Stats, eingebettete Agent-Info. Lebt als reines Präsentations-

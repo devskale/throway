@@ -1,9 +1,42 @@
 # throway — Releases
 
-**Current version:** `1.53.5`
+**Current version:** `1.54.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.54.0 — 2026-10-07 — Social preview cards (og/twitter)
+
+Geteilte throway-Links zeigten auf X/Twitter nur einen kahlen Link: nur
+die Homepage trug og:-Tags, die tatsächlich geteilten Objekte (HTML-
+Dateien, gerenderte Markdown-Docs, Dirs, Bundle-Index) keine — live
+verifiziert mit Twitterbot-UA gegen eine Dir-HTML (0 og:-Tags).
+
+- `throway/og.py` (neu): escaped og:*/twitter:*-Snippet, Crawler-UA-
+  Erkennung (Twitterbot, facebookexternalhit, Slackbot, Discordbot,
+  WhatsApp, Telegram, LinkedIn), has_card/inject, page_title/
+  page_description-Extraktion, md_brief (Erstabsatz-Beschreibung für
+  Docs), canonical-URL-Helper. og:image = Brand-Karte 1200×630
+  (THROWAWAY_OG_IMAGE überschreibbar), twitter:card summary_large_image.
+- `_serve_file`: text/html + Crawler-UA → Meta in `<head>` injiziert;
+  og:title/og:description aus eigenem `<title>`/`<meta description>`
+  des Uploads; eigene og:/twitter:-Tags im Upload gewinnen. Browser/
+  Agents byte-identisch (cmp-Beweis im Test). Crawler-Variante sendet
+  `Vary: User-Agent`.
+- `_serve_bundle_index`: gleiche Crawler-Injektion neben dem bestehenden
+  `<base>`-Injekt; Vary: User-Agent jetzt immer (Agents bekommen zip).
+- `mdrender.render(og=…)`: Doc-Seiten tragen og:title (erste H1 oder
+  Dateiname) + og:description (erster Prosa-Absatz via md_brief).
+- `dirs.listing`: Dir-Seiten tragen og:title „Dir <name>“, File-Count-
+  Beschreibung, og:url.
+- Pics-Galerien bewusst zurückgestellt (eigener Namespace, eigener
+  Follow-up).
+- Tests: `tests/test_og.py` — Unit (Escaping, Injektion, Extraktion,
+  md_brief, canonical) + Verhalten (Byte-Identität Browser, Crawler-
+  Karte, Own-Card-Präzedenz, MD-Karte, Bundle-Index, Dir-Seite +
+  Dir-Datei).
 
 ---
 

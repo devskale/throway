@@ -57,7 +57,7 @@ from throway import storage as _storage
 import time
 from urllib.parse import quote, unquote
 
-from throway import retain
+from throway import og, retain
 
 
 def _env_int(name, default):
@@ -655,7 +655,11 @@ def listing(kit, key, dirpath, meta):
     )
     h = ("<!doctype html><html lang=en><head><meta charset=utf-8>"
          f"{kit.meta_mobile}"
-         f"<base href='{kit.prefix}/{NS}/{key}/'>"
+         + og.meta(title="Dir " + title,
+                   description=(f"{len(rows)} file{'s' if len(rows) != 1 else ''} "
+                                "in a throway dir — add, edit and delete over time."),
+                   url=durl)
+         + f"<base href='{kit.prefix}/{NS}/{key}/'>"
          f"<title>throway dir {title}</title>"
          f"<style>{kit.base_css}"
          ".tag{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted);margin-right:.3rem}"

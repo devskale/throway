@@ -141,6 +141,10 @@ curl -X DELETE "https://skale.dev/throway/<id>"
   rendered inline (a real throwaway website), agents get a zip, and each file
   is reachable at `/throway/<id>/<filename>`. The whole bundle shares one
   4-hour expiry and is evicted as one unit.
+- **Preview cards (1.54.0)**: shared links show og/twitter preview cards on
+  X, Slack, Discord & Co. — HTML pages keep their own card if they have one,
+  otherwise crawlers get title/description from the page plus the throway
+  brand image. Browsers/agents get byte-identical responses.
 - **Dirs** are long-lived, nameable collections under `/d/<key>`: create one,
   keep adding files and editing them over days, with a **sliding lifetime**
   (default 7 days) and a lightweight **edit history**. `GET /d/<key>` returns
