@@ -1,262 +1,319 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>pi codemode — the sandbox that calls tools</title>
+<meta property="og:type" content="article">
+<meta property="og:title" content="What is Codemode — Armin Ronacher, visualized">
+<meta property="og:description" content="Armin Ronacher's Codemode, visualized: the model writes a script, a QuickJS sandbox in the harness runs it — intermediate results never become tokens.">
+<meta property="og:url" content="https://skale.dev/throway/d/codemode-explained/codemode-explained.html">
+<meta property="og:image" content="https://skale.dev/og-throway.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What is Codemode — Armin Ronacher, visualized</title>
 <style>
-:root{
-  --paper:#fafaf9; --paper-2:#f4f4f5; --ink:#1a1a1a; --muted:#6b7280;
-  --soft:#a1a1aa; --line:#e5e5e5; --accent:#10b981; --accent-tint:rgba(16,185,129,.08);
-  --cat-1:#5e7a9b; --cat-2:#7c8f6f; --cat-3:#b8915a; --cat-4:#6e6479;
-  --ok:#15803d; --warn:#b45309; --bad:#b91c1c;
-}
-*{box-sizing:border-box}
-body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--paper);color:var(--ink);line-height:1.5}
-main{max-width:70rem;margin:0 auto;padding:3rem 1.5rem 4rem}
-header{margin-bottom:2.5rem}
-h1{font-size:2rem;margin:0 0 .35rem;letter-spacing:-.02em;font-weight:650}
-.sub{color:var(--muted);margin:0;max-width:54rem}
-.legend{display:flex;gap:1.1rem;flex-wrap:wrap;margin-top:1.1rem;font-size:.8rem;color:var(--muted)}
-.dot{display:inline-block;width:.62rem;height:.62rem;border-radius:2px;margin-right:.35rem;vertical-align:middle}
-.section{margin-top:2.75rem}
-.section h2{font-size:.95rem;margin:0 0 .25rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:650}
-.section .lead{color:var(--muted);font-size:.9rem;margin:0 0 1.1rem;max-width:52rem}
-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85em;background:#fff;border:1px solid var(--line);border-radius:.3rem;padding:.08rem .35rem}
+  :root, body[data-skin="blueprint"]{
+    --paper:#f1f3f2; --card:#fbfcfc; --soft:#e6eae8;
+    --ink:#1e2b28;   --muted:#5f7370; --line:#c9d4d0;
+    --cat-1:#0e7490; --cat-2:#155e75; --cat-3:#b45309;
+    --ok:#1a7f4b; --warn:#b45309; --bad:#c0262d;
+    --radius:2px;  --shadow:none;
+  }
+  body[data-skin="blueprint"] .card{ border-style:dashed; border-color:#b7c6c0 }
+  body[data-skin="blueprint"] .kicker{ color:var(--cat-1) }
 
-/* hero mechanism diagram */
-.boundary{background:#fff;border:1px solid var(--line);border-radius:.75rem;padding:1.4rem 1.4rem 1.2rem}
-.bnd-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:650;margin:0 0 1rem}
-.flow{display:flex;align-items:stretch;gap:.9rem;flex-wrap:wrap}
-.node{flex:1;min-width:210px;background:var(--paper);border:1px solid var(--line);border-radius:.6rem;padding:1rem}
-.node h3{font-size:1rem;margin:0 0 .5rem;font-weight:650;display:flex;align-items:center;gap:.5rem}
-.node h3 .tag{font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
-.node ul{margin:0;padding-left:1.1rem;color:var(--muted);font-size:.85rem}
-.node li{margin:.25rem 0}
-.node .lbl{font-size:.78rem;color:var(--muted);margin-top:.6rem}
-.arrow{align-self:center;color:var(--muted);font-size:1.2rem;flex:none}
-.arrow .cap{display:block;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--soft);text-align:center;margin-top:.2rem}
-.sandbox{border-color:var(--accent);background:var(--accent-tint)}
-.sandbox h3{color:var(--ink)}
-.blocked{margin-top:1.1rem;border-top:1px dashed var(--line);padding-top:.9rem}
-.blocked h4{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--bad);margin:0 0 .5rem;font-weight:650}
-.blocked ul{margin:0;padding-left:1.1rem;color:var(--muted);font-size:.82rem}
-.blocked li{margin:.2rem 0}
-.blocked li b{color:var(--ink);font-weight:600}
+  *{ box-sizing:border-box }
+  html{ -webkit-text-size-adjust:100% }
+  body{ margin:0; background:var(--paper); color:var(--ink);
+    font:15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding:56px 24px 80px; }
+  .wrap{ max-width:1060px; margin:0 auto }
+  a{ color:inherit; text-decoration-color:var(--muted); text-decoration-thickness:1px;
+     text-underline-offset:3px }
+  ::selection{ background:var(--cat-1); color:var(--paper) }
 
-/* grids */
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem}
-.card{background:#fff;border:1px solid var(--line);border-radius:.6rem;padding:1.2rem}
-.card h3{font-size:1.02rem;margin:0 0 .4rem;font-weight:600}
-.card p{color:var(--muted);font-size:.86rem;margin:0 0 .7rem}
-.card code{font-size:.8em}
-.card .cat{font-size:.75rem;color:var(--muted);letter-spacing:.02em}
+  h1{ font-size:clamp(30px,5vw,40px); line-height:1.08; letter-spacing:-.025em;
+      font-weight:800; margin:10px 0 10px }
+  h2{ font-size:13px; font-weight:700; letter-spacing:.02em; margin:48px 0 14px;
+      display:flex; align-items:baseline; gap:10px; border-top:2px solid var(--ink);
+      padding-top:12px }
+  h2 .idx{ font-family:ui-monospace,Menlo,monospace; font-size:12px; font-weight:700;
+           color:var(--cat-1) }
+  h3{ font-size:14.5px; font-weight:700; margin:0 0 8px }
+  .sub{ color:var(--muted); font-size:16px; line-height:1.5; max-width:62ch; margin:0 }
+  .kicker{ font-family:ui-monospace,Menlo,monospace; font-size:11.5px; font-weight:700;
+           letter-spacing:.14em; text-transform:uppercase; color:var(--cat-1) }
+  .small{ font-size:12.5px } .muted{ color:var(--muted) }
+  code,pre{ font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:.9em }
+  code{ background:var(--soft); border-radius:4px; padding:.1em .35em }
 
-/* resolution table */
-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:.6rem;overflow:hidden;font-size:.88rem}
-th,td{text-align:left;padding:.7rem .9rem;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:.74rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:650;background:var(--paper)}
-tr:last-child td{border-bottom:none}
-td code{font-size:.82em}
-td .why{color:var(--muted);font-size:.82rem}
+  header{ margin-bottom:8px }
+  header::after{ content:""; display:block; height:3px; background:var(--ink);
+                 margin-top:20px }
+  .meta{ display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--muted);
+         margin-top:12px }
+  footer{ margin-top:56px; padding-top:14px; border-top:2px solid var(--ink);
+          display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;
+          font-size:12.5px; color:var(--muted) }
 
-/* lifecycle */
-.steps{display:flex;gap:.6rem;flex-wrap:wrap;align-items:stretch}
-.step{flex:1;min-width:150px;background:#fff;border:1px solid var(--line);border-radius:.6rem;padding:.8rem;text-align:center}
-.step .n{display:inline-block;background:var(--accent);color:#fff;width:1.3rem;height:1.3rem;border-radius:50%;font-size:.72rem;line-height:1.3rem;font-weight:650}
-.step .t{font-weight:600;font-size:.9rem;margin:.45rem 0 .2rem}
-.step .d{color:var(--muted);font-size:.76rem}
-.arrow-sm{align-self:center;color:var(--muted);font-size:1rem;flex:none}
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+         padding:18px 20px }
+  .card.hero{ background:var(--ink); color:var(--paper); border-color:var(--ink);
+              border-style:solid }
+  .band{ background:var(--soft); border-radius:var(--radius); padding:20px 24px }
+  .grid{ display:grid; gap:16px; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)) }
+  .cols-2{ display:grid; grid-template-columns:1fr 1fr; gap:16px }
+  @media (max-width:760px){ .cols-2{ grid-template-columns:1fr } }
 
-/* limits */
-.limits{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.8rem}
-.lim{background:#fff;border:1px solid var(--line);border-radius:.6rem;padding:.9rem}
-.lim .k{font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:650}
-.lim .v{font-size:1.05rem;font-weight:650;margin:.25rem 0 .3rem}
-.lim .d{color:var(--muted);font-size:.8rem}
+  /* ── zone diagram: brain | hands ─────────────────────────────── */
+  .zones{ display:grid; grid-template-columns:1fr 1fr; position:relative; gap:0 }
+  .zone{ border:1px dashed #b7c6c0; background:var(--card); padding:18px 20px 20px }
+  .zone.brain{ border-right:none }
+  .zone.hands{ border-left:none }
+  .zone .zt{ font-family:ui-monospace,Menlo,monospace; font-size:11.5px; font-weight:700;
+             letter-spacing:.12em; text-transform:uppercase; margin-bottom:2px }
+  .zone.brain .zt{ color:var(--cat-2) } .zone.hands .zt{ color:var(--cat-3) }
+  .zone .zs{ font-size:12px; color:var(--muted); margin:0 0 12px }
+  .node{ border:1px solid var(--line); background:var(--paper); border-radius:2px;
+         padding:8px 12px; margin-top:8px; font-size:13px }
+  .node b{ font-weight:700 }
+  .node .n{ font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:var(--muted) }
+  .zone .node.sandbox{ border-style:solid; border-color:var(--cat-1) }
+  .divide{ position:absolute; left:50%; top:0; bottom:0; width:0;
+           border-left:2px solid var(--ink) }
+  .divide span{ position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    background:var(--ink); color:var(--paper); font-family:ui-monospace,Menlo,monospace;
+    font-size:10px; font-weight:700; letter-spacing:.1em; padding:4px 10px; white-space:nowrap }
+  @media (max-width:760px){
+    .zones{ grid-template-columns:1fr } .divide{ display:none }
+    .zone.brain{ border-right:1px dashed #b7c6c0 } .zone.hands{ border-left:1px dashed #b7c6c0 }
+  }
 
-.footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--line);color:var(--muted);font-size:.82rem}
-.footer code{background:#fff;border:1px solid var(--line);border-radius:.3rem;padding:.1rem .4rem;font-size:.8rem}
+  /* ── flow chains ─────────────────────────────────────────────── */
+  .flow{ display:flex; flex-wrap:wrap; align-items:stretch; gap:8px; margin-top:6px }
+  .flow .step{ background:var(--card); border:1px dashed #b7c6c0; padding:8px 12px;
+    font-family:ui-monospace,Menlo,monospace; font-size:12px; display:flex;
+    flex-direction:column; justify-content:center }
+  .flow .arr{ align-self:center; color:var(--muted); font-family:ui-monospace,Menlo,monospace }
+  .ctx{ display:inline-flex; align-items:center; gap:7px; font-size:12px; font-weight:650 }
+  .ctx .dot{ width:9px; height:9px; border-radius:50%; display:inline-block }
+  .ctx .dot.g{ background:var(--ok) } .ctx .dot.r{ background:var(--bad) }
+  .nocolor{ color:var(--muted); font-style:italic }
+  .sev{ display:inline-block; width:7px; height:7px; margin-right:6px }
+  .ok{ color:var(--ok) } .warn{ color:var(--warn) } .bad{ color:var(--bad) }
+
+  pre.snip{ background:var(--ink); color:#dce8e4; padding:14px 16px; overflow-x:auto;
+    border-radius:2px; font-size:12px; line-height:1.6; margin:10px 0 0 }
+  pre.snip .cm{ color:#8fa8a1 }
+  .tagline{ font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--muted);
+    letter-spacing:.08em; text-transform:uppercase }
+  ul.tight{ margin:8px 0 0; padding-left:18px } ul.tight li{ margin:4px 0 }
+
+  @media print{ body{ padding:0; background:#fff } .card{ break-inside:avoid } }
 </style>
 </head>
-<body>
-<main>
+<body data-skin="blueprint">
+<div class="wrap">
+
   <header>
-    <h1>pi codemode</h1>
-    <p class="sub">The model writes JavaScript; it runs <em>isolated</em> in a QuickJS sandbox and reaches the outside world only through a narrow bridge into the host&rsquo;s real tool pipeline. Only the script&rsquo;s output reaches the model.</p>
-    <div class="legend">
-      <span><span class="dot" style="background:var(--accent)"></span>sandbox boundary</span>
-      <span><span class="dot" style="background:var(--cat-1)"></span>permitted ingress</span>
-      <span><span class="dot" style="background:var(--bad)"></span>blocked at the boundary</span>
+    <div class="kicker">Visualized · lucumr.pocoo.org</div>
+    <h1>What is Codemode</h1>
+    <p class="sub">Armin Ronacher's update on a year-old thesis — <em>code is all you
+    need</em>. Codemode lets the model orchestrate tools with a script that runs
+    <b>in the harness</b>, so intermediate results never have to become tokens.</p>
+    <div class="meta">
+      <span>lucumr.pocoo.org/2026/10/6/codemode/</span>
+      <span>2026-10-06 · tagged ai, pi</span>
+      <span>context: Pi 1.0 ships MCP via Codemode</span>
     </div>
   </header>
 
-  <!-- HERO: the trust boundary -->
-  <section class="section">
-    <h2>The mechanism</h2>
-    <p class="lead">A script is an <code>async</code> function body. It runs in its own worker thread and its own QuickJS wasm VM. It has <b>no</b> Node, file system, network, or timers &mdash; the only way out is the bridge.</p>
-    <div class="boundary">
-      <p class="bnd-label">One script run · one worker · one VM</p>
-      <div class="flow">
-        <div class="node">
-          <h3>Model <span class="tag">writes JS</span></h3>
-          <ul>
-            <li>raw source, not JSON</li>
-            <li>optional <code>// @options:</code> line</li>
-          </ul>
-          <div class="lbl">code crosses the boundary once, as text</div>
-        </div>
-        <div class="arrow">→<span class="cap">code</span></div>
-        <div class="node sandbox">
-          <h3>QuickJS sandbox <span class="tag">the boundary</span></h3>
-          <ul>
-            <li>wasm VM in a worker thread</li>
-            <li>fresh VM + worker per run</li>
-            <li>256&nbsp;MB heap cap</li>
-            <li>sees only <code>tools</code>, <code>ALL_TOOLS</code>, <code>text</code>/<code>image</code>/<code>console</code>, <code>store</code>/<code>load</code>, <code>models</code></li>
-          </ul>
-          <div class="lbl">the bridge is the only exit</div>
-        </div>
-        <div class="arrow">→<span class="cap">bridge (JSON)</span></div>
-        <div class="node">
-          <h3>Host tool pipeline</h3>
-          <ul>
-            <li>runs <code>ctx.executeTool(name, args)</code></li>
-            <li>validation, hooks, permissions all apply</li>
-            <li>real tools execute here, not in the VM</li>
-          </ul>
-          <div class="lbl">only script output returns to the model</div>
-        </div>
-      </div>
-      <div class="blocked">
-        <h4>Blocked at the boundary</h4>
-        <ul>
-          <li><b>no <code>fs</code>, <code>process</code>, <code>require</code>, modules</b> &mdash; no Node APIs</li>
-          <li><b>no network</b> &mdash; no <code>fetch</code>, no sockets</li>
-          <li><b>no timers</b> &mdash; so a promise that can never settle fails immediately</li>
-          <li><b>no nested codemode</b> &mdash; scripts cannot start other scripts</li>
-        </ul>
-      </div>
+  <!-- ═══ BRAINS VS HANDS ═══ -->
+  <h2><span class="idx">01</span> The dividing line — brains vs. hands</h2>
+  <div class="zones">
+    <div class="zone brain">
+      <div class="zt">Brain — the harness</div>
+      <p class="zs">One machine · trusted · owns the context</p>
+      <div class="node"><b>LLM</b> <span class="n">— model + tool definitions = tokens</span></div>
+      <div class="node sandbox"><b>Codemode sandbox</b> <span class="n">— QuickJS in WASM:
+        no network · no filesystem · no timers · limited RAM · only tool calls in/out</span></div>
+      <div class="node"><b>Transcript</b> <span class="n">— store() / load() stash state here</span></div>
+      <div class="node"><b>Harness-only APIs</b> <span class="n">— image models, classifiers,
+        sub-agents; no regular tool = no context waste</span></div>
     </div>
-  </section>
-
-  <!-- Globals API -->
-  <section class="section">
-    <h2>What a script sees</h2>
-    <p class="lead">The full surface. <code>tools.*</code> and <code>models.*</code> go out through the bridge; everything else stays inside the VM.</p>
-    <div class="grid">
-      <article class="card">
-        <h3><code>tools.&lt;name&gt;(args)</code></h3>
-        <p>Call any callable tool. Resolves to a string, or an object if the tool declares an output schema; rejects with an <code>Error</code> on failure.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-1)"></span>bridge · out</div>
-      </article>
-      <article class="card">
-        <h3><code>ALL_TOOLS</code></h3>
-        <p>Every callable tool as <code>{ name, description }</code> &mdash; includes tools the description does not list.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-1)"></span>discovery</div>
-      </article>
-      <article class="card">
-        <h3><code>searchTools(query, {limit?, namespace?})</code></h3>
-        <p>Rank callable tools by relevance (BM25, default limit 8). Finds MCP tools by topic.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-1)"></span>discovery</div>
-      </article>
-      <article class="card">
-        <h3><code>describeTool(name)</code> · <code>describeNamespace(name)</code></h3>
-        <p>Resolve a tool&rsquo;s description + TypeScript declaration, or a namespace&rsquo;s info and tools.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-1)"></span>discovery</div>
-      </article>
-      <article class="card">
-        <h3><code>text(value)</code></h3>
-        <p>Append a text item (strings as-is, other values JSON). <code>console.log/info/warn/error/debug</code> do the same.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-2)"></span>output</div>
-      </article>
-      <article class="card">
-        <h3><code>image(urlOrBlock)</code></h3>
-        <p>Append an image: a base64 <code>data:</code> URL, an <code>{ image_url }</code> object, or an MCP image block. Remote URLs are rejected.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-2)"></span>output</div>
-      </article>
-      <article class="card">
-        <h3><code>return value</code> · <code>exit()</code></h3>
-        <p>Top-level <code>return</code> adds the value like <code>text()</code>; <code>exit()</code> ends the script successfully.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-2)"></span>output</div>
-      </article>
-      <article class="card">
-        <h3><code>store(key, value)</code> · <code>load(key)</code></h3>
-        <p>Keep small JSON state across <code>codemode</code> calls. Writes persist as session entries per branch.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-2)"></span>state</div>
-      </article>
-      <article class="card">
-        <h3><code>models.*</code></h3>
-        <p><code>getModelsOfType</code>, <code>getAvailableOfType</code>, <code>getModelOfType</code>, <code>classify</code>, <code>generateImages</code>. Non-LLM models, not chat.</p>
-        <div class="cat"><span class="dot" style="background:var(--cat-3)"></span>bridge · models</div>
-      </article>
+    <div class="divide"><span>TRUST BOUNDARY</span></div>
+    <div class="zone hands">
+      <div class="zt">Hands — execution environment</div>
+      <p class="zs">Often the same machine — but a different filesystem &amp; trust level</p>
+      <div class="node"><b>bash / CLI</b> <span class="n">— composes programs; model learned
+        the filesystem in training</span></div>
+      <div class="node"><b>Files &amp; processes</b> <span class="n">— overflow files, artifacts,
+        servers, tests</span></div>
+      <div class="node"><b>Sandboxable</b> <span class="n">— e.g. Gondolin sandboxes bash —
+        but never the harness itself</span></div>
+      <div class="node nocolor">…and whatever the hands touch, the brain only sees through
+        tool results</div>
     </div>
-  </section>
-
-  <!-- Resolution -->
-  <section class="section">
-    <h2>What a tool call returns</h2>
-    <p class="lead">The result handed back into the script depends on whether the tool declares an output schema.</p>
-    <table>
-      <thead><tr><th>Tool declares</th><th>Script receives</th><th>Why</th></tr></thead>
-      <tbody>
-        <tr>
-          <td><code>outputSchema</code></td>
-          <td>its <code>structuredContent</code></td>
-          <td class="why">Also for error results that carry one &mdash; MCP tools resolve to their <code>CallToolResult</code>, including <code>isError</code>.</td>
-        </tr>
-        <tr>
-          <td>no schema</td>
-          <td>its text content, as one string</td>
-          <td class="why"><code>bash</code> returns <code>{ output, truncated, full_output_path?, exit_code, wall_time_seconds }</code>.</td>
-        </tr>
-        <tr>
-          <td>failed / blocked / invalid</td>
-          <td>rejects with an <code>Error</code></td>
-          <td class="why">The error carries the tool&rsquo;s error text. Use <code>Promise.allSettled()</code> to keep the successes.</td>
-        </tr>
-      </tbody>
-    </table>
-  </section>
-
-  <!-- Lifecycle -->
-  <section class="section">
-    <h2>The run</h2>
-    <p class="lead">From source to result. The sandbox runtime loads lazily on the first call, not at startup.</p>
-    <div class="steps">
-      <div class="step"><span class="n">1</span><div class="t">Parse</div><div class="d">split the <code>// @options:</code> line, validate it</div></div>
-      <div class="arrow-sm">→</div>
-      <div class="step"><span class="n">2</span><div class="t">Build sandbox</div><div class="d">register callable tools + globals (discovery, <code>models</code>)</div></div>
-      <div class="arrow-sm">→</div>
-      <div class="step"><span class="n">3</span><div class="t">Execute</div><div class="d">worker + QuickJS VM; prelude builds the bridge; wrap code as <code>async</code> fn</div></div>
-      <div class="arrow-sm">→</div>
-      <div class="step"><span class="n">4</span><div class="t">Run</div><div class="d">script calls tools via bridge; host runs <code>ctx.executeTool</code></div></div>
-      <div class="arrow-sm">→</div>
-      <div class="step"><span class="n">5</span><div class="t">Output</div><div class="d">apply the token budget; spill long output to a temp file</div></div>
-      <div class="arrow-sm">→</div>
-      <div class="step"><span class="n">6</span><div class="t">Result</div><div class="d"><code>Script completed</code> / <code>Script failed</code>, wall time, output, nested call rows</div></div>
-    </div>
-  </section>
-
-  <!-- Limits -->
-  <section class="section">
-    <h2>Limits</h2>
-    <p class="lead">Hard caps, so a runaway script can&rsquo;t take the session down.</p>
-    <div class="limits">
-      <div class="lim"><div class="k">heap</div><div class="v">256&nbsp;MB</div><div class="d">overrun throws <code>InternalError: out of memory</code></div></div>
-      <div class="lim"><div class="k">output</div><div class="v">16&nbsp;MB / 100k</div><div class="d">text + base64 chars, and <code>text()</code>/<code>image()</code>/<code>console</code> items</div></div>
-      <div class="lim"><div class="k">store</div><div class="v">256&nbsp;KB / 1&nbsp;MB</div><div class="d">per value, and total across keys</div></div>
-      <div class="lim"><div class="k">timeout</div><div class="v">none by default</div><div class="d"><code>@options: timeout_ms</code> is a hard deadline; the worker is terminated</div></div>
-      <div class="lim"><div class="k">model calls</div><div class="v">4 in flight</div><div class="d"><code>classify</code> / <code>generateImages</code>; the rest queue</div></div>
-      <div class="lim"><div class="k">no timers</div><div class="v">stalls fail</div><div class="d">a promise with no pending tool call can never settle &mdash; the script fails</div></div>
-    </div>
-  </section>
-
-  <div class="footer">
-    Built with the <code>visualize</code> skill · one self-contained HTML file ·
-    <code>pi</code> codemode, read from <code>~/code/clones/pi</code> ·
-    shared via <code>lubu.skale.dev/throway</code> · expires ~4h
   </div>
-</main>
+  <p class="small muted" style="margin:10px 0 0">Why tools must exist at all: bash can only
+  compose <i>programs that run</i>. Injecting an image into the protocol (<code>read</code>,
+  <code>view_image</code>) or spawning sub-agents needs harness-native tools.</p>
+
+  <!-- ═══ TWO WAYS TO CALL ═══ -->
+  <h2><span class="idx">02</span> Two ways to call a tool</h2>
+  <div class="cols-2">
+    <div class="card">
+      <div class="tagline">A · regular tool call</div>
+      <div class="flow">
+        <span class="step">LLM</span><span class="arr">→</span>
+        <span class="step">tool(args)</span><span class="arr">→</span>
+        <span class="step">hands run it</span><span class="arr">→</span>
+        <span class="step">result → <b>context</b></span>
+      </div>
+      <p class="small muted" style="margin:10px 0 0">Every result becomes tokens. Pi caps it
+      at the trailing 2000 lines; anything more goes to an overflow file the agent must
+      re-read — each read costs context again.</p>
+    </div>
+    <div class="card">
+      <div class="tagline">B · via codemode</div>
+      <div class="flow">
+        <span class="step">LLM writes <b>one script</b></span><span class="arr">→</span>
+        <span class="step">sandbox loops / fans out</span><span class="arr">→</span>
+        <span class="step">tools × n</span><span class="arr">→</span>
+        <span class="step">return value only</span>
+      </div>
+      <p class="small muted" style="margin:10px 0 0">Large outputs arrive structurally in the
+      sandbox, get filtered/aggregated in code — the LLM sees the distilled result.
+      Same tool calls, a fraction of the tokens.</p>
+    </div>
+  </div>
+  <div class="band" style="margin-top:16px">
+    <div style="display:flex; gap:24px; flex-wrap:wrap">
+      <span class="ctx"><span class="dot g"></span>enters context: final return value</span>
+      <span class="ctx"><span class="dot r"></span>enters context: every intermediate result <span class="nocolor">(A)</span></span>
+    </div>
+  </div>
+
+  <!-- ═══ WHAT IT UNLOCKS ═══ -->
+  <h2><span class="idx">03</span> What Codemode unlocks</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Concurrency &amp; workflows</h3>
+      <p class="small" style="margin:0"><code>Promise.all</code> over 100 items; probe 5–10
+      results first, then script the rest. Pi caps concurrent tool runs at 4 and queues
+      the rest.</p>
+    </div>
+    <div class="card">
+      <h3>State across calls</h3>
+      <p class="small" style="margin:0"><code>store(k, v)</code> dumps into the transcript;
+      the next invocation <code>load()</code>s it. Lives on the harness host — not the
+      sandbox.</p>
+    </div>
+    <div class="card">
+      <h3>Harness-only model APIs</h3>
+      <p class="small" style="margin:0">Image generation &amp; one-shot classifiers were never
+      viable as tools (they'd waste context) — via Codemode the agent reaches them
+      directly.</p>
+    </div>
+    <div class="card">
+      <h3>MCP by progressive discovery</h3>
+      <p class="small" style="margin:0">No MCP tool is exposed to the LLM's tool list at all —
+      the agent <code>search</code>es for tools inside Codemode when it needs them.</p>
+    </div>
+  </div>
+
+  <!-- ═══ REAL INVOCATIONS ═══ -->
+  <h2><span class="idx">04</span> Real invocations — none human-written</h2>
+  <div class="cols-2">
+    <div class="card">
+      <div class="tagline">image generation → back into the transcript</div>
+      <pre class="snip">const [painter] = await models.getAvailableOfType("image");
+const result = await models.generateImages(painter, {
+  input: [{ type: "text", text: "A cute little puppy …" }],
+});
+for (const block of result.output)
+  if (block.type === "image") image(block);  <span class="cm">// LLM + disk artifact</span></pre>
+    </div>
+    <div class="card">
+      <div class="tagline">classifier over 100 GitHub issues</div>
+      <pre class="snip">const issues = JSON.parse((await tools.bash({
+  command: "gh issue list --state open --limit 100 --json …",
+})).output);
+const results = await Promise.all(issues.map(i =&gt;
+  models.classify(jev, { questions: { sentiment: …, frustration: … } })));
+store("sentiment_results", results);  <span class="cm">// readable next call</span></pre>
+    </div>
+    <div class="card">
+      <div class="tagline">classifier drives a game loop (30 steps)</div>
+      <pre class="snip">for (let step = 0; step &lt; 30; step++) {
+  const st = JSON.parse(await tank("state"));
+  const r = await models.classify(jev, {
+    state: { map: await tank("view 8"), threats, hp: st.player.hp },
+    questions,                      <span class="cm">// attack · approach · dodge · powerup</span>
+  });
+  log.push(`#${step} ${r.answers.action.choice} -> ${await tank(cmd)}`);
+}</pre>
+    </div>
+    <div class="card">
+      <div class="tagline">MCP fan-out (Sentry)</div>
+      <pre class="snip">const { organizations } =
+  (await tools.mcp__sentry__find_organizations({})).structuredContent;
+const results = await Promise.allSettled(organizations.map(org =&gt;
+  tools.mcp__sentry__find_projects({ organizationSlug: org.slug })));
+return organizations.map((org, i) =&gt; ({ org: org.slug,
+  projects: results[i].value.structuredContent.projects }));</pre>
+    </div>
+  </div>
+
+  <!-- ═══ MCP FIGHT ═══ -->
+  <h2><span class="idx">05</span> Modern MCP is a fight</h2>
+  <div class="card hero">
+    <p style="margin:0 0 10px; font-size:16.5px; line-height:1.5">MCP servers still target
+    harnesses <i>without</i> Codemode — so they ship their own code-execution tools. The
+    interim result: <b>Codemode in Codemode</b> — JavaScript funneled through JavaScript,
+    double JSON escaping, and the inner code can't call the outer tools.</p>
+    <pre class="snip" style="background:#0d1613">await tools.mcp__cloudflare__execute({
+  code: `async () =&gt; {          <span class="cm">// ← a string inside JSON inside JS</span>
+    const r = await cloudflare.request({ method: "GET", path: "/accounts" });
+    return r.result.map(a =&gt; ({ id: a.id, name: a.name }));
+  }`,
+});</pre>
+  </div>
+  <div class="band" style="margin-top:16px">
+    <div class="tagline" style="margin-bottom:10px">What MCP servers would need to change</div>
+    <ul class="tight" style="margin:0">
+      <li><b>Structured content</b> — return clean JSON via <code>outputSchema</code>; many don't yet</li>
+      <li><b>Consistent results</b> — no token-driven shape changes; a 5-item probe that breaks at batch size 100 kills the pattern</li>
+      <li><b>Large binary data</b> — still unsupported; today it's pre-signed-URL workarounds outside MCP</li>
+      <li><b>Composable tool search</b> — no mechanism to fan out searches across servers; all emergent, doesn't scale</li>
+    </ul>
+  </div>
+
+  <!-- ═══ OUTLOOK ═══ -->
+  <h2><span class="idx">06</span> Not a reversal — an extension</h2>
+  <div class="grid">
+    <div class="card">
+      <h3><span class="sev ok"></span>Thesis holds</h3>
+      <p class="small" style="margin:0">A year of "prefer CLI over tool dumps" was
+      vindicated: the MCP ecosystem converged on code. Codemode goes beyond MCP — a
+      general freedom-expression mechanism inside the harness.</p>
+    </div>
+    <div class="card">
+      <h3><span class="sev warn"></span>Open: durability</h3>
+      <p class="small" style="margin:0">Long scripts can die mid-flight — ideas imported
+      from durable workflow engines (snapshot invocations) are on the table.</p>
+    </div>
+    <div class="card">
+      <h3><span class="sev warn"></span>Open: language fit</h3>
+      <p class="small" style="margin:0">JavaScript's dynamism vs. determinism — maybe
+      Starlark is the better composition language. Images, binary data, and small models
+      remain unsolved.</p>
+    </div>
+  </div>
+
+  <footer>
+    <span>Source: Armin Ronacher — "What is Codemode" · lucumr.pocoo.org/2026/10/6/codemode/ · Cloudflare coined the term</span>
+    <span>visualized · data-skin="blueprint"</span>
+  </footer>
+</div>
 </body>
 </html>
