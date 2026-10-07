@@ -85,7 +85,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.54.0"
+VERSION = "1.54.1"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1249,7 +1249,10 @@ class Handler(BaseHTTPRequestHandler):
         hint = {'Link': f'<{PUBLIC_BASE}/api>; rel="help"'} if self._is_agent() else None
         # Social-card crawlers (Twitterbot & co.) get the page bytes PLUS
         # og:/twitter: meta injected — real browsers/agents stay untouched.
+        # ?raw=1 is the byte-exact escape: no injection either.
+        _q = self.path.split("?", 1)[1] if "?" in self.path else ""
         if (not force_dl and is_inline and ctype == "text/html"
+                and "raw=1" not in _q
                 and og.is_crawler(self.headers.get("User-Agent", ""))):
             return self._serve_html_card(fp, orig, fid)
         if force_dl or not is_inline:

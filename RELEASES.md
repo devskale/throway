@@ -1,9 +1,25 @@
 # throway — Releases
 
-**Current version:** `1.54.0`
+**Current version:** `1.54.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.54.1 — 2026-10-07 — raw=1 beats the card injection
+
+Live-Adversarial-Pass (22 Checks) fand einen echten Bug: `?raw=1` — der
+dokumentierte Byte-exact-Escape — bekam als text/html trotzdem die
+og:-Injektion. Raw-Semantik gewinnt jetzt immer; Crawler + raw=1
+bekommen die Upload-Bytes unverändert. (Zwei weitere Livetest-FAILs
+waren Test-Artefakte: Vary wird gesendet — nginx senkt Header auf
+kleinbuchstaben, der Test griff nur die erste vary-Zeile — und der
+Dir-File-Upload brauchte Multipart statt Raw-Body.)
+
+- `_serve_file`: Crawler-Branch übersprungen bei `raw=1`.
+- Test: `test_html_raw_escape_beats_crawler` (Twitterbot + raw=1 →
+  byte-identisch, keine og:-Tags).
 
 ---
 

@@ -160,6 +160,14 @@ def test_html_agent_bytes_untouched(srv):
     assert st == 200 and body == HTML
 
 
+def test_html_raw_escape_beats_crawler(srv):
+    # 1.54.1: ?raw=1 is the byte-exact escape — even card crawlers get raw
+    f = _upload(srv, "page.html", HTML, "text/html")
+    st, h, body = srv.get(f"/{f['id']}?raw=1", headers=TWBOT)
+    assert st == 200 and body == HTML
+    assert b"og:" not in body
+
+
 def test_md_doc_carries_card_for_browsers(srv):
     md = b"# My Report\n\nFirst paragraph with **bold** prose.\n"
     f = _upload(srv, "report.md", md, "text/markdown")
