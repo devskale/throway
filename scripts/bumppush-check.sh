@@ -15,7 +15,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-HANDOFF=".handoff/issues"
+HANDOFF="`.work/issues"
 [ -d "$HANDOFF" ] || HANDOFF="$HOME/code/handoffs/throway/issues"
 
 fail=0

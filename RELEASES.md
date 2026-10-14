@@ -810,7 +810,7 @@ fehlende Koordination — also mechanisch gelöst statt dokumentiert:
 - **In `release-check.sh` verdrahtet**, läuft also in jedem Release
   und in CI; ohne Handoff-Struktur (CI-Runner) wird er übersprungen.
 - **Regel in `AGENTS.md`** beim Bumppush-Abschnitt: wer an throway
-  arbeitet, legt einen Claim in `.handoff/issues/active/` an. Der
+  arbeitet, legt einen Claim in `.work/issues/active/` an. Der
   Mechanismus ist das vorhandene issues-Kanban (`issues start <slug>`),
   keine neue Infrastruktur.
 

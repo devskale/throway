@@ -30,7 +30,7 @@ Auth:      none (public). Optional retain token for indefinite objects.
 > `sudo systemctl restart throway-store`.
 
 > **Koordination (Pflicht vor jedem Bumppush):** Claim in
-> `.handoff/issues/active/` anlegen; `release-check.sh` verweigert bei
+> `.work/issues/active/` anlegen; `release-check.sh` verweigert bei
 > fremdem Claim.
 
 1. `POST` a file → get back JSON with `id` and `url`. Share the `url`.

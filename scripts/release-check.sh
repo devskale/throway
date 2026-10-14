@@ -20,9 +20,9 @@ fi
 # /api-Spec dynamisch ziehen (Server auf freiem Port, tmp-root)
 # Vorab: Koordinations-Guardrail (parallele Sessions im selben Baum) —
 # Retro 2026-10-01: zwei Sessions, ein Working-Tree, eine versionslose
-# Commit-Kette. Lokal mit .handoff/ vorhanden: eigener Claim nötig.
+# Commit-Kette. Lokal mit .work/ vorhanden: eigener Claim nötig.
 # Ohne Handoff-Struktur (CI-Runner) wird der Check übersprungen.
-if [ -d .handoff/issues/active ] || [ -d "$HOME/code/handoffs/throway/issues/active" ]; then
+if [ -d `.work/issues/active ] || [ -d "$HOME/code/handoffs/throway/issues/active" ]; then
   # $CLAIM darf leer sein (bumppush-check.sh behandelt '' als kein eigener
   # Claim); unter set -u ist eine ungesetzte Variable aber ein Fehler.
   CLAIM="${CLAIM:-}"

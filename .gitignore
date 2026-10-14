@@ -4,3 +4,7 @@ files/
 stats.json
 *.bak-*
 .venv/
+
+# issues container link (repo-local)
+.work
+.handoff
