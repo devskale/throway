@@ -30,7 +30,8 @@ import html as _html
 from urllib.parse import unquote, quote, urlparse, urljoin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from throway import contract, dirs, index, og, pics, retain, storage as _storage
+from throway import authreg, contract, dirs, index, og, pics, retain, storage as _storage
+from throway import mailer as _mailer
 
 
 def _html_escape(s):
@@ -85,7 +86,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.54.1"
+VERSION = "1.55.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -563,10 +564,15 @@ def _valid_tag(t):
     return bool(t) and len(t) <= MAX_TAG_LEN and re.fullmatch(r"[a-z0-9-]+", t)
 
 
-def _ttl_or_400(handler, qp):
+def _ttl_or_400(handler, qp, kind="file"):
     """&ttl= strikt (Retro 1.53.4): unparsebare Werte sind 400
     bad_request statt stiller Default. None = Parameter nicht
-    gegeben (Default gilt). False = 400 bereits gesendet."""
+    gegeben (Default gilt). False = Fehler bereits gesendet.
+
+    1.55.0 — lebenszeit-stufen: anonym darf Dateien auf 4 h und Dirs
+    auf 7 d (ihre Defaults) verlängern; darüber braucht es eine
+    registrierte Session (bis 14 d,Blueprint authreg). Authed bleibt
+    beim alten Klemm-Verhalten (still [MIN_AGE, MAX_AGE])."""
     raw = (qp.get("ttl") or [""])[0]
     if not raw:
         return None
@@ -575,6 +581,14 @@ def _ttl_or_400(handler, qp):
         handler._err(400, "invalid ttl: " + repr(raw)
                     + " — use hours (12, 12h) or days (7d)")
         return False
+    if not handler._session_user():
+        anon_cap = TTL_HOURS * 3600 if kind == "file" else 7 * 24 * 3600
+        if secs > anon_cap:
+            handler._err(403, f"anonymous ttl is capped at "
+                        + (f"{TTL_HOURS}h" if kind == "file" else "7d")
+                        + " — register free (POST /api/auth/register, email)"
+                          " for up to 14d")
+            return False
     return secs
 
 def _parse_tags(query_tags):
@@ -633,8 +647,10 @@ Base URL: {PUBLIC_BASE}""",
 
 LIFETIME (optional):
    POST {PUBLIC_BASE}/?name=x.txt&ttl=24h
-   -> default is {TTL_HOURS}h; &ttl=<h|d> extends a single file, clamped to
-      [4h, 14d] (MAX 14 days).
+   -> default is {TTL_HOURS}h; &ttl=<h|d> extends a single file. Anonymous
+      capped at {TTL_HOURS}h (dirs 7d); a registered session (free email
+      account, POST /api/auth/register) unlocks up to 14d and can extend
+      existing files later via PUT /<id>?ttl=<h|d> (empty body).
 
 SHARE NAME (optional):
    POST {PUBLIC_BASE}/?share=my-note
@@ -751,10 +767,12 @@ itself is editable:false; only its text/* or application/json files are.""",
         "title": "Limits",
         "summary": "Lifetimes, sizes, pool, rate limit",
         "body": """LIMITS
-- URL lifetime:  {TTL_HOURS} hours by default; single files can be extended
-  via &ttl=<h|d> when uploading, clamped to [4h, 14d] (MAX 14 days)
+- URL lifetime:  {TTL_HOURS} hours by default; anonymous ttl= capped at
+  {TTL_HOURS}h (dirs 7d) — longer needs a free registered session
+  (POST /api/auth/register): files and dirs then clamp to [4h, 14d],
+  and PUT /<id>?ttl= (empty body) extends a file's life any time
 - Dir lifetime: sliding, default 7 days, MAX 14 days via ttl= (clamped
-  [4h, 14d]);
+  [4h, 14d] for registered sessions; 7d anonymous);
   each add/edit/delete slides expires_at forward, capped at 30 days total
 - Max file size: {MAX_FILE_MB} MB
 - Pool size:     {POOL_MB} MB (oldest files evicted first)
@@ -763,8 +781,9 @@ itself is editable:false; only its text/* or application/json files are.""",
 
 PERSISTENCE — how long something lives, per type (also in each response's
 \"persistence\" block):
-- single file:  {TTL_HOURS}h by default (extendable_by:none; &ttl= up to 14d
-                set at upload time; &share= stores it under a chosen name
+- single file:  {TTL_HOURS}h by default (anonymous &ttl= up to {TTL_HOURS}h;
+                registered sessions up to 14d at upload AND later via
+                PUT /<id>?ttl= with empty body; &share= stores it under a chosen name
                 with a sliding 7d default lifetime instead; &once=1 = burn-
                 after-reading, auto-deletes after the first download)
 - dir:          sliding lifetime (default 7d), extendable by activity
@@ -1096,6 +1115,145 @@ class _RequestKit:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
+
+    # ── 1.55.0: Session-Cookie (authreg-Blueprint) ──────────────────
+    SESSION_COOKIE = "ta_session"
+
+    def _session_user(self):
+        """Norm der aktiven registrierten Session oder None. Cookie-Wert
+        wird nur als SHA-256 gegen den Store geprüft (never stored raw)."""
+        c = (self.headers.get("Cookie") or "")
+        for part in c.split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == self.SESSION_COOKIE and v:
+                return authreg.session_norm(v)
+        return None
+
+    def _session_cookie_headers(self, token=None):
+        if token is None:   # logout
+            return {"Set-Cookie": f"{self.SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"}
+        return {"Set-Cookie": f"{self.SESSION_COOKIE}={token}; Max-Age={authreg.SESSION_TTL_MS // 1000}; Path=/; HttpOnly; SameSite=Lax"}
+
+    # ── auth-Routen (Blueprint-Endpunkt-Vertrag, LOGIN-FLOW.md) ─────
+    AUTH_REGISTERED_OK = {"ok": True, "message": "If this address is eligible, a mail is on its way."}
+
+    def _auth_json(self, code, obj, extra=None):
+        if code >= 400 and "code" not in obj:      # 1.53.4: stabiler code auf JEDEM fehler
+            obj = {**obj, "code": _ERR_CODES.get(code, "error")}
+        return self._send(code, json.dumps(obj), "application/json", extra=extra)
+
+    def _auth_get(self, path, qp):
+        if path == "/api/auth/config":
+            return self._auth_json(200, {"registration": authreg.registration_mode(),
+                                        "mail_configured": _mailer.mail_configured()})
+        if path == "/api/auth/whoami":
+            u = self._session_user()
+            return self._auth_json(200, {
+                "user": u,
+                "ttl_max_anonymous": f"{TTL_HOURS}h (files) / 7d (dirs)",
+                "ttl_max_registered": "14d"})
+        if path == "/api/auth/verify":
+            # menschen-tauglicher Deep-Link aus der Mail: GET setzt die
+            # Session direkt (Agenten nutzen POST + JSON unten).
+            token = (qp.get("token") or [""])[0]
+            r = authreg.verify_registration(token)
+            if not r:
+                return self._send(400, "<!doctype html><meta charset=utf-8><body "
+                    "style=font-family:system-ui;padding:2rem>Link invalid or "
+                    "expired — request a new one.</body>", "text/html")
+            authreg.maybe_send_welcome(r["email"], r["was_pending"])
+            tok = authreg.issue_session(r["user"])
+            body = ("<!doctype html><meta charset=utf-8><body style=font-family:"
+                    "system-ui;padding:2rem>Verified — you are signed in. "
+                    "Lifetimes up to 14d unlocked.</body>")
+            return self._send(200, body, "text/html",
+                              extra=self._session_cookie_headers(tok))
+        if path == "/api/auth/reset":
+            token = (qp.get("token") or [""])[0]
+            if not token:
+                return self._send(200, "<!doctype html><meta charset=utf-8><body "
+                    "style=font-family:system-ui;padding:2rem>Use the link from "
+                    "your mail with a client that sends the token to "
+                    "POST /api/auth/reset.</body>", "text/html")
+            return self._auth_json(400, {"error": "POST the token as JSON to /api/auth/reset with your new passphrase"})
+        return False
+
+    def _auth_post(self, path):
+        raw = self._read_body()
+        try:
+            body = json.loads(raw) if raw else {}
+            if not isinstance(body, dict):
+                body = {}
+        except ValueError:
+            return self._auth_json(400, {"error": "body must be JSON"})
+        ip = self._client_ip()
+        if path == "/api/auth/register":
+            r = authreg.register_user(body.get("email"), body.get("passphrase"),
+                                      invite_code=body.get("inviteCode"), ip=ip)
+        elif path == "/api/auth/verify":
+            r = authreg.verify_registration(str(body.get("token") or ""))
+            if r:
+                authreg.maybe_send_welcome(r["email"], r["was_pending"])
+                tok = authreg.issue_session(r["user"])
+                return self._auth_json(200, {"ok": True, "user": r["user"]},
+                                        extra=self._session_cookie_headers(tok))
+            return self._auth_json(400, {"error": "link invalid or expired — request a new one"})
+        elif path == "/api/auth/resend":
+            r = authreg.resend_verification(body.get("email"), ip=ip)
+        elif path == "/api/auth/reset-request":
+            r = authreg.request_reset(body.get("email"), ip=ip)
+        elif path == "/api/auth/reset":
+            r = authreg.consume_reset(body.get("token"), body.get("passphrase"))
+            if r.get("status") == "ok":
+                authreg.revoke_sessions(r["user"])   # OWASP: identity change
+                tok = authreg.issue_session(r["user"])
+                return self._auth_json(200, {"ok": True, "user": r["user"]},
+                                        extra=self._session_cookie_headers(tok))
+            if r.get("status") == "weak-passphrase":
+                return self._auth_json(400, {"error": "passphrase needs at least 8 characters"})
+            return self._auth_json(400, {"error": "link invalid or expired — request a new one"})
+        elif path == "/api/auth/login":
+            norm = authreg.login(body.get("email"), body.get("passphrase"))
+            if not norm:
+                return self._auth_json(401, {"error": "invalid credentials"})
+            tok = authreg.issue_session(norm)
+            return self._auth_json(200, {"ok": True, "user": norm},
+                                    extra=self._session_cookie_headers(tok))
+        elif path == "/api/auth/logout":
+            c = (self.headers.get("Cookie") or "")
+            for part in c.split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == self.SESSION_COOKIE and v:
+                    authreg.drop_session(v)
+            return self._auth_json(200, {"ok": True},
+                                    extra=self._session_cookie_headers(None))
+        else:
+            return self._auth_json(404, {"error": "unknown auth endpoint"})
+        # uniforme Antworten für die existenz-empfindlichen Flows
+        if path == "/api/auth/register":
+            st = r.get("status")
+            if st == "closed":
+                return self._auth_json(403, {"error": "registration is closed"})
+            if st == "rate-ip":
+                return self._auth_json(429, {"error": "too many attempts, slow down"})
+            if st == "day-cap":
+                return self._auth_json(429, {"error": "registration is full for today — try again tomorrow"})
+            if st == "bad-invite":
+                return self._auth_json(403, {"error": "invalid invite code"})
+            if st == "invalid-email":
+                return self._auth_json(400, {"error": "that does not look like an email address"})
+            if st == "weak-passphrase":
+                return self._auth_json(400, {"error": "passphrase needs at least 8 characters"})
+            if st == "cooldown":
+                return self._auth_json(429, {"error": "a mail was just sent — check your inbox, try again in a minute"})
+            return self._auth_json(200, self.AUTH_REGISTERED_OK)
+        # resend / reset-request: uniform
+        st = r.get("status")
+        if st == "rate-ip":
+            return self._auth_json(429, {"error": "too many attempts, slow down"})
+        if st == "cooldown":
+            return self._auth_json(429, {"error": "a mail was just sent — check your inbox, try again in a minute"})
+        return self._auth_json(200, self.AUTH_REGISTERED_OK)
 
     def _kit(self):
         """The request kit for throway/ modules (dirs) — the one seam
@@ -1468,6 +1626,14 @@ class Handler(BaseHTTPRequestHandler):
         _q = self.path.split("?", 1)[1] if "?" in self.path else ""
         if not self._rate(count="thumb=" not in _q): return
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if path.startswith("/api/auth/"):
+            qp = {}
+            for kv in (self.path.split("?", 1)[1] if "?" in self.path else "").split("&"):
+                k, _, v = kv.partition("=")
+                qp.setdefault(k, []).append(v)
+            r = self._auth_get(path, qp)
+            if r is not False:
+                return r
         if path in ("/", ""):
             if self._is_agent():
                 return self._home_help()
@@ -1613,6 +1779,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self._rate(): return
+        _path = self.path.split("?", 1)[0].rstrip("/")
+        if _path.startswith("/api/auth/"):
+            return self._auth_post(_path)
         # 1.42.x P2: Idempotenz-Key. Ein Agent, der nach Timeout wiederholt,
         # darf keine zweite Datei erzeugen. Header oder ?idem=; der Key wird
         # nur gehasht gespeichert. Treffer -> dieselbe Antwort wie beim
@@ -1715,7 +1884,7 @@ class Handler(BaseHTTPRequestHandler):
                 key = name_hint
             else:
                 key = secrets.token_hex(8)
-            ttl = _ttl_or_400(self, qp)
+            ttl = _ttl_or_400(self, qp, kind="dir")
             if ttl is False:
                 return
             ctype = self.headers.get("Content-Type", "application/octet-stream")
@@ -1750,7 +1919,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(named) > 1:
                 return self._store_bundle(named, retained=retained)
             n, d, c = named[0]
-            ttl = _ttl_or_400(self, qp)
+            ttl = _ttl_or_400(self, qp, kind="dir")
             if ttl is False:
                 return
             if share:
@@ -2158,6 +2327,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(403, "bundles are immutable snapshots (editable: false)")
         if not os.path.isfile(fp):
             return self._err(404, "not found")
+        # 1.55.0 — PUT /<id>?ttl=… mit leerem Body: Lifetime verlängern
+        # (Dateien; registrierte Session bis 14 d, anonym bis 4 h —
+        # dieselbe Stufen-Logik wie beim Upload).
+        _qp = {}
+        for kv in (self.path.split("?", 1)[1] if "?" in self.path else "").split("&"):
+            k, _, v = kv.partition("=")
+            _qp.setdefault(k, []).append(v)
+        if "ttl" in _qp and _qp.get("ttl", [""])[0]:
+            ttl = _ttl_or_400(self, _qp, kind="file")
+            if ttl is False:
+                return
+            denied = retain.write_denied(self, self._meta_of(fid))
+            if denied:
+                return self._err(denied[0], denied[1]["error"])
+            data = self._read_body()
+            if data:
+                return self._err(400, "PUT ?ttl= extends lifetime only — send an empty body (content edits drop the ttl param)")
+            mp = fp + ".meta"
+            try:
+                with open(mp, "r", encoding="utf-8") as _f:
+                    m = json.load(_f)
+            except Exception:
+                return self._err(404, "not found")
+            if m.get("retain"):
+                return self._err(403, "retained objects never expire — nothing to extend")
+            m["expires"] = time.time() + ttl
+            _atomic_json(mp, m)
+            return self._send(200, json.dumps({
+                "id": fid, "url": f"{PUBLIC_BASE}/{fid}",
+                "expires_in": ttl,
+                "expires_at": _fmt_exp(m.get("expires")),
+                "persistence": _persistence_block("single", m.get("expires")),
+            }), "application/json")
         if not self._is_text(fid):
             return self._err(400, "only text files can be edited")
         denied = retain.write_denied(self, self._meta_of(fid))

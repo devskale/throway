@@ -1,9 +1,26 @@
 # throway — Releases
 
-**Current version:** `1.54.1`
+**Current version:** `1.55.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
+
+---
+
+## 1.55.0 — 2026-10-18 — Email-Registrierung: Lifetime-Stufen 4h/7d → 14d
+
+Blueprint-Anwendung (LOGIN-FLOW.md, Python-Port von aiuis email-reg):
+`throway/authreg.py` + `throway/mailer.py` (stdlib, zero-dep bleibt).
+Anonym bleibt alles wie vorher — außer `ttl=` über dem Default (4h
+Dateien / 7d Dirs) ist jetzt 403 mit Register-Hinweis statt still erlaubt.
+Mit kostenloser Email-Registrierung (Verify-Link, 30 min single-use,
+Enumeration-safe, Day-Cap 20, Mail-Budget 100/10) : `ttl=` bis 14d und
+`PUT /<id>?ttl=` (leerer Body) verlängert Dateien jederzeit. Session als
+HttpOnly-Cookie (SHA-256 im Store, 7d). Reset tötet alle Sessions. SMTP
+über den Fleet-Hub mail@skale.dev (Drop-in auf lubu); ohne SMTP-Creds
+läuft der Mailer dry-run, `/api/auth/config` zeigt `mail_configured`.
+Registrierung default **open** — Kill-Switch: `REGISTER_DAILY_MAX=0` /
+`REGISTRATION_MODE=closed`. Tests: +14 (Batterie 209).
 
 ---
 

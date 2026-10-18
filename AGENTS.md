@@ -13,7 +13,9 @@ purpose: docs-drift incidents have proven the copy wrong twice.
 ```
 Base URL:  https://skale.dev/throway
 Lifetime:  4 hours (files auto-delete); dirs 7d sliding; retained = never
-Auth:      none (public). Optional retain token for indefinite objects.
+Auth:      none required for the base service. Two opt-in gates: retain
+           token for indefinite objects; free email registration
+           (POST /api/auth/register) for lifetimes beyond 4h/7d (up to 14d)
 ```
 
 > **CODING_RULES.md lesen vor jeder Code-Änderung** — Release-Checkliste,

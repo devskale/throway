@@ -36,7 +36,7 @@ curl -X POST --data-binary @photo.png \
 
 # → {"id":"4f2a…","url":"https://skale.dev/throway/4f2a…","size":148,…}
 
-# longer lifetime (max 14 days, default 4h)
+# longer lifetime (anonymous max 4h; free email registration unlocks 14d)
 curl -X POST --data-binary @note.txt \
   "https://skale.dev/throway/?name=note.txt&ttl=24h"
 
