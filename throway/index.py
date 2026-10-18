@@ -536,6 +536,60 @@ _INDEX_JS = r"""(function () {
     }
   }
   document.addEventListener('paste', handlePaste);
+
+  /* ── Konto (1.56.0): Email-Reg/Login — schaltet ttl>4h frei ──────── */
+  function applyAuth(user) {
+    var anon = $('acctAnon'), known = $('acctUser');
+    if (user) {
+      anon.hidden = true; known.hidden = false;
+      $('acctWho').textContent = user;
+    } else {
+      anon.hidden = false; known.hidden = true;
+    }
+    var longTtls = ['24h', '7d', '14d'];
+    ['ttlSel', 'createTtl'].forEach(function (id) {
+      var sel = $(id); if (!sel) return;
+      for (var i = 0; i < sel.options.length; i++) {
+        var o = sel.options[i];
+        if (longTtls.indexOf(o.value) !== -1) o.disabled = !user;
+      }
+      if (!user && longTtls.indexOf(sel.value) !== -1) sel.value = '';
+    });
+  }
+  function authMsg(t, ok) {
+    var m = $('acctMsg'); m.textContent = t;
+    m.style.color = ok === false ? '#dc2626' : 'var(--muted)';
+  }
+  function api(path, body) {
+    return fetch(PREFIX + '/api/auth/' + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); });
+  }
+  function initAuth() {
+    fetch(PREFIX + '/api/auth/whoami')
+      .then(function (r) { return r.json(); })
+      .then(function (d) { applyAuth(d.user); })
+      .catch(function () { applyAuth(null); });
+    $('acctReg').onclick = function () {
+      api('register', { email: $('acctEmail').value.trim(), passphrase: $('acctPass').value })
+        .then(function (r) {
+          authMsg(r.ok ? (r.j.message || 'Check your mail — the verify link is valid 30 min.') : r.j.error, r.ok);
+        });
+    };
+    $('acctLogin').onclick = function () {
+      api('login', { email: $('acctEmail').value.trim(), passphrase: $('acctPass').value })
+        .then(function (r) {
+          if (r.ok) { applyAuth(r.j.user); authMsg(''); }
+          else authMsg(r.j.error || 'login failed', false);
+        });
+    };
+    $('acctLogout').onclick = function () {
+      api('logout', {}).then(function () { applyAuth(null); authMsg(''); });
+    };
+  }
+  initAuth();
 })();
 """
 
@@ -642,6 +696,14 @@ _INDEX_CSS = (
          "details.agents{margin-top:1.5rem;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem 1rem}"
          "details.agents summary{cursor:pointer;font-weight:600;color:var(--accent)}"
          "details.agents pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;color:var(--muted);margin:.6rem 0 0;padding-top:.6rem;border-top:1px solid var(--line)}"
+         ".acct{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem;margin:0 0 1rem;font-size:.9rem}"
+         ".acct b{color:var(--accent)}"
+         ".acctrow{display:flex;gap:.45rem;flex-wrap:wrap;margin-top:.45rem}"
+         ".acctrow input{flex:1;min-width:150px;min-height:40px;border:1px solid var(--line);border-radius:8px;padding:.35rem .7rem;font-size:.95rem}"
+         ".acctrow button{min-height:40px;padding:.3rem .9rem;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font-size:.9rem}"
+         ".acctrow button.primary{background:var(--accent);border-color:var(--accent);color:#fff}"
+         ".hint{color:var(--muted);font-size:.8rem;margin-top:.35rem;min-height:1em}"
+         "#acctUser button{min-height:32px;margin-left:.4rem;padding:.1rem .6rem;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer;font-size:.8rem}"
          "@media(max-width:560px){main{padding:1.6rem 1rem 4rem}"
          "h1{font-size:1.6rem}"
          "#drop{padding:1.4rem 1rem}"
@@ -709,9 +771,22 @@ def page(stats):
          "<ul class='feats'>"
          "<li><b>Files</b> — one URL per upload<small>inline for images &amp; text, download otherwise</small></li>"
          "<li><b>Bundles</b> — a whole mini-website<small>index.html renders inline; zip for agents</small></li>"
-         "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (ttl= up to 14d, default 7d); edit history</small></li>"
+         "<li><b>Dirs</b> — keep adding files over days<small>sliding lifetime (ttl= up to 7d, 14d with a free account); edit history</small></li>"
          "<li><b>Pics</b> — galleries for events<small>free upload, images live 90 days, per-gallery admin link · <a href='" + prefix + "/pics'>browse</a></small></li>"
          "</ul>"
+         "<div class='acct' id='acctBox'>"
+         "<div id='acctAnon'>"
+         "<b>Konto</b> — free: lifetimes up to 14d instead of " + str(ttl_hours) + "h"
+         "<div class='acctrow'>"
+         "<input id='acctEmail' type='email' placeholder='you@example.org' autocomplete='email'>"
+         "<input id='acctPass' type='password' placeholder='passphrase (8+)' autocomplete='current-password'>"
+         "<button type=button id='acctLogin'>Login</button>"
+         "<button type=button id='acctReg' class='primary'>Register</button>"
+         "</div>"
+         "<div class='hint' id='acctMsg'></div>"
+         "</div>"
+         "<div id='acctUser' hidden>✔ <span id='acctWho'></span> — ttl up to 14d unlocked · <button type=button id='acctLogout'>logout</button></div>"
+         "</div>"
          "<div class='uploader'>"
          "<div class='tabs' role='tablist' aria-label='Upload type'>"
          "<button type=button role=tab id=tab-files data-mode=files aria-controls=panel-files aria-selected=true tabindex=0>Files</button>"
@@ -740,7 +815,7 @@ def page(stats):
          "<input id='shareSel' placeholder='optional, e.g. my-note' maxlength=32>"
          "<span class='hint'>a chosen, memorable URL (5-32 chars: a-z, 0-9, -)</span>"
          "</div>"
-         "<div class='limits'>max 5 MB per file &#183; lives 4h (ttl up to 14d) &#183; one file = share URL, many = bundle, dir checkbox = dir</div>"
+         "<div class='limits'>max 5 MB per file &#183; lives 4h (anon ttl up to 4h — account unlocks 14d) &#183; one file = share URL, many = bundle, dir checkbox = dir</div>"
          "</div>"
          "<div class='panel' id='panel-text' role='tabpanel' aria-labelledby='tab-text' hidden>"
          "<textarea id='createText' placeholder='Paste or type text to share…' rows=8></textarea>"

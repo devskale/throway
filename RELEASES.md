@@ -1,13 +1,13 @@
 # throway — Releases
 
-**Current version:** `1.55.0`
+**Current version:** `1.56.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
 
-## 1.55.0 — 2026-10-18 — Email-Registrierung: Lifetime-Stufen 4h/7d → 14d
+## 1.56.0 — 2026-10-18 — Email-Registrierung: Lifetime-Stufen 4h/7d → 14d
 
 Blueprint-Anwendung (LOGIN-FLOW.md, Python-Port von aiuis email-reg):
 `throway/authreg.py` + `throway/mailer.py` (stdlib, zero-dep bleibt).

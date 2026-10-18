@@ -1,4 +1,4 @@
-"""1.55.0 — Email-Registrierung (Blueprint-Port, LOGIN-FLOW.md).
+"""1.56.0 — Email-Registrierung (Blueprint-Port, LOGIN-FLOW.md).
 
 Zwei Schichten:
   - in-process (authreg direkt): Token-/Reset-/Day-Cap-Logik, die über

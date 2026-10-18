@@ -86,7 +86,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.55.0"
+VERSION = "1.56.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -569,7 +569,7 @@ def _ttl_or_400(handler, qp, kind="file"):
     bad_request statt stiller Default. None = Parameter nicht
     gegeben (Default gilt). False = Fehler bereits gesendet.
 
-    1.55.0 — lebenszeit-stufen: anonym darf Dateien auf 4 h und Dirs
+    1.56.0 — lebenszeit-stufen: anonym darf Dateien auf 4 h und Dirs
     auf 7 d (ihre Defaults) verlängern; darüber braucht es eine
     registrierte Session (bis 14 d,Blueprint authreg). Authed bleibt
     beim alten Klemm-Verhalten (still [MIN_AGE, MAX_AGE])."""
@@ -1116,7 +1116,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
 
-    # ── 1.55.0: Session-Cookie (authreg-Blueprint) ──────────────────
+    # ── 1.56.0: Session-Cookie (authreg-Blueprint) ──────────────────
     SESSION_COOKIE = "ta_session"
 
     def _session_user(self):
@@ -1166,7 +1166,7 @@ class Handler(BaseHTTPRequestHandler):
             body = ("<!doctype html><meta charset=utf-8><body style=font-family:"
                     "system-ui;padding:2rem>Verified — you are signed in. "
                     "Lifetimes up to 14d unlocked.</body>")
-            return self._send(200, body, "text/html",
+            return self._send(200, body + '<p><a href="' + PUBLIC_BASE + '">back to throway</a></p>', "text/html",
                               extra=self._session_cookie_headers(tok))
         if path == "/api/auth/reset":
             token = (qp.get("token") or [""])[0]
@@ -2327,7 +2327,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(403, "bundles are immutable snapshots (editable: false)")
         if not os.path.isfile(fp):
             return self._err(404, "not found")
-        # 1.55.0 — PUT /<id>?ttl=… mit leerem Body: Lifetime verlängern
+        # 1.56.0 — PUT /<id>?ttl=… mit leerem Body: Lifetime verlängern
         # (Dateien; registrierte Session bis 14 d, anonym bis 4 h —
         # dieselbe Stufen-Logik wie beim Upload).
         _qp = {}
