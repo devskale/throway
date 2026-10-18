@@ -1,11 +1,18 @@
 # throway — Releases
 
-**Current version:** `1.56.2`
+**Current version:** `1.56.3`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.56.3 — 2026-10-18 — Popover-Felder füllen die Box (Alignment-Fix)
+
+DOM-Messung (rodney): Popover 320 px, Button 286 px — aber Email-/Pass-
+Felder blieben bei intrinsischer Input-Breite (185 px), kein width:100%
+im Popover-CSS. Felder füllen jetzt die Box (.pop input width:100%,
+.popform als Flex-Spalte mit einheitlichem Gap). Batterie 211.
 
 ## 1.56.2 — 2026-10-18 — Popover öffnete von selbst: [hidden]-Guard
 
