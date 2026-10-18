@@ -1,11 +1,18 @@
 # throway — Releases
 
-**Current version:** `1.56.1`
+**Current version:** `1.56.2`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.56.2 — 2026-10-18 — Popover öffnete von selbst: [hidden]-Guard
+
+Author-`display:flex` auf .pop/.hrow/.popmenu überstimmt das
+`hidden`-Attribut (UA-`display:none` verliert gegen Author-Styles) — der
+Login-Popover stand dadurch beim Laden immer offen. Global-Fix:
+`[hidden]{display:none !important}` in index.css. Batterie 211.
 
 ## 1.56.1 — 2026-10-18 — Register/Login als Header-Pill (SOTA-Muster), JS/CSS in Dateien
 
