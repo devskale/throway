@@ -8,6 +8,7 @@ browser).
 """
 import re
 import shutil
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -51,9 +52,14 @@ def test_stats_rendered():
 
 
 def test_max_mb_substituted_not_leaked():
+    """1.56.1: MAX_MB reist als data-attr, JS liest es — kein Platzhalter
+    in homepage oder statischem JS."""
     h = index.page(STATS)
     assert "__MAX_MB__" not in h
-    assert "var MAX_MB = 5;" in h
+    assert "data-max-mb=5" in h
+    js = (Path(__file__).parent.parent / "throway" / "static" / "index.js").read_text()
+    assert "__MAX_MB__" not in js
+    assert "dataset.maxMb" in js
 
 
 def test_agent_description_escaped():
@@ -63,30 +69,34 @@ def test_agent_description_escaped():
 
 
 def test_js_constants_are_str():
-    """Retro 1.43.2 (a) für die Homepage nachgezogen: ein Trailing-Comma
-    macht die JS-Konstante zum Tupel und crasht erst beim Rendern."""
-    assert isinstance(index._INDEX_JS, str)
-    assert isinstance(index._INDEX_CSS, str)
+    """1.56.1: JS/CSS leben in throway/static — echte Dateien, per
+    /assets/ ausgeliefert; die URL-Konstanten bleiben Strings."""
+    static = Path(__file__).parent.parent / "throway" / "static"
+    assert (static / "index.js").stat().st_size > 1000
+    assert (static / "index.css").stat().st_size > 1000
+    assert isinstance(index._INDEX_JS_URL, str)
+    assert isinstance(index._INDEX_CSS_URL, str)
+    h = index.page(STATS)
+    assert "/assets/index.js?v=" in h and "/assets/index.css?v=" in h
 
 
 def test_rendered_scripts_node_check():
-    """Retro 1.43.2 (b): jedes gerenderte Inline-<script> parst via
-    node --check — ungültiges JS in der String-Konstante fällt hier,
-    nicht erst im Browser."""
+    """Retro 1.43.2 (b), 1.56.1 angepasst: das App-JS ist jetzt eine
+    echte Datei — die muss als Ganzes durch node --check."""
     if not shutil.which("node"):
         pytest.skip("node nicht installiert")
+    js_path = Path(__file__).parent.parent / "throway" / "static" / "index.js"
+    r = subprocess.run(["node", "--check", str(js_path)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, f"index.js parst nicht: {r.stderr[:300]}"
     h = index.page(STATS)
-    scripts = re.findall(r"<script>(.*?)</script>", h, re.S)
-    assert scripts, "kein Inline-Script gerendert"
-    for i, js in enumerate(scripts):
-        r = subprocess.run(["node", "--check", "/dev/stdin"], input=js,
-                           capture_output=True, text=True)
-        assert r.returncode == 0, f"script {i} parst nicht: {r.stderr[:300]}"
+    assert not re.findall(r"<script>(.*?)</script>", h, re.S), "inline-script zurck?"
 
 
 def test_index_css_brace_balance():
     """Retro 2026-10-02: verwaiste/doppelte } legen die FOLGENDE Regel
-    still weg — Release-Check-Spiegelung als Test."""
-    css = index._INDEX_CSS
+    still weg — Release-Check-Spiegelung als Test (seit 1.56.1 auf die
+    statische Datei)."""
+    css = (Path(__file__).parent.parent / "throway" / "static" / "index.css").read_text()
     assert css.count("{") == css.count("}"), \
         f"unbalanced: {css.count('{')} {{ vs {css.count('}')} }}"

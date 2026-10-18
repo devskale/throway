@@ -86,7 +86,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.56.0"
+VERSION = "1.56.1"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1129,6 +1129,25 @@ class Handler(BaseHTTPRequestHandler):
                 return authreg.session_norm(v)
         return None
 
+    # ── 1.56.1: statische homepage-assets (throway/static) ─────────
+    ASSET_TYPES = {"index.css": "text/css; charset=utf-8",
+                   "index.js": "application/javascript; charset=utf-8"}
+
+    def _serve_asset(self, path):
+        name = path[len("/assets/"):].split("?", 1)[0]
+        ctype = self.ASSET_TYPES.get(name)
+        if not ctype:
+            return self._err(404, "no such asset")
+        fp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "throway", "static", name)
+        try:
+            with open(fp, "rb") as _f:
+                body = _f.read()
+        except OSError:
+            return self._err(404, "asset missing on disk")
+        return self._send(200, body, ctype,
+                          extra={"Cache-Control": "public, max-age=300"})
+
     def _session_cookie_headers(self, token=None):
         if token is None:   # logout
             return {"Set-Cookie": f"{self.SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"}
@@ -1634,6 +1653,8 @@ class Handler(BaseHTTPRequestHandler):
             r = self._auth_get(path, qp)
             if r is not False:
                 return r
+        if path.startswith("/assets/"):
+            return self._serve_asset(path)
         if path in ("/", ""):
             if self._is_agent():
                 return self._home_help()

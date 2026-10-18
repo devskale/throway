@@ -1,11 +1,22 @@
 # throway — Releases
 
-**Current version:** `1.56.0`
+**Current version:** `1.56.1`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.56.1 — 2026-10-18 — Register/Login als Header-Pill (SOTA-Muster), JS/CSS in Dateien
+
+Konto-UI nach Vercel/Linear/GitHub-Muster: rechts oben ghost „Log in" +
+Primary-Pill „Register" → Popover (Email+Passphrase, Modus-Wechsel,
+Enter-Bedingienung, ESC/Outside-Close); angemeldet ein Avatar-Chip →
+Account-Menü (Mail, 14d-Hinweis, Logout). Die Body-Konto-Box ist weg.
+Homepage-JS/CSS nicht mehr inline in index.py, sondern echte Dateien
+unter throway/static/, ausgeliefert über /assets/ (Whitelist, Cache-
+Control 5 min, ?v=-Busting); MAX_MB reist als data-Attribut. Tests: +2
+(Assets), 4 angepasst (Batterie 211).
 
 ## 1.56.0 — 2026-10-18 — Email-Registrierung: Lifetime-Stufen 4h/7d → 14d
 
