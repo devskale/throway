@@ -239,6 +239,27 @@ Reads, listing, history and zip stay open without the token; the
 listing shows `write_protected: true`. Re-creating an existing protected
 dir never re-reveals the token. Dirs without the flag behave as ever.
 
+**`editable` vs `writable` (since 1.58.0):** every object response carries
+two booleans that answer different questions:
+
+- `editable` — **content**: is the payload text (`text/*` or
+  `application/json`) so `PUT`/`PATCH` work? Per file; a dir or bundle
+  container is always `editable: false` (it is not a text payload —
+  this does NOT mean read-only).
+- `writable` — **permission**: are writes accepted **without a token**?
+  `true` for open dirs (the default), show-dirs and plain files;
+  `false` when a write token or the retain token gates writes, and for
+  immutable bundles. `writable: false` never blocks reads — reads are
+  always open.
+
+```json
+{"dir": true, "editable": false, "writable": true, "files": [
+  {"name": "a.txt", "editable": true, ...}]}
+```
+
+The open dir above is writable by anyone with the URL; only its text
+files are `editable`.
+
 **Multipart bridge (P5, since 1.47.0):** multipart file parts on the
 `?dir=1[&name=]` create call become the dir's **initial files** — and
 posting parts to an EXISTING named dir **adds** them like `POST /d/<key>`

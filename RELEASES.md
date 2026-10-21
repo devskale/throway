@@ -1,11 +1,31 @@
 # throway — Releases
 
-**Current version:** `1.57.0`
+**Current version:** `1.58.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.58.0 — 2026-10-21 — `writable`-Feld: editable vs writable entwirrt
+
+Agenten-Feedback (Smoke-Test smoke-edit-1792613509): `editable: false` auf
+dem Dir-Container lasen Agenten als „Schreibzugriff verweigert" — dabei
+sind offene Dirs ohne Token schreibbar (PUT 200, Multipart-Add funktioniert).
+`editable` ist eine Content-Frage (Text-Payload → PUT/PATCH), nie eine
+Berechtigungsfrage.
+
+- Jede Objekt-Response (File, Bundle, Dir) trägt jetzt `writable`:
+  `true` = Writes ohne Token möglich (offene Dirs, Show-Dirs, Files);
+  `false` = Write-/Retain-Token nötig bzw. Bundle (immutable).
+  `writable: false` heißt nie read-only — Reads sind immer offen.
+- HELP `/help/edit` + `/help/dirs` erklären die Trennung explizit
+  („FIELDS editable vs writable").
+- `/api`-Schemas: `editable`/`writable` mit Bedeutung annotiert.
+- API.md + AGENTS.md: Semantik-Abschnitt ergänzt.
+- Tests: `tests/test_editable_writable.py` (8 Tests: offener Dir mit
+  Schreib-Beweis, write-gate 401, Show-Dir, retained, File, Bundle,
+  Help-Texte). Suite: 225 grün.
 
 ## 1.57.0 — 2026-10-21 — Fail-louter Dir-404 (hint) + `?create=1` am Dir-Upload
 

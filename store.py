@@ -86,7 +86,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.57.0"
+VERSION = "1.58.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -753,7 +753,11 @@ STORE A URL AS A DOCUMENT (link doc):
 Every upload/listing response includes an \"editable\" boolean per file, so an
 agent can tell at a glance whether PUT/PATCH will work: true for text/* and
 application/json, false for images and other binaries. A bundle or dir object
-itself is editable:false; only its text/* or application/json files are.""",
+itself is editable:false; only its text/* or application/json files are.
+IMPORTANT: editable is a CONTENT question (is the payload text?), not a
+permission. A dir with editable:false may well be writable — check the
+"writable" boolean (permission: are writes accepted without a token?).
+See /help/dirs for the full editable-vs-writable distinction.""",
     },
     "delete": {
         "title": "Delete",
@@ -2244,6 +2248,7 @@ class Handler(BaseHTTPRequestHandler):
             "name": meta["name"],
             "content_type": meta["ctype"],
             "editable": _is_editable(meta["ctype"]),
+            "writable": not meta.get("retain"),
             **({"tags": meta["tags"]} if meta.get("tags") else {}),
             "persistence": _persistence_block("single", meta.get("expires")),
             "expires_in": None if retained else lifetime,
@@ -2299,6 +2304,7 @@ class Handler(BaseHTTPRequestHandler):
             "url": f"{PUBLIC_BASE}/{fid}",
             "bundle": True,
             "editable": False,
+            "writable": False,
             "persistence": _persistence_block("bundle", meta.get("expires")),
             "files": [
                 {"name": n,
@@ -2368,6 +2374,7 @@ class Handler(BaseHTTPRequestHandler):
             "name": meta.get("name", fid),
             "content_type": meta.get("ctype", "text/plain"),
             "editable": _is_editable(meta.get("ctype", "text/plain")),
+            "writable": not meta.get("retain"),
             "persistence": _persistence_block("single", meta.get("expires")),
             "expires_at": _fmt_exp(meta.get("expires")),
         })
@@ -2685,21 +2692,21 @@ function copyDesc() {{
                     "url": PUBLIC_BASE + "/?name=<filename>[&ttl=<h|d>][&share=<name>][&once=1]",
                     "body": "raw file bytes (or multipart/form-data with a file part)",
                     "note": "default lifetime is 4h; optional &ttl=<h|d> extends a single file, clamped to [4h, {TTL_MAX_D}d] (max {TTL_MAX_D} days); optional &share=<name> stores it under a chosen memorable name (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved) at /d/<name> with sliding lifetime (default 7d, ttl= clamped [4h,14d]); optional &once=1 = burn-after-reading (single files only, not with &share=): the file auto-deletes after the first download; with a retain token (Authorization: Bearer <token> or ?token=, see /help/retention) the upload NEVER expires and is exempt from pool eviction", 
-                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str|null", "extendable_by": "none|activity", "max_age": "int|null", "retention?": "indefinite"}, "expires_in": "int|null", "expires_at": "str|null"},
+                    "response": {"id": "str", "url": "str", "size": "int", "name": "str", "content_type": "str", "editable": "bool (content: text payload, PUT/PATCH work)", "writable": "bool (permission: writes accepted without token)", "tags?": ["str"], "persistence": {"type": "single|dir|bundle", "expires_at": "str|null", "extendable_by": "none|activity", "max_age": "int|null", "retention?": "indefinite"}, "expires_in": "int|null", "expires_at": "str|null"},
                 },
                 "upload_bundle": {
                     "method": "POST",
                     "url": PUBLIC_BASE + "/",
                     "body": "multipart/form-data with 2+ file parts",
                     "note": "creates a bundle: one URL, files served at /<id>/<filename>, index.html inline for browsers; bundles are immutable snapshots (editable:false)",
-                    "response": {"id": "str", "url": "str", "bundle": True, "editable": False, "persistence": {"type": "bundle", "expires_at": "str", "extendable_by": "none", "max_age": None}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str"}], "expires_at": "str"},
+                    "response": {"id": "str", "url": "str", "bundle": True, "editable": False, "writable": False, "persistence": {"type": "bundle", "expires_at": "str", "extendable_by": "none", "max_age": None}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str"}], "expires_at": "str"},
                 },
                 "download": {"method": "GET", "url": PUBLIC_BASE + "/<id>", "note": "images and text-like types render inline; bundle root serves index.html inline (browser) or zip (agent); append ?download=1 to force download; append ?thumb=1 for a small cached WebP preview (raster images only)"},
                 "import_url": {"method": "POST", "url": PUBLIC_BASE + "/?url=<url>[&name=<name>][&link=1][&tag=<t>]", "note": "MAX {MAX_FILE_MB}MB. Two modes: (1) default — fetch the remote http(s) document SERVER-SIDE and store it as a normal file (name from Content-Disposition/URL path, overridable via &name=); (2) &link=1 — store the URL itself as a tiny redirect HTML document (browsers get redirected, agents can PUT/PATCH it). Private/loopback hosts are blocked. Optional &tag=<t> (repeatable, up to 5) attaches tags.", "response": "same JSON as upload"},
                 "browse_files": {"method": "GET", "url": PUBLIC_BASE + "/browse?tag=<t>[&q=<substr>][&sort=created|name|size|expires][&order=asc|desc]", "note": "JSON listing of live single files for agents (HTML page for browsers). Filter by one or more &tag= values (AND), by name/tag substring &q=; sort with &sort= (default created) and &order= (default desc). Each entry: id, url, name, content_type, size, tags, created_at, expires_at."},
                 "tag_file": {"method": "POST", "url": PUBLIC_BASE + "/<id>?tag=<t>[&tag=<t2>][&untag=<t3>]", "note": "update tags on an existing single file without touching its content or expiry. Tags: lowercase [a-z0-9-], 1-24 chars, max 5 per file."},
                 "download_bundle_file": {"method": "GET", "url": PUBLIC_BASE + "/<id>/<filename>", "note": "serve a single file from a bundle; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},
-                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX {TTL_MAX_D} days (clamped [4h,{TTL_MAX_D}d]), default {DIR_DEFAULT_D}d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open; &show=1 (retain token) creates a SHOW-DIR: indefinite AND publicly writable — everyone with the URL may add/edit/delete files, whole-dir delete stays token-gated; flags (incl. show=1) honored only on first creation — flip an existing dir via POST /d/<key>?show=1. Multipart file parts on the create call become the dir's initial files; POSTing parts to an EXISTING named dir ADDS them like POST /d/<key> (retry-safe, write gates apply) — P5 bridge. ?json=1 / ?html=1 force the listing representation (P6)", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "open?": "bool (show-dir)", "tags": ["str"]}},
+                "create_dir": {"method": "POST", "url": PUBLIC_BASE + "/?dir=1[&name=<name>][&listed=1][&tag=<tag>][&ttl=<h|d>][&write=1|<token>]", "note": "create a dir: unnamed (opaque hex id) or named (create-or-get, 5-32 chars [a-z0-9-], >=1 letter, not reserved); listed=1 to appear in GET /d; tags up to 5; ttl = sliding lifetime, MAX {TTL_MAX_D} days (clamped [4h,{TTL_MAX_D}d]), default {DIR_DEFAULT_D}d; each add/edit/delete slides expires_at forward (capped 30d). Flags honored only on first creation. Optional &write=1 protects writes: the response contains write_token (shown once); writes then need it as the X-Throway-Write header or ?write=<token> (401 otherwise); reads/history/zip stay open; &show=1 (retain token) creates a SHOW-DIR: indefinite AND publicly writable — everyone with the URL may add/edit/delete files, whole-dir delete stays token-gated; flags (incl. show=1) honored only on first creation — flip an existing dir via POST /d/<key>?show=1. Multipart file parts on the create call become the dir's initial files; POSTing parts to an EXISTING named dir ADDS them like POST /d/<key> (retry-safe, write gates apply) — P5 bridge. ?json=1 / ?html=1 force the listing representation (P6)", "response": {"id": "str", "url": "str", "dir": True, "editable": False, "writable": "bool (permission: true = open dir, writes without token; false = write/retain token needed — NEVER read-only)", "persistence": {"type": "dir", "expires_at": "str", "extendable_by": "activity", "max_age": "int"}, "files": [{"name": "str", "url": "str", "size": "int", "content_type": "str", "editable": "bool"}], "expires_at": "str", "max_age": "int", "name": "str?", "listed": "bool?", "open?": "bool (show-dir)", "tags": ["str"]}},
                 "add_to_dir": {"method": "POST", "url": PUBLIC_BASE + "/d/<key>", "body": "multipart/form-data file parts", "note": "add files to a dir; slides expires_at forward by ttl; 401 without the X-Throway-Write token when the dir is write-protected"},
                 "get_dir": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>", "note": "JSON listing for agents, HTML page for browsers"},
                 "get_dir_file": {"method": "GET", "url": PUBLIC_BASE + "/d/<key>/<file>", "note": "fetch one file from a dir; append &thumb=1 for a small cached WebP preview (raster images only; falls back to the original bytes)"},

@@ -610,6 +610,11 @@ def response(kit, key, dirpath, meta, write_token=None):
         resp["open"] = True
     if meta.get("write_token"):
         resp["write_protected"] = True
+    # writable = dir-level permission fact: may ANYONE with the URL write
+    # (add/edit/delete) without a token? Distinct from editable (content
+    # type). false when a write token or retain token gates writes.
+    resp["writable"] = not (meta.get("write_token")
+                            or (meta.get("retain") and not meta.get("open")))
     if write_token:
         resp["write_token"] = write_token
         resp["write_note"] = ("store this token now — writes need it as the "
@@ -1040,6 +1045,17 @@ apply as on first creation) and the files added in one call.
    updated_at = last add/edit/delete (slides expires_at forward).
    LIST dirs: GET {PUBLIC_BASE}/d  -> only dirs created with listed=1.
    Filters: ?q=<substring over name or tag>, ?created_after/before=<ts>,
-   ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.""",
+   ?updated_after/before=<ts>. Sort: ?sort=created|updated|name&order=asc|desc.
+
+FIELDS editable vs writable (do not confuse them):
+   editable  -> CONTENT question: is this object's payload PUT/PATCH-able
+                text (text/* or application/json)? Per file; the dir/bundle
+                container itself is always editable:false.
+   writable  -> PERMISSION question: are writes accepted WITHOUT a token?
+                true on open dirs (the default!), show-dirs and plain
+                files. false when a write token (X-Throway-Write) or the
+                retain token gates writes, or the object is immutable
+                (bundles). writable:false NEVER means read-only — reads
+                are always open.""",
     },
 }

@@ -63,8 +63,12 @@ hint”** block with ready-to-run curl lines.
 
 **Feature discovery from responses:** every upload/listing tells you per
 file `editable` (`text/*` + `application/json` → PUT/PATCH work; binaries
-→ 400) and `persistence` (`type` single|dir|bundle, `expires_at`,
-`extendable_by` none|activity, `max_age`). Trust those over any doc.
+→ 400; the dir/bundle container itself is always `editable: false` —
+content question, not permission) and `writable` (permission: writes
+accepted without a token? `false` = write-/retain-token needed — reads
+stay open either way) and `persistence` (`type` single|dir|bundle,
+`expires_at`, `extendable_by` none|activity, `max_age`). Trust those
+over any doc.
 
 **Errors:** every error JSON has a stable `code` (400 `bad_request`,
 401 `write_denied`, 404 `not_found`, 413 `too_large`, 429 `rate_limited`,
@@ -96,6 +100,11 @@ Full table: `GET /help/errors`.
   open. Whole-dir **delete** needs the dir's token on write-protected
   dirs, the retain token on retained dirs — on an **open dir it is
   open**: anyone with the URL can wipe it (use `&write=1` to protect).
+- **`editable` vs `writable`** (seit 1.58.0): `editable` = Content-Frage
+  (Text-Payload → PUT/PATCH möglich; pro Datei; Dir-/Bundle-Container
+  sind immer `editable: false` — heißt NICHT read-only). `writable` =
+  Berechtigungsfrage (Writes ohne Token möglich? offen/show-dirs/Files:
+  `true`; write-/retain-gegate und Bundles: `false`; Reads immer offen).
 - **`?json=1` / `?html=1`** force the listing representation on
   `/d/<key>`, `/d`, history, browse — against the UA heuristic (since
   1.47.0).
@@ -140,5 +149,6 @@ Siehe **`GET /help/errors`** (Code-Tabelle + Retry-Strategie, seit
 
 1. `GET /api` — limits + endpoints, jetzt und hier.
 2. `GET /help/<topic>` — das Detail, das du gerade brauchst.
-3. Response lesen: `editable` + `persistence` entscheiden, nicht raten.
+3. Response lesen: `editable` (Content) + `writable` (Berechtigung) +
+   `persistence` entscheiden, nicht raten.
 4. Fehler: `code` lesen — nur 429/507 sind ein „später".
