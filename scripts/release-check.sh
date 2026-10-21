@@ -22,7 +22,7 @@ fi
 # Retro 2026-10-01: zwei Sessions, ein Working-Tree, eine versionslose
 # Commit-Kette. Lokal mit .work/ vorhanden: eigener Claim nötig.
 # Ohne Handoff-Struktur (CI-Runner) wird der Check übersprungen.
-if [ -d `.work/issues/active ] || [ -d "$HOME/code/handoffs/throway/issues/active" ]; then
+if [ -d .work/issues/active ] || [ -d "$HOME/code/handoffs/throway/issues/active" ]; then
   # $CLAIM darf leer sein (bumppush-check.sh behandelt '' als kein eigener
   # Claim); unter set -u ist eine ungesetzte Variable aber ein Fehler.
   CLAIM="${CLAIM:-}"
@@ -106,10 +106,11 @@ src = open("throway/pics.py", encoding="utf-8").read()
 blocks = re.findall(r"_(?:GALLERY|EMBED|LB|SOCIAL|ADMIN)_CSS = \((.*?)\n\)", src, re.S)
 if not blocks:
     raise SystemExit("keine CSS-Bloecke gefunden")
-iflags = open("throway/index.py", encoding="utf-8").read()
-iblocks = re.findall(r"_INDEX_CSS = \((.*?)\n\)", iflags, re.S)
-if not iblocks:
-    raise SystemExit("kein _INDEX_CSS-Block gefunden (1.51.0)")
+# 1.56.1: _INDEX_CSS lebt nicht mehr in index.py, sondern als echte
+# Datei throway/static/index.css — Balance-Check direkt auf der Datei.
+iblocks = [open("throway/static/index.css", encoding="utf-8").read()]
+if not iblocks[0].strip():
+    raise SystemExit("kein index.css-Inhalt gefunden (1.56.1)")
 def css_strings(block):
     # Die CSS-Regeln sind die "..."-String-Inhalte im Block. Wichtig: wir
     # extrahieren sie, statt die Strings zu ENTFERNEN — sonst löschen wir
