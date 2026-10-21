@@ -1013,6 +1013,11 @@ contains write_token exactly once. Afterwards writes (POST /d/<key>,
 PUT/PATCH/DELETE on its files, DELETE the dir, POST /?share=<name>)
 require the token via the X-Throway-Write header or ?write=<token>
 (401 without it); reads, listing, history and zip stay open.
+   404 TRAP (since 1.57.0): POST /d/<key> on a dir that does not exist
+(yet) answers 404 with a hint field naming the create endpoint — the dir
+is NOT silently created. Scripts that want create-or-get semantics add
+?create=1 to the upload POST: a missing named dir is then created (flags
+apply as on first creation) and the files added in one call.
 
      Each add/edit/append/delete slides expires_at forward by ttl (capped at
      30 days total from creation). An active dir keeps living; an idle one

@@ -1,11 +1,32 @@
 # throway — Releases
 
-**Current version:** `1.56.3`
+**Current version:** `1.57.0`
 
 A disposable file store. Upload a file — or a bundle of files (e.g. a
 website) — and get a short-lived URL. No auth. Nothing permanent.
 
 ---
+
+## 1.57.0 — 2026-10-21 — Fail-louter Dir-404 (hint) + `?create=1` am Dir-Upload
+
+Issue dir-404-hint (ubugrill@klark0): `POST /d/<unbekannt>` quittierte
+still mit `404 {"error":"dir not found"}` — ohne Hinweis, wie der Dir
+entsteht. Skripte (curl in CI/Agent-Flows) bauten sich daraus Schein-
+Erfolgsketten: Fehler-JSON geparst, leere Felder → bogus URL, „geteilt“,
+erst der Verifikations-GET zeigte 404.
+
+- **`hint`-Feld im Fehler-Body** (neu an `_err`): der 404 nennt den
+  Create-Endpoint (`POST /?dir=1&name=<name>&write=1`), die create=1-
+  Alternative und `/help/dirs`.
+- **`?create=1` am Upload-POST** (`POST /d/<name>?create=1`): create-or-
+  get für Skripte — fehlender benannter Dir wird angelegt, die Dateien
+  landen im selben Call. Namensvalidierung wie beim Create-Call;
+  Kombination mit `dir=1`, `share=`, `once=1`, `retain=1`, `show=1`
+  → 400 (Retro hard-validate: neue Pfad-Flags werden abgewiesen).
+- `/help/dirs`: „404 TRAP“-Abschnitt (WRITE PROTECTION) dokumentiert die
+  Falle + `?create=1`. API.md + README synchron.
+- Tests: `tests/test_dir404.py` (6) — Repro aus dem Issue, create-or-get
+  (neu + bestehend), Namens-/Flag-Abweisung, Help-Check. Suite 217 grün.
 
 ## 1.56.3 — 2026-10-18 — Popover-Felder füllen die Box (Alignment-Fix)
 

@@ -89,7 +89,7 @@ curl -X DELETE "https://skale.dev/throway/<id>"
 | `POST` | `/throway/?dir=1[&name=<name>]` | create a dir (unnamed or named; `&listed=1`, `&tag=`, `&ttl=`) |
 | `GET` | `/throway/d` | list dirs (only `listed=1`; filter/sort via query) |
 | `GET` | `/throway/d/<key>` | view a dir (listing / zip / files) |
-| `POST` | `/throway/d/<key>` | add files to a dir |
+| `POST` | `/throway/d/<key>` | add files to a dir (404 + `hint` if missing; `?create=1` = create-or-get) |
 | `GET` | `/throway/d/<key>/history` | edit history (JSON for agents, HTML for browsers) |
 | `PUT`/`PATCH` | `/throway/d/<key>/<file>` | edit/append text in a dir |
 | `DELETE` | `/throway/d/<key>` | delete a dir |

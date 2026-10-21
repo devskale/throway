@@ -245,6 +245,26 @@ posting parts to an EXISTING named dir **adds** them like `POST /d/<key>`
 (retry-safe: an agent retry loop converges without data loss; write
 gates apply).
 
+**Fail-loud dir 404 + `?create=1` (since 1.57.0):** `POST /d/<key>` on a
+dir that does not exist answers `404` with a `hint` field naming the
+create endpoint — the dir is never silently created. Scripts that want
+create-or-get semantics in one call add `?create=1`:
+
+```bash
+# 404 with hint (the dir must be created first):
+curl -F "f=@report.html" "$BASE/d/gibts-nicht"
+# -> {"error": "dir not found", "code": "not_found",
+#     "hint": "create first: POST $BASE/?dir=1&name=gibts-nicht&write=1
+#              (or POST $BASE/d/gibts-nicht?create=1 to create-or-get) …"}
+
+# create-or-get: missing named dir is created, files added in one call
+curl -F "f=@report.html" "$BASE/d/gibts-nicht?create=1"
+```
+
+`?create=1` validates the name like the create call (5-32 chars,
+`[a-z0-9-]`, not reserved) and cannot be combined with `dir=1`,
+`share=`, `once=1`, `retain=1` or `show=1` (400).
+
 **Representation override (P6, since 1.47.0):** all listing endpoints
 (`GET /d/<key>`, `GET /d`, `GET /d/<key>/history`, `GET /browse`) honor
 `?json=1` / `?html=1` to force JSON/HTML regardless of User-Agent.

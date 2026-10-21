@@ -86,7 +86,7 @@ _ERR_CODES = {400: "bad_request", 401: "write_denied", 403: "forbidden",
               507: "pool_full"}
 
 # semantic version + single source of truth for release notes
-VERSION = "1.56.3"
+VERSION = "1.57.0"
 RELEASES_FILE = os.path.join(os.path.dirname(__file__), "RELEASES.md")
 
 # content types browsers render inline (not download)
@@ -1283,14 +1283,19 @@ class Handler(BaseHTTPRequestHandler):
             k = self._kit_obj = _RequestKit(self)
         return k
 
-    def _err(self, code, msg, retry_after=None):
+    def _err(self, code, msg, retry_after=None, hint=None):
         """Structured error (1.41.2 / P1): code + message, plus a
-        Retry-After header/body field where waiting is the right move."""
+        Retry-After header/body field where waiting is the right move.
+        hint (1.57.0): fail-loud error bodies — ein kurzer, maschinen-
+        lesbarer Naechster-Schritt-Hinweis (z.B. der Create-Endpoint bei
+        'dir not found'), damit Skripte keine Schein-Erfolgsketten bauen."""
         payload = {"error": msg, "code": _ERR_CODES.get(code, "error")}
         extra = None
         if retry_after:
             payload["retry_after"] = retry_after
             extra = {"Retry-After": str(retry_after)}
+        if hint:
+            payload["hint"] = hint
         return self._send(code, json.dumps(payload), "application/json", extra)
 
     def _send(self, code, body=b"", ctype="text/plain", extra=None):
@@ -1882,15 +1887,50 @@ class Handler(BaseHTTPRequestHandler):
                 and ("tag" in qp or "untag" in qp):
             return self._file_tags(parts[0], qp)
 
-        # POST /d/<key> -> add files to an existing dir (multipart)
+        # POST /d/<key> -> add files to an existing dir (multipart).
+        # ?create=1 (1.57.0): create-or-get — ein fehlender benannter Dir
+        # wird angelegt statt 404 (Skript-Flows konvergieren ohne Vorab-
+        # Create-Call). Ohne create=1 antwortet der 404 fail-laut mit
+        # Hint auf den Create-Endpoint (Issue dir-404-hint).
         if parts and parts[0] == DIR_NS and len(parts) == 2 and parts[1]:
+            if "create=1" in query:
+                if want_dir or share or once or "retain=1" in query or "show=1" in query:
+                    return self._err(400, "create=1 (create-or-get dir upload) cannot be "
+                                         "combined with dir=1, share=, once=1, retain=1 or show=1 "
+                                         "— create flags belong on the create call")
+                ok, reason = dirs.valid_name(parts[1])
+                if not ok:
+                    return self._err(400, f"invalid dir name: {reason}")
+                ttl = _ttl_or_400(self, qp, kind="dir")
+                if ttl is False:
+                    return
+                ctype = self.headers.get("Content-Type", "application/octet-stream")
+                initial = None
+                if ctype.startswith("multipart/form-data"):
+                    payload = self._read_body()
+                    if payload is None:
+                        return
+                    files = _parse_multipart(payload, ctype)
+                    initial = [(n, d, c) for (n, d, c) in files if n]
+                else:
+                    length = self.headers.get("Content-Length")
+                    if length not in (None, "0"):
+                        length = int(length)
+                        if length > MAX_FILE:
+                            return self._err(413, f"too large (max {MAX_FILE // (1024 * 1024)}MB)")
+                        data = self.rfile.read(length)
+                        initial = [(parts[1], data, "application/octet-stream")]
+                return dirs.create(self._kit(), parts[1], qp, initial, retained=retained)
             r = dirs.post_add(self._kit(), parts[1])
             if r is not None:
                 return r
             # Retro hard-validate: None (Dir fehlt/invalid) darf NICHT in
             # den Raw-Upload-Pfad fallen — aus einem Dir-Add wurde sonst
             # still ein Einzel-Upload mit 200.
-            return self._err(404, "dir not found")
+            return self._err(404, "dir not found",
+                             hint=f"create first: POST {PUBLIC_BASE}/?dir=1&name={parts[1]}"
+                                  f"&write=1 (or POST {PUBLIC_BASE}/d/{parts[1]}?create=1"
+                                  f" to create-or-get) — see {PUBLIC_BASE}/help/dirs")
 
         # POST /?url=<url>[&name=<name>][&link=1] -> server-side import / link doc
         if "url" in qp:
@@ -1898,6 +1938,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # POST /?dir=1[&name=<name>][&listed=1][&tag=..][&ttl=..] -> create a dir
         if want_dir:
+            if "create=1" in query:
+                return self._err(400, "create=1 (create-or-get dir upload) belongs on "
+                                     "POST /d/<name>?create=1 — not on the create call")
             if name_hint:
                 ok, reason = dirs.valid_name(name_hint)
                 if not ok:
